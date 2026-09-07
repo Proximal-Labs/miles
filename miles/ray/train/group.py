@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Iterator
+from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 _RETRY_MAX_ATTEMPTS = 30
+_SOURCE_FAILURE_MIN_TARGETS = 2
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
@@ -425,6 +426,7 @@ class TrainerController:
         AsyncioGatherUtils.log_error(outcomes, debug_name="update_weights_on_every_alive_cell")
 
         reports: list[WeightUpdateReport] = []
+        retirements: list[Coroutine[Any, Any, None]] = []
         for (cell, assignment), outcome in zip(assignments, outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 logger.error(
@@ -433,12 +435,24 @@ class TrainerController:
                     exc_info=outcome,
                 )
                 continue
-            reports.append(outcome[0])
+            report = outcome[0]
+            reports.append(report)
+            if not report.updated_cell_ids and len(assignment.engines) >= _SOURCE_FAILURE_MIN_TARGETS:
+                retirements.append(
+                    cell.mark_errored_and_kill(
+                        reason=f"all {len(assignment.engines)} of its weight update targets failed"
+                    )
+                )
 
         if not reports:
             cause = _first_exception(outcomes)
             self._raise_if_no_cell_can_recover(debug_name="update_weights", cause=cause)
             raise cause
+
+        AsyncioGatherUtils.log_error(
+            await asyncio.gather(*retirements, return_exceptions=True),
+            debug_name="retire_trainers_that_reached_no_target",
+        )
         return WeightUpdateReport.combine(reports)
 
     def _assign_update_targets(self, info: UpdatableEngines) -> list[tuple[TrainerCell, UpdatableEngines]]:
