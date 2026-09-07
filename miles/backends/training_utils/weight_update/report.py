@@ -19,6 +19,7 @@ class WeightUpdateReport:
         assert reports, "no trainer cell reported the outcome of this update"
 
         versions = {report.weight_version for report in reports if report.weight_version is not None}
+        assert len(versions) <= 1, f"the trainer cells published different weight versions, got {sorted(versions)}"
 
         return cls(
             weight_version=next(iter(versions), None),
