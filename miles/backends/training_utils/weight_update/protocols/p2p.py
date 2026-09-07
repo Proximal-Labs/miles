@@ -1,7 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Coroutine, Iterator, Sequence
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, NamedTuple
 
@@ -29,7 +29,6 @@ from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_transfer_utils import (
-    P2PTransferManager,
     RemoteTransferPlan,
     RemoteWeightInfo,
     create_transfer_engine,
@@ -59,10 +58,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.transfer_plan = RemoteTransferPlan(args)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_param_stager = ModelParamStager()
-        self.transfer_manager = P2PTransferManager(
-            num_workers=getattr(args, "p2p_transfer_num_workers", 4),
-            transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
-        )
         self._transfer_engine: Any | None = None
         self._shared_params_dict: dict[str, torch.Tensor] = {}
         self._shared_param_mapper: ParameterMapper | None = None
@@ -160,7 +155,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 cell_id=engine.cell_id,
                 api_client=engine.api_client,
                 transfer_engine=self._transfer_engine,
-                transfer_manager=self.transfer_manager,
             )
             for engine in engines
         ]
@@ -208,6 +202,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def disconnect(self) -> None:
         for cell_updater in self.cell_updaters:
             cell_updater.wait_for_pending_writes()
+            cell_updater.dispose()
         self.cell_updaters = []
         self._transfer_engine_meta_list = []
         self.rollout_engines = []
@@ -245,14 +240,13 @@ class _P2PInferenceCellUpdater:
         cell_id: str,
         api_client: SGLangApiClient,
         transfer_engine: Any,
-        transfer_manager: P2PTransferManager,
     ) -> None:
         self.cell_id = cell_id
         self.error: BaseException | None = None
         self._args = args
         self._api_client = api_client
         self._transfer_engine = transfer_engine
-        self._transfer_manager = transfer_manager
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"p2p-write-{cell_id}")
         self._target_by_engine_rank: dict[int, RemoteWeightInfo] = {}
         self._pending_op = ""
         self._pending_writes: list[Future[None]] = []
@@ -332,6 +326,9 @@ class _P2PInferenceCellUpdater:
             f"inference cell {self.cell_id} can no longer be updated, {self._pending_op} failed", exc_info=error
         )
 
+    def dispose(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
     def submit_write(
         self, engine_rank: int, names: list[str], weight_memory_registry: dict[str, tuple[int, int, int]]
     ) -> None:
@@ -339,7 +336,7 @@ class _P2PInferenceCellUpdater:
             return
         self._pending_op = "p2p_write"
         self._pending_writes.append(
-            self._transfer_manager.submit(
+            self._executor.submit(
                 self._write_if_active,
                 self._target_by_engine_rank[engine_rank],
                 names,
@@ -354,7 +351,7 @@ class _P2PInferenceCellUpdater:
 
     def _collect_write(self, future: Future[None]) -> None:
         try:
-            future.result(timeout=self._transfer_manager.transfer_timeout)
+            future.result(timeout=self._args.p2p_transfer_timeout)
         except FutureTimeoutError as error:
             self.mark_errored(error)
             if not future.cancel():
@@ -381,7 +378,7 @@ class _P2PInferenceCellUpdater:
         """P2P write from shared CPU pinned buffers to a single remote session.
 
         Used by the parallelized submission path where each session within an
-        engine rank is submitted as a separate task to P2PTransferManager.
+        engine rank is submitted as a separate task to this cell's write executor.
         """
         if self.is_errored:
             logger.warning(f"[P2P-Shared] skipping a queued write to cell {self.cell_id}")

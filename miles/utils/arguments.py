@@ -1092,16 +1092,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--p2p-transfer-num-workers",
-                type=int,
-                default=4,
-                help="Number of thread pool workers for P2P weight transfer.",
-            )
-            parser.add_argument(
                 "--p2p-transfer-timeout",
                 type=float,
                 default=30.0,
-                help="Timeout in seconds for each P2P transfer operation.",
+                help=(
+                    "Seconds allowed for one P2P write to one inference cell; each cell has its own write "
+                    "thread, so this bounds how long a cell may hold up the bucket stream."
+                ),
             )
             return parser
 
