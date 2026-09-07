@@ -94,6 +94,10 @@ class WeightTransferProtocol(ABC):
         return metrics
 
 
+def isolates_cell_failures(args: Namespace) -> bool:
+    return not args.colocate and args.update_weight_transfer_mode == "p2p"
+
+
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor

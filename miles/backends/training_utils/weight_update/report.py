@@ -13,3 +13,12 @@ class WeightUpdateReport:
 
         unknown = sorted(frozenset(self.updated_cell_ids) - assigned)
         assert not unknown, f"cells {unknown} were never assigned to this trainer, which owns {sorted(assigned)}"
+
+    @classmethod
+    def combine(cls, reports: Sequence["WeightUpdateReport"]) -> "WeightUpdateReport":
+        assert reports, "no trainer cell reported the outcome of this update"
+
+        return cls(
+            weight_version=reports[0].weight_version,
+            updated_cell_ids=tuple(cell_id for report in reports for cell_id in report.updated_cell_ids),
+        )

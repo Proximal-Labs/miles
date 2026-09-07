@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngines, isolates_cell_failures
 from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
@@ -389,7 +389,16 @@ class TrainerController:
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateReport:
         """Broadcast weights to rollout engines and answer which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
-        # TODO: allow using all cells to update weights (instead of first alive cell)
+
+        if isolates_cell_failures(self.args):
+            report = await self._update_weights_on_every_alive_cell(info)
+        else:
+            report = await self._update_weights_on_first_alive_cell(info)
+        report.validate_assignment([engine.cell_id for engine in info.engines])
+
+        return report
+
+    async def _update_weights_on_first_alive_cell(self, info: UpdatableEngines) -> WeightUpdateReport:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         rank_reports = await retry(
             lambda _: self._execute_first_alive(
@@ -399,10 +408,43 @@ class TrainerController:
             ),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        report = rank_reports[0]
-        report.validate_assignment([engine.cell_id for engine in info.engines])
+        return rank_reports[0]
 
-        return report
+    async def _update_weights_on_every_alive_cell(self, info: UpdatableEngines) -> WeightUpdateReport:
+        assignments = self._assign_update_targets(info)
+        if not assignments:
+            return WeightUpdateReport(weight_version=None, updated_cell_ids=())
+
+        outcomes = await asyncio.gather(
+            *[
+                cell.execute("update_weights", timeout=self.args.update_weights_timeout, info=assignment)
+                for cell, assignment in assignments
+            ],
+            return_exceptions=True,
+        )
+        AsyncioGatherUtils.log_error(outcomes, debug_name="update_weights_on_every_alive_cell")
+
+        reports: list[WeightUpdateReport] = []
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            reports.append(outcome[0])
+        return WeightUpdateReport.combine(reports)
+
+    def _assign_update_targets(self, info: UpdatableEngines) -> list[tuple[TrainerCell, UpdatableEngines]]:
+        alive_cells = [cell for cell in self._cells if cell.is_alive]
+        if not alive_cells:
+            raise NonRetryableError("No alive cells, therefore cannot update weights")
+
+        base, remainder = divmod(len(info.engines), len(alive_cells))
+        assignments: list[tuple[TrainerCell, UpdatableEngines]] = []
+        start = 0
+        for index, cell in enumerate(alive_cells):
+            stop = start + base + (1 if index < remainder else 0)
+            if stop > start:
+                assignments.append((cell, UpdatableEngines(engines=list(info.engines[start:stop]))))
+            start = stop
+        return assignments
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity

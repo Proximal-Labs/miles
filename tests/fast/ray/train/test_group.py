@@ -38,6 +38,7 @@ def _make_mock_args(
     num_cells: int = 3,
     ci_ft_test_actions: str | None = None,
     ci_ft_test_actions_path: str | None = None,
+    update_weight_transfer_mode: str = "broadcast",
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -68,6 +69,8 @@ def _make_mock_args(
         worker_comm_backend="ray",
         trainer_model_id=None,
         update_weights_timeout=1800.0,
+        colocate=False,
+        update_weight_transfer_mode=update_weight_transfer_mode,
     )
 
 
@@ -1226,6 +1229,8 @@ class TestUpdateWeightsReturnsTheVersion:
             debug_rollout_only=False,
             trainer_model_id=None,
             update_weights_timeout=1800.0,
+            colocate=False,
+            update_weight_transfer_mode="broadcast",
         )
         group._trainer_id = "trainer-0"
         group._execute_first_alive = AsyncMock(return_value=[_rank_report(version) for version in per_worker_versions])
@@ -1259,7 +1264,9 @@ class TestModelOwnedWeightVersions:
         """Republishing, skipped steps and checkpoint rewinds preserve model versions."""
         controller = TrainerController.__new__(TrainerController)
         controller._trainer_id = "trainer-0"
-        controller.args = SimpleNamespace(update_weights_timeout=1800.0)
+        controller.args = SimpleNamespace(
+            update_weights_timeout=1800.0, colocate=False, update_weight_transfer_mode="broadcast"
+        )
         controller._execute_first_alive = AsyncMock(
             side_effect=[[_rank_report(version), _rank_report(version)] for version in versions]
         )
