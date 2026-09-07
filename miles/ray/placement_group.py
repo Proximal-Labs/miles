@@ -10,6 +10,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
 from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
@@ -303,15 +304,20 @@ async def update_weights(
         await orchestration_executor.run_after_step(rollout_id=rollout_id)
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
-    weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
-    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+    report: WeightUpdateReport | None = None
+    try:
+        report = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    finally:
+        await inference_controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes, report=report
+        )
 
     await _maybe_log_inference_engine_weight_checksums(
         args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
     )
 
-    if weight_version is not None:
-        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+    if report.weight_version is not None:
+        await rollout_executor.set_weight_version(report.weight_version, trainer_model_id=trainer_model_id)
 
 
 async def _maybe_log_inference_engine_weight_checksums(

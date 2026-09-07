@@ -19,6 +19,7 @@ from tqdm import tqdm
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -74,6 +75,7 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
+        self._engines: Sequence[UpdatableEngine] = ()
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
 
@@ -86,17 +88,18 @@ class WeightUpdater:
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
+        self._engines = engines
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear the protocol's metrics; the actor drains them onto the step log."""
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self, weight_version: int) -> None:
+    def update_weights(self, weight_version: int) -> WeightUpdateReport:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
         if not protocol.begin_sync(weight_version, self._iter_base_buckets):
-            return
+            return self._build_report(weight_version)
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
@@ -133,6 +136,15 @@ class WeightUpdater:
             if protocol.use_weight_update_session and driver:
                 self._close_engine_session(checksums, weight_version)
             dist.barrier(group=get_gloo_group())
+
+        return self._build_report(weight_version)
+
+    def _build_report(self, weight_version: int) -> WeightUpdateReport:
+        failed = {cell_updater.cell_id for cell_updater in self.protocol.cell_updaters if cell_updater.is_errored}
+        return WeightUpdateReport(
+            weight_version=weight_version,
+            updated_cell_ids=tuple(engine.cell_id for engine in self._engines if engine.cell_id not in failed),
+        )
 
     def _open_engine_session(self, adapters: list[tuple[str, object]], *, sync_base: bool) -> None:
         protocol = self.protocol

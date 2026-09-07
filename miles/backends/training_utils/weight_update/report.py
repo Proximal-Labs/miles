@@ -1,0 +1,15 @@
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class WeightUpdateReport:
+    weight_version: int | None
+    updated_cell_ids: tuple[str, ...]
+
+    def validate_assignment(self, assigned_cell_ids: Sequence[str]) -> None:
+        assigned = frozenset(assigned_cell_ids)
+        assert len(assigned) == len(assigned_cell_ids), f"a cell is assigned twice, got {list(assigned_cell_ids)}"
+
+        unknown = sorted(frozenset(self.updated_cell_ids) - assigned)
+        assert not unknown, f"cells {unknown} were never assigned to this trainer, which owns {sorted(assigned)}"

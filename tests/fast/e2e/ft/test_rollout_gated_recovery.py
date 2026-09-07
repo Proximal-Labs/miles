@@ -10,6 +10,7 @@ from tests.e2e.ft.conftest_ft.fault_injection import state, views
 from tests.fast.e2e.ft.fault_injection.utils import note_injected
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout import server_cell as server_cell_module
@@ -219,7 +220,9 @@ class _Harness:
         tick_task = asyncio.create_task(self._tick_forever())
         try:
             engines = await asyncio.wait_for(self.controller.start_update_weights(), timeout=5)
-            await self.controller.end_update_weights(engines.snapshot_cell_id_to_hashes if mark_weights_ready else {})
+            snapshot = engines.snapshot_cell_id_to_hashes if mark_weights_ready else {}
+            report = WeightUpdateReport(weight_version=1, updated_cell_ids=tuple(snapshot))
+            await self.controller.end_update_weights(snapshot, report=report)
         finally:
             tick_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

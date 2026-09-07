@@ -10,6 +10,7 @@ from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
     create_rollout_components,
@@ -319,7 +320,9 @@ class TestCreatePlacementGroups:
 class TestUpdateWeights:
     def _fakes(self, *, weight_version: int | None):
         actor_model = MagicMock()
-        actor_model.update_weights = AsyncMock(return_value=weight_version)
+        actor_model.update_weights = AsyncMock(
+            return_value=WeightUpdateReport(weight_version=weight_version, updated_cell_ids=("cell-0",))
+        )
         rollout_executor = MagicMock()
         rollout_executor.set_weight_version = AsyncMock()
         return actor_model, rollout_executor

@@ -7,6 +7,7 @@ from typing import Any
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, UpdatableEngines
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
@@ -238,17 +239,52 @@ class InferenceController:
         )
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+    async def end_update_weights(
+        self, snapshot_cell_id_to_hashes: dict[str, str], *, report: WeightUpdateReport | None
+    ) -> None:
+        if report is None:
+            logger.error(
+                f"The weight update of cells {sorted(snapshot_cell_id_to_hashes)} did not report an outcome, "
+                f"so none of them is marked ready"
+            )
+            return
+
+        updated = set(report.updated_cell_ids)
+        await asyncio.gather(
+            *[
+                cell.mark_errored()
+                for cell in self._cells_of_snapshot(
+                    snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes,
+                    cell_ids=[cell_id for cell_id in snapshot_cell_id_to_hashes if cell_id not in updated],
+                )
+            ]
+        )
         await asyncio.gather(
             *[
                 cell.mark_weights_ready()
-                for srv in self.servers.values()
-                for cell_id, cell in srv.server_cells.items()
-                if cell_id in snapshot_cell_id_to_hashes
-                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
-                and cell.is_pending_weights
+                for cell in self._cells_of_snapshot(
+                    snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes, cell_ids=report.updated_cell_ids
+                )
+                if cell.is_pending_weights
             ]
         )
+
+    @requires_lock
+    def _cells_of_snapshot(
+        self, *, snapshot_cell_id_to_hashes: dict[str, str], cell_ids: Sequence[str]
+    ) -> list[ServerCell]:
+        wanted = set(cell_ids)
+        unknown = wanted - set(snapshot_cell_id_to_hashes)
+        assert not unknown, (
+            f"cells {sorted(unknown)} were never part of this update window, which covered "
+            f"{sorted(snapshot_cell_id_to_hashes)}"
+        )
+        return [
+            cell
+            for srv in self.servers.values()
+            for cell_id, cell in srv.server_cells.items()
+            if cell_id in wanted and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+        ]
 
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:

@@ -13,6 +13,7 @@ import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 from miles.utils import object_store
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
@@ -629,12 +630,15 @@ class _RecordingWeightUpdater:
         self.connect_calls: list[dict[str, Any]] = []
         self.update_weights_calls: int = 0
         self.multi_lora_adapters: dict[str, Any] = {}
+        self.engine_cell_ids: list[str] = []
 
     def connect_rollout_engines(self, engines: list[Any]) -> None:
         self.connect_calls.append(list(engines))
+        self.engine_cell_ids = [engine.cell_id for engine in engines]
 
-    def update_weights(self, weight_version: int) -> None:
+    def update_weights(self, weight_version: int) -> WeightUpdateReport:
         self.update_weights_calls += 1
+        return WeightUpdateReport(weight_version=weight_version, updated_cell_ids=tuple(self.engine_cell_ids))
 
 
 def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -709,7 +713,7 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     assert [engine.gpu_count for engine in updater.connect_calls[1]] == [2, 2]
     assert [engine.gpu_offset for engine in updater.connect_calls[1]] == [0, 2]
     assert updater.update_weights_calls == 3
-    assert weight_version == 3
+    assert weight_version.weight_version == 3
     assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
 
 
@@ -723,8 +727,7 @@ def test_actor_returns_model_version_after_update_weights_returns(
 
     result = worker.update_weights(_updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4))
 
-    assert type(result) is int
-    assert result == weight_version
+    assert result.weight_version == weight_version
 
 
 def test_reconnecting_engines_receive_every_loaded_multi_lora_adapter(
@@ -762,9 +765,9 @@ def test_multi_lora_publication_counter_advances_after_each_update(
 
     result = worker.update_weights(info)
 
-    assert result == 8
+    assert result.weight_version == 8
     assert worker._multi_lora_weight_version == 8
-    assert worker.update_weights(info) == 9
+    assert worker.update_weights(info).weight_version == 9
 
 
 def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(

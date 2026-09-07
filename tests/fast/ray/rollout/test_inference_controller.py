@@ -8,6 +8,7 @@ import pytest
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 from tests.fast.ray.rollout.conftest import make_args
 from miles.backends.training_utils.weight_update.protocol import UpdatableEngine
+from miles.backends.training_utils.weight_update.report import WeightUpdateReport
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
@@ -32,6 +33,10 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInf
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts, WorkerMetaContext
 
 _RUN_UUID = "run-uuid-1"
+
+
+def _report(*, updated: tuple[str, ...] = ()) -> WeightUpdateReport:
+    return WeightUpdateReport(weight_version=1, updated_cell_ids=updated)
 
 
 def _make_cell_info(
@@ -186,12 +191,18 @@ class _FakeUpdatableCell:
         )
         self.api_client = api_client
         self.marked_ready = 0
+        self.marked_errored = 0
         self.is_pending_weights = True
         self.is_pending_weights_or_serving = True
         self.is_member = True
 
     async def mark_weights_ready(self) -> None:
         self.marked_ready += 1
+
+    async def mark_errored(self) -> None:
+        self.marked_errored += 1
+        self.is_errored = True
+        self.is_pending_weights = False
 
 
 class _TickingCell:
@@ -328,7 +339,10 @@ class TestHealthCheckerActiveness:
         controller = _make_controller({"default": srv})
 
         info = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            report=_report(updated=tuple(info.snapshot_cell_id_to_hashes)),
+        )
 
         assert not srv.health_checker_activeness.get().active
 
@@ -637,7 +651,7 @@ class TestPerModelHealthCheckerActiveness:
         controller, servers = self._controller("solver", "verifier")
         servers["solver"].update_weights = True
         await controller.start_update_weights(model_id="solver")
-        await controller.end_update_weights({})
+        await controller.end_update_weights({}, report=_report())
 
         await controller.prepare_eval(model_id="solver")
 
@@ -796,7 +810,10 @@ class TestUpdateWeightsLockWindow:
         info = await controller.start_update_weights()
         assert controller.context_lock.locked
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            report=_report(updated=tuple(info.snapshot_cell_id_to_hashes)),
+        )
         assert not controller.context_lock.locked
 
     @pytest.mark.asyncio
@@ -810,7 +827,10 @@ class TestUpdateWeightsLockWindow:
             await asyncio.sleep(0)
         assert not reconcile_task.done()
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            report=_report(updated=tuple(info.snapshot_cell_id_to_hashes)),
+        )
         await reconcile_task
 
     @pytest.mark.asyncio
@@ -1059,7 +1079,10 @@ class TestUpdatableEnginesPayload:
         controller = _make_controller({"actor": srv, "ref": _RecordingServer(model_name="ref")})
 
         updatable = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes,
+            report=_report(updated=tuple(updatable.snapshot_cell_id_to_hashes)),
+        )
 
         assert updatable == UpdatableEngines(
             engines=[
@@ -1092,7 +1115,10 @@ class TestUpdatableEnginesPayload:
         controller = _make_controller({"actor": srv})
 
         await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"})
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"},
+            report=_report(updated=("engine-0", "engine-1")),
+        )
 
         assert (relaunched.marked_ready, untouched.marked_ready) == (0, 1)
 
@@ -1490,7 +1516,9 @@ class TestInitRunsExactlyOnce:
         """The train-only shortcut returns early, so the refusal has to hold for a controller that built a fleet."""
         _patch_init(monkeypatch, servers={"default": _RecordingServer()})
         controller = InferenceController(
-            make_args(), engine_provider=_FakeWorkerProvider([]), router_providers=[_FakeWorkerProvider([])]
+            make_args(),
+            engine_provider=_FakeWorkerProvider([]),
+            router_providers=[_FakeWorkerProvider([])],
         )
         await controller.init()
 
