@@ -22,6 +22,7 @@ class _FakeCell:
     def __init__(self, *, ready: bool = False, needs_offload: bool = True):
         self.ready = ready
         self.meta = SimpleNamespace(needs_offload=needs_offload)
+        self.is_member = True
 
     @property
     def is_pending_weights_or_serving(self) -> bool:

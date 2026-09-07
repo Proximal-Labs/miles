@@ -188,6 +188,7 @@ class _FakeUpdatableCell:
         self.marked_ready = 0
         self.is_pending_weights = True
         self.is_pending_weights_or_serving = True
+        self.is_member = True
 
     async def mark_weights_ready(self) -> None:
         self.marked_ready += 1
@@ -1589,6 +1590,7 @@ class TestCellsReadyIsScopedToTheTargetedModel:
             "a-0": SimpleNamespace(
                 is_pending_weights_or_serving=True,
                 is_uninitialized=False,
+                is_member=True,
                 meta=SimpleNamespace(workers_hash="hash-a"),
             )
         }
@@ -1597,6 +1599,7 @@ class TestCellsReadyIsScopedToTheTargetedModel:
             "b-0": SimpleNamespace(
                 is_pending_weights_or_serving=False,
                 is_uninitialized=False,
+                is_member=True,
                 meta=SimpleNamespace(workers_hash="hash-b"),
             )
         }

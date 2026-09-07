@@ -94,7 +94,8 @@ class RolloutServer:
 
     @requires_lock
     def cells_by_gpu_offset(self) -> list[ServerCell]:
-        return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        cells = [cell for cell in self.server_cells.values() if cell.is_member]
+        return sorted(cells, key=lambda cell: cell.meta.gpu_offset)
 
     @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):
@@ -188,7 +189,8 @@ class RolloutServer:
         return sum(
             1
             for cell in self.server_cells.values()
-            if (self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving
+            if cell.is_member
+            and ((self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving)
         )
 
     @property
