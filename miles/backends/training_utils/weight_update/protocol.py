@@ -83,6 +83,9 @@ class WeightTransferProtocol(ABC):
     def after_base_weights(self) -> None:  # noqa: B027 — optional hook
         """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
 
+    def synchronize_cell_errors(self) -> None:  # noqa: B027 — optional hook
+        """Hook after the base-weight stream, to agree across the trainer ranks on which cells lost the update."""
+
     def finalize(self, weight_version: int) -> None:  # noqa: B027 — optional hook
         """Hook after all sends (e.g. publish + engine reload)."""
 

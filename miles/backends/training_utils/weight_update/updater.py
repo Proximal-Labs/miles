@@ -125,6 +125,7 @@ class WeightUpdater:
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
+            protocol.synchronize_cell_errors()
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
