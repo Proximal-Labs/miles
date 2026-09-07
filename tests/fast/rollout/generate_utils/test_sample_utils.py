@@ -43,6 +43,30 @@ def make_sample(
 
 
 class TestMergeSamples:
+    @pytest.mark.parametrize("namespace", [None, "train:-:1"])
+    def test_merge_preserves_matching_cache_namespaces(self, mock_tokenizer: MagicMock, namespace: str | None) -> None:
+        """Merged turns preserve their shared cache namespace, including disabled partitioning."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.kv_cache_namespace = b.kv_cache_namespace = namespace
+
+        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+
+        assert merged.kv_cache_namespace == namespace
+
+    @pytest.mark.parametrize("other_namespace", [None, "train:-:2"])
+    def test_merge_rejects_different_cache_namespaces(
+        self, mock_tokenizer: MagicMock, other_namespace: str | None
+    ) -> None:
+        """Turns from different cache partitions cannot be merged into one trajectory."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.kv_cache_namespace = "train:-:1"
+        b.kv_cache_namespace = other_namespace
+
+        with pytest.raises(AssertionError, match="kv_cache_namespace mismatch"):
+            _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+
     def test_basic_merge(self, mock_tokenizer):
         a = make_sample(
             tokens=[1, 2, 3, 10, 11, 12],
@@ -106,18 +130,22 @@ class TestMergeSamples:
         """Turn assembly keeps distinct expanded prompt lengths while output spans share sample coordinates."""
         a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
         b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
-        a.weight_versions = [WeightVersionsPerCall(
-            spans=[WeightVersionSpan("2", 2, 3)],
-            prefill_spans=[WeightVersionSpan("1", 0, 33)],
-            output_start=2,
-            prompt_tokens=33,
-        )]
-        b.weight_versions = [WeightVersionsPerCall(
-            spans=[WeightVersionSpan("3", 4, 5)],
-            prefill_spans=[WeightVersionSpan("2", 0, 35)],
-            output_start=4,
-            prompt_tokens=35,
-        )]
+        a.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("2", 2, 3)],
+                prefill_spans=[WeightVersionSpan("1", 0, 33)],
+                output_start=2,
+                prompt_tokens=33,
+            )
+        ]
+        b.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan("3", 4, 5)],
+                prefill_spans=[WeightVersionSpan("2", 0, 35)],
+                output_start=4,
+                prompt_tokens=35,
+            )
+        ]
 
         merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
         merged.validate()
