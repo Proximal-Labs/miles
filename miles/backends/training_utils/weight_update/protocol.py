@@ -21,6 +21,9 @@ class UpdatableEngine:
     gpu_offset: int
     workers_hash: str
 
+    def __post_init__(self) -> None:
+        assert self.gpu_count > 0, f"engine {self.cell_id} serves on {self.gpu_count!r} GPUs, which cannot be updated"
+
 
 @dataclass(frozen=True)
 class UpdatableEngines:
