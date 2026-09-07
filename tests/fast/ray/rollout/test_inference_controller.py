@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 from tests.fast.ray.rollout.conftest import make_args
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
@@ -91,8 +92,6 @@ class _RecordingServer:
         self.router_ip: str = "10.0.0.9"
         self.router_port: int = 31000
         self.api_clients: list = []
-        self.engine_gpu_counts: list[int] = []
-        self.engine_gpu_offsets: list[int] = []
         self.offload_tags: list = []
         self.onload_tags: list = []
         self.check_weights_kwargs: list[dict] = []
@@ -100,6 +99,9 @@ class _RecordingServer:
         self.cells_timeouts: list[float] = []
         self.dispose_count = 0
         self._cells_gate = cells_gate
+
+    def cells_by_gpu_offset(self) -> list:
+        return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     async def offload(self, tags=None):
         self.calls.append(("offload",))
@@ -167,8 +169,22 @@ class _RecordingRemoteMethod:
 
 
 class _FakeUpdatableCell:
-    def __init__(self, workers_hash: str):
-        self.meta = SimpleNamespace(workers_hash=workers_hash)
+    def __init__(
+        self,
+        workers_hash: str,
+        *,
+        cell_id: str = "engine-0",
+        api_client: object | None = None,
+        num_gpus_per_engine: int = 1,
+        gpu_offset: int = 0,
+    ):
+        self.meta = SimpleNamespace(
+            workers_hash=workers_hash,
+            cell_id=cell_id,
+            num_gpus_per_engine=num_gpus_per_engine,
+            gpu_offset=gpu_offset,
+        )
+        self.api_client = api_client
         self.marked_ready = 0
         self.is_pending_weights = True
         self.is_pending_weights_or_serving = True
@@ -970,8 +986,8 @@ class TestEnsureCellsReady:
     @staticmethod
     def _controller() -> InferenceController:
         """One policy is serving, the other still has a cell coming up."""
-        ready = _FakeUpdatableCell("hash-a")
-        pending = _FakeUpdatableCell("hash-b")
+        ready = _FakeUpdatableCell("hash-a", cell_id="alpha-0")
+        pending = _FakeUpdatableCell("hash-b", cell_id="beta-0")
         pending.is_pending_weights_or_serving = False
         return _make_controller(
             {
@@ -1021,32 +1037,54 @@ class TestMemoryLifecycleFanOut:
 
 class TestUpdatableEnginesPayload:
     @pytest.mark.asyncio
-    async def test_start_update_weights_returns_clients_gpu_layout_and_generation_snapshot(self):
-        """The trainer indexes these four lists in parallel, so swapping or dropping one misplaces every shard."""
+    async def test_start_update_weights_describes_every_engine_in_gpu_offset_order(self):
+        """The cell dict is keyed by id, so an engine described out of order misplaces every shard."""
         srv = _RecordingServer(
-            {"engine-0": _FakeUpdatableCell("hash-a"), "engine-1": _FakeUpdatableCell("hash-b")},
+            {
+                "engine-late": _FakeUpdatableCell(
+                    "hash-late", cell_id="engine-late", api_client="client-late", num_gpus_per_engine=4, gpu_offset=2
+                ),
+                "engine-early": _FakeUpdatableCell(
+                    "hash-early",
+                    cell_id="engine-early",
+                    api_client="client-early",
+                    num_gpus_per_engine=2,
+                    gpu_offset=0,
+                ),
+            },
             model_name="actor",
             update_weights=True,
         )
-        srv.api_clients = ["client-0", "client-1"]
-        srv.engine_gpu_counts = [2, 4]
-        srv.engine_gpu_offsets = [0, 2]
         controller = _make_controller({"actor": srv, "ref": _RecordingServer(model_name="ref")})
 
         updatable = await controller.start_update_weights()
         await controller.end_update_weights(snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes)
 
         assert updatable == UpdatableEngines(
-            rollout_engines=["client-0", "client-1"],
-            engine_gpu_counts=[2, 4],
-            engine_gpu_offsets=[0, 2],
-            snapshot_cell_id_to_hashes={"engine-0": "hash-a", "engine-1": "hash-b"},
+            engines=[
+                UpdatableEngine(
+                    cell_id="engine-early",
+                    api_client="client-early",
+                    gpu_count=2,
+                    gpu_offset=0,
+                    workers_hash="hash-early",
+                ),
+                UpdatableEngine(
+                    cell_id="engine-late",
+                    api_client="client-late",
+                    gpu_count=4,
+                    gpu_offset=2,
+                    workers_hash="hash-late",
+                ),
+            ]
         )
+        assert updatable.snapshot_cell_id_to_hashes == {"engine-early": "hash-early", "engine-late": "hash-late"}
 
     @pytest.mark.asyncio
     async def test_end_update_weights_skips_a_cell_from_a_different_worker_generation(self):
         """A cell relaunched during the update runs new processes that never received these weights."""
-        relaunched, untouched = _FakeUpdatableCell("hash-new"), _FakeUpdatableCell("hash-b")
+        relaunched = _FakeUpdatableCell("hash-new", cell_id="engine-0", gpu_offset=0)
+        untouched = _FakeUpdatableCell("hash-b", cell_id="engine-1", gpu_offset=1)
         srv = _RecordingServer(
             {"engine-0": relaunched, "engine-1": untouched}, model_name="actor", update_weights=True
         )

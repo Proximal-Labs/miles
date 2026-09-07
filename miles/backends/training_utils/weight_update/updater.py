@@ -14,10 +14,9 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
-from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -72,16 +71,9 @@ class WeightUpdater:
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
 
-    def connect_rollout_engines(
-        self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
-    ) -> None:
+    def connect_rollout_engines(self, engines: Sequence[UpdatableEngine]) -> None:
         self.protocol.connect(
-            rollout_engines,
-            engine_gpu_counts,
-            engine_gpu_offsets,
+            engines,
             self.parallel_state,
             self._hf_weight_iterator.placement,
             self._hf_weight_iterator.weight_update_selector,

@@ -104,10 +104,11 @@ class TestExternalPdFleetWeightUpdateLayout:
         )
 
         async with srv.context_lock:
-            assert srv.engine_gpu_counts == [2, 2]
-            assert srv.engine_gpu_offsets == [0, 2]
+            cells = srv.cells_by_gpu_offset()
+            assert [cell.meta.num_gpus_per_engine for cell in cells] == [2, 2]
+            assert [cell.meta.gpu_offset for cell in cells] == [0, 2]
             assert srv.api_clients == ["client-0", "client-2"]
-            counts = srv.engine_gpu_counts
+            counts = [cell.meta.num_gpus_per_engine for cell in cells]
 
         calls = _connect(engine_gpu_counts=counts, rollout_num_gpus_per_engine=1)
 
@@ -164,7 +165,7 @@ class TestExternalRegularEngineWeightUpdateLayout:
         )
 
         async with srv.context_lock:
-            counts = srv.engine_gpu_counts
+            counts = [cell.meta.num_gpus_per_engine for cell in srv.cells_by_gpu_offset()]
         assert counts == [2]
 
         calls = _connect(engine_gpu_counts=counts, rollout_num_gpus_per_engine=1)

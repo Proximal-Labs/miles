@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.backends.training_utils.weight_update.conftest import make_updatable_engines
 
 from miles.backends.training_utils.weight_update.protocols.broadcast import (
     UpdateWeightFromDistributed,
@@ -179,9 +180,7 @@ class TestUpdateWeightFromDistributedConnect:
             patch(f"{_BROADCAST_MODULE}.connect_rollout_engines_from_distributed") as connect,
         ):
             protocol.connect(
-                engines,
-                engine_gpu_counts=[2, 4],
-                engine_gpu_offsets=[0, 2],
+                make_updatable_engines(engines, gpu_counts=[2, 4], gpu_offsets=[0, 2]),
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=False),
                 selector="all",

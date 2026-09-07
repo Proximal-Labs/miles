@@ -271,9 +271,10 @@ class TestEngineListOrdering:
         """With 12 cells inserted in string-sorted id order all three derived lists come out offset-ordered."""
         srv = self._server_with_cells(12)
         async with srv.context_lock:
-            assert srv.engine_gpu_offsets == list(range(12))
+            cells = srv.cells_by_gpu_offset()
+            assert [cell.meta.gpu_offset for cell in cells] == list(range(12))
             assert srv.api_clients == [f"client-{i}" for i in range(12)]
-            assert srv.engine_gpu_counts == [i + 1 for i in range(12)]
+            assert [cell.meta.num_gpus_per_engine for cell in cells] == [i + 1 for i in range(12)]
 
 
 class TestAddCellRollback:

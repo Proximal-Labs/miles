@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker

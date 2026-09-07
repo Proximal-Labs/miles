@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
@@ -10,6 +11,24 @@ import torch
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+
+
+@dataclass(frozen=True)
+class UpdatableEngine:
+    cell_id: str
+    api_client: SGLangApiClient
+    gpu_count: int
+    gpu_offset: int
+    workers_hash: str
+
+
+@dataclass(frozen=True)
+class UpdatableEngines:
+    engines: list[UpdatableEngine]
+
+    @property
+    def snapshot_cell_id_to_hashes(self) -> dict[str, str]:
+        return {engine.cell_id: engine.workers_hash for engine in self.engines}
 
 
 class WeightTransferProtocol(ABC):
@@ -36,9 +55,7 @@ class WeightTransferProtocol(ABC):
     @abstractmethod
     def connect(
         self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None,
-        engine_gpu_offsets: Sequence[int] | None,
+        engines: Sequence[UpdatableEngine],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,

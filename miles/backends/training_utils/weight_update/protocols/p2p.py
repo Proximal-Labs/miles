@@ -18,10 +18,9 @@ from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -129,9 +128,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def connect(
         self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None,
-        engine_gpu_offsets: Sequence[int] | None,
+        engines: Sequence[UpdatableEngine],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -147,7 +144,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.disconnect()
-        self.rollout_engines = rollout_engines
+        self.rollout_engines = [engine.api_client for engine in engines]
 
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 
@@ -158,7 +155,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.remote_weight_infos_by_session_id,
                 targets_to_session_id,
                 self.session_id_to_server_args,
-            ) = query_remote_weight_infos(rollout_engines, targets)
+            ) = query_remote_weight_infos(self.rollout_engines, targets)
 
             targets_grouped_by_engine_rank: dict[int, list] = {}
             for target in targets:
@@ -177,7 +174,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 )
             cell_updaters_by_engine_ind = {
                 engine_ind: _P2PInferenceCellUpdater(
-                    engine_ind=engine_ind,
+                    cell_id=engines[engine_ind].cell_id,
                     transfer_engine=self._transfer_engine,
                     transfer_manager=self.transfer_manager,
                     targets_by_engine_rank=cell_targets,
@@ -240,12 +237,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
 class _P2PInferenceCellUpdater:
     def __init__(
         self,
-        engine_ind: int,
+        cell_id: str,
         transfer_engine: Any,
         transfer_manager: P2PTransferManager,
         targets_by_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
-        self.engine_ind = engine_ind
+        self.cell_id = cell_id
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
         self._target_by_engine_rank = targets_by_engine_rank

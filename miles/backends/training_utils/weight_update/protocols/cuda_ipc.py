@@ -12,7 +12,7 @@ from sglang.srt.utils import MultiprocessingSerializer
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils import async_utils
 from miles.utils.lora import lora_base_cpu_backup_enabled, lora_rollout_enabled
@@ -61,9 +61,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
 
     def connect(
         self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None,
-        engine_gpu_offsets: Sequence[int] | None,
+        engines: Sequence[UpdatableEngine],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -72,18 +70,11 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         Split colocated/distributed engines. Global source rank (DP=TP=PP=0) creates NCCL
         for distributed. Map ranks to colocated IPC engines.
         """
+        rollout_engines = [engine.api_client for engine in engines]
+        engine_gpu_counts = [engine.gpu_count for engine in engines]
+        engine_gpu_offsets = [engine.gpu_offset for engine in engines]
         self.rollout_engines = rollout_engines
         self._selector = selector
-
-        if engine_gpu_counts is None:
-            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
-        if engine_gpu_offsets is None:
-            # Fallback: assume engines are densely packed (no placeholder gaps).
-            engine_gpu_offsets = []
-            offset = 0
-            for c in engine_gpu_counts:
-                engine_gpu_offsets.append(offset)
-                offset += c
 
         # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
         total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node

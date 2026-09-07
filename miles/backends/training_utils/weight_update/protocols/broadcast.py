@@ -11,7 +11,7 @@ import torch.distributed as dist
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
@@ -41,9 +41,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
 
     def connect(
         self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None,
-        engine_gpu_offsets: Sequence[int] | None,
+        engines: Sequence[UpdatableEngine],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -51,9 +49,9 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         """
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
-        self.rollout_engines = rollout_engines
+        self.rollout_engines = [engine.api_client for engine in engines]
         self._selector = selector
-        self._engine_gpu_counts = engine_gpu_counts
+        self._engine_gpu_counts = [engine.gpu_count for engine in engines]
 
         # One sender per replica set; one NCCL group (sender + all engines) per shard.
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
@@ -65,7 +63,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.args, self.group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
+                self.args, self.group_name, self.rollout_engines, engine_gpu_counts=self._engine_gpu_counts
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:

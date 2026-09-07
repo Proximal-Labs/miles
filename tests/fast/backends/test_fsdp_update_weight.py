@@ -99,13 +99,8 @@ class _SlowPhaseEngine(_SessionEngine):
 
 
 class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
-    def connect_rollout_engines(
-        self,
-        rollout_engines,
-        engine_gpu_counts=None,
-        engine_gpu_offsets=None,
-    ):
-        self.rollout_engines = rollout_engines
+    def connect_rollout_engines(self, engines):
+        self.rollout_engines = [engine.api_client for engine in engines]
 
     def update_bucket_weights(self, named_tensors, weight_version=None):
         assert named_tensors
@@ -115,12 +110,27 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
         )
 
 
+def _updatable_engines(api_clients) -> list:
+    from miles.backends.training_utils.weight_update.protocol import UpdatableEngine
+
+    return [
+        UpdatableEngine(
+            cell_id=f"cell-{index}",
+            api_client=api_client,
+            gpu_count=1,
+            gpu_offset=index,
+            workers_hash=f"hash-{index}",
+        )
+        for index, api_client in enumerate(api_clients)
+    ]
+
+
 def _make_updater(model, rollout_engines):
     updater = _SessionAwareUpdater(
         Namespace(update_weight_buffer_size=1024),
         SimpleNamespace(config=SimpleNamespace(model_type=""), state_dict=lambda: model),
     )
-    updater.connect_rollout_engines(rollout_engines, None)
+    updater.connect_rollout_engines(_updatable_engines(rollout_engines))
     return updater
 
 
@@ -230,18 +240,11 @@ class _RecordingWeightUpdater:
     def __init__(self) -> None:
         self.conn_status: ConnStatusManager = ConnStatusManager()
         self.connect_calls: list[list[object]] = []
-        self.connect_topologies: list[tuple[list[int] | None, list[int] | None]] = []
         self.update_weights_calls: int = 0
         self.weight_version: int = 0
 
-    def connect_rollout_engines(
-        self,
-        rollout_engines: list[object],
-        engine_gpu_counts: list[int] | None = None,
-        engine_gpu_offsets: list[int] | None = None,
-    ) -> None:
-        self.connect_calls.append(list(rollout_engines))
-        self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
+    def connect_rollout_engines(self, engines: list[object]) -> None:
+        self.connect_calls.append(list(engines))
 
     def update_weights(self) -> None:
         self.update_weights_calls += 1
@@ -263,10 +266,8 @@ def _make_updatable_engines(
     snapshot_cell_id_to_hashes: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        rollout_engines=rollout_engines,
+        engines=_updatable_engines(rollout_engines),
         has_new_engines=has_new_engines,
-        engine_gpu_counts=[1] * len(rollout_engines),
-        engine_gpu_offsets=list(range(len(rollout_engines))),
         snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes if snapshot_cell_id_to_hashes is not None else {},
     )
 
@@ -292,7 +293,7 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
     first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
     second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
 
-    assert updater.connect_calls == [engines]
+    assert [[engine.api_client for engine in call] for call in updater.connect_calls] == [engines]
     assert updater.update_weights_calls == 2
     assert (first_version, second_version) == (1, 2)
     assert not updater.conn_status.needs_reconnect({})
@@ -426,8 +427,11 @@ def test_fsdp_actor_reconnects_after_rollout_cell_hash_changes(monkeypatch):
         )
     )
 
-    assert updater.connect_calls == [engines, replacement_engines]
-    assert updater.connect_topologies[1] == ([1, 1], [0, 1])
+    assert [[engine.api_client for engine in call] for call in updater.connect_calls] == [
+        engines,
+        replacement_engines,
+    ]
+    assert [(engine.gpu_count, engine.gpu_offset) for engine in updater.connect_calls[1]] == [(1, 0), (1, 1)]
     assert updater.update_weights_calls == 3
     assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
 

@@ -1,10 +1,12 @@
 import importlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from types import ModuleType
 
 import pytest
+
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine
 
 _P2P_TRANSFER_UTILS_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
 
@@ -57,3 +59,23 @@ def p2p_transfer_utils() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_TRANSFER_UTILS_MODULE)
+
+
+def make_updatable_engines(
+    api_clients: Sequence[object],
+    *,
+    gpu_counts: Sequence[int] | None = None,
+    gpu_offsets: Sequence[int] | None = None,
+) -> list[UpdatableEngine]:
+    counts = gpu_counts if gpu_counts is not None else [1] * len(api_clients)
+    offsets = gpu_offsets if gpu_offsets is not None else list(range(len(api_clients)))
+    return [
+        UpdatableEngine(
+            cell_id=f"cell-{index}",
+            api_client=api_client,
+            gpu_count=count,
+            gpu_offset=offset,
+            workers_hash=f"hash-{index}",
+        )
+        for index, (api_client, count, offset) in enumerate(zip(api_clients, counts, offsets, strict=True))
+    ]

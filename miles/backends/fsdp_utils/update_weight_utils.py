@@ -11,6 +11,7 @@ import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine
 
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
@@ -19,7 +20,6 @@ except ImportError:
 
 from sglang.srt.utils import MultiprocessingSerializer
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
@@ -67,12 +67,7 @@ class UpdateWeight(abc.ABC):
         self.conn_status = ConnStatusManager()
 
     @abc.abstractmethod
-    def connect_rollout_engines(
-        self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
-    ) -> None:
+    def connect_rollout_engines(self, engines: Sequence[UpdatableEngine]) -> None:
         pass
 
     def update_weights(self) -> None:
@@ -142,14 +137,9 @@ class UpdateWeightFromTensor(UpdateWeight):
     """Push model weights to rollout engines as tensors, streamed in size-bounded buckets (optionally
     grouped + flattened per dtype, one RPC per dtype per bucket)."""
 
-    def connect_rollout_engines(
-        self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
-    ) -> None:
+    def connect_rollout_engines(self, engines: Sequence[UpdatableEngine]) -> None:
         """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
-        self.rollout_engines = rollout_engines
+        self.rollout_engines = [engine.api_client for engine in engines]
 
         # Here we assume the gpu id of rollout engines and train actors are the same.
         for i, engine in enumerate(self.rollout_engines):
@@ -230,14 +220,9 @@ class UpdateWeightFromTensor(UpdateWeight):
 class UpdateWeightFromDistributed(UpdateWeight):
     """Broadcast weights via a temporary NCCL group to rollout engines."""
 
-    def connect_rollout_engines(
-        self,
-        rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
-    ) -> None:
+    def connect_rollout_engines(self, engines: Sequence[UpdatableEngine]) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
-        self.rollout_engines = rollout_engines
+        self.rollout_engines = [engine.api_client for engine in engines]
 
         # TP weight sync: AllGather params to rank 0, then broadcast from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0

@@ -90,21 +90,10 @@ class RolloutServer:
     @requires_lock
     def api_clients(self) -> list[SGLangApiClient]:
         """One client per cell, talking to its primary (node-0) engine."""
-        return [cell.api_client for cell in self._cells_by_gpu_offset()]
-
-    @property
-    @requires_lock
-    def engine_gpu_counts(self) -> list[int]:
-        """Per-engine GPU count for all node-0 engines, parallel to ``engines``."""
-        return [cell.meta.num_gpus_per_engine for cell in self._cells_by_gpu_offset()]
-
-    @property
-    @requires_lock
-    def engine_gpu_offsets(self) -> list[int]:
-        return [cell.meta.gpu_offset for cell in self._cells_by_gpu_offset()]
+        return [cell.api_client for cell in self.cells_by_gpu_offset()]
 
     @requires_lock
-    def _cells_by_gpu_offset(self) -> list[ServerCell]:
+    def cells_by_gpu_offset(self) -> list[ServerCell]:
         return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     @requires_lock

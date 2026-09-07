@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.backends.training_utils.weight_update.conftest import make_updatable_engines
 from torch.distributed import HashStore
 
 from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
@@ -69,9 +70,7 @@ class TestEngineLockConstruction:
             patch(f"{_BROADCAST_MODULE}.connect_rollout_engines_from_distributed"),
         ):
             protocol.connect(
-                [MagicMock()],
-                engine_gpu_counts=None,
-                engine_gpu_offsets=None,
+                make_updatable_engines([MagicMock()]),
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=False),
                 selector="all",

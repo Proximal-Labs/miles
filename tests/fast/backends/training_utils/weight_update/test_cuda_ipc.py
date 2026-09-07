@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.backends.training_utils.weight_update.conftest import make_updatable_engines
 
 from miles.backends.training_utils.weight_update.protocols.cuda_ipc import (
     UpdateWeightFromTensor,
@@ -91,9 +92,7 @@ class TestConnect:
         ):
             dist_mock.get_rank.return_value = rank
             protocol.connect(
-                engines,
-                engine_gpu_counts=_ENGINE_GPU_COUNTS,
-                engine_gpu_offsets=_SPARSE_GPU_OFFSETS,
+                make_updatable_engines(engines, gpu_counts=_ENGINE_GPU_COUNTS, gpu_offsets=_SPARSE_GPU_OFFSETS),
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=True),
                 selector="all",

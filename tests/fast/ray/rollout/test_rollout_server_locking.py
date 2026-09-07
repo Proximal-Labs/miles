@@ -45,8 +45,7 @@ class TestRolloutServerLockDiscipline:
             await srv.offload()
             await srv.onload()
             assert srv.api_clients == []
-            assert srv.engine_gpu_counts == []
-            assert srv.engine_gpu_offsets == []
+            assert srv.cells_by_gpu_offset() == []
 
     @pytest.mark.asyncio
     async def test_holding_a_different_lock_object_does_not_authorize_the_server(self):

@@ -9,7 +9,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
-from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,

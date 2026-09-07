@@ -19,7 +19,7 @@ from miles.backends.training_utils.log_utils import (
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
-from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -612,19 +612,14 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
 
-        rollout_engines = info.rollout_engines
+        engines = info.engines
+        rollout_engines = [engine.api_client for engine in engines]
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
-        engine_gpu_counts = info.engine_gpu_counts
-        engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
         needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
         if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
+            self.weight_updater.connect_rollout_engines(engines)
             self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 

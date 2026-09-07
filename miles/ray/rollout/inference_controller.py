@@ -2,12 +2,11 @@ import asyncio
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, UpdatableEngines
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
@@ -223,18 +222,19 @@ class InferenceController:
 
         srv = self._get_updatable_server(model_id=model_id)
         if not srv:
-            return UpdatableEngines(
-                rollout_engines=[],
-                engine_gpu_counts=[],
-                engine_gpu_offsets=[],
-                snapshot_cell_id_to_hashes={},
-            )
+            return UpdatableEngines(engines=[])
 
         return UpdatableEngines(
-            rollout_engines=srv.api_clients,
-            engine_gpu_counts=srv.engine_gpu_counts,
-            engine_gpu_offsets=srv.engine_gpu_offsets,
-            snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
+            engines=[
+                UpdatableEngine(
+                    cell_id=cell.meta.cell_id,
+                    api_client=cell.api_client,
+                    gpu_count=cell.meta.num_gpus_per_engine,
+                    gpu_offset=cell.meta.gpu_offset,
+                    workers_hash=cell.meta.workers_hash,
+                )
+                for cell in srv.cells_by_gpu_offset()
+            ]
         )
 
     @releases_lock
@@ -386,14 +386,6 @@ class InferenceController:
     async def _health_monitoring_resume(self, model_id: str | None) -> None:
         for srv in self._get_servers_of_model_id(model_id):
             srv.health_checker_activeness.bump_active(True)
-
-
-@dataclass(frozen=True)
-class UpdatableEngines:
-    rollout_engines: list[SGLangApiClient]
-    engine_gpu_counts: list[int]
-    engine_gpu_offsets: list[int]
-    snapshot_cell_id_to_hashes: dict[str, str]
 
 
 # TODO may move and generalize later

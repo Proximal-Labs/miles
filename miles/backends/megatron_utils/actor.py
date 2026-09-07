@@ -18,8 +18,8 @@ from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionWeightVersionUtils,
 )
+from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
@@ -925,10 +925,9 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
 
-        rollout_engines = info.rollout_engines
+        engines = info.engines
+        rollout_engines = [engine.api_client for engine in engines]
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
-        engine_gpu_counts = info.engine_gpu_counts
-        engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
@@ -937,11 +936,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
         if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
+            self.weight_updater.connect_rollout_engines(engines)
             self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 

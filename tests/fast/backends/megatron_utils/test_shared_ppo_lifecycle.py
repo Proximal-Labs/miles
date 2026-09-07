@@ -187,7 +187,7 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
 @pytest.mark.parametrize("asleep", [False, True])
 def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
     """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
-    from miles.ray.rollout.inference_controller import UpdatableEngines
+    from miles.backends.training_utils.weight_update.protocol import UpdatableEngines
 
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
@@ -202,12 +202,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker.weight_updater = Mock()
     worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
     worker.weight_updater.conn_status.needs_reconnect.return_value = False
-    info = UpdatableEngines(
-        rollout_engines=[],
-        engine_gpu_counts=[],
-        engine_gpu_offsets=[],
-        snapshot_cell_id_to_hashes={},
-    )
+    info = UpdatableEngines(engines=[])
     reload_groups = Mock()
     destroy_groups = Mock()
     monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
@@ -635,19 +630,8 @@ class _RecordingWeightUpdater:
         self.update_weights_calls: int = 0
         self.multi_lora_adapters: dict[str, Any] = {}
 
-    def connect_rollout_engines(
-        self,
-        rollout_engines: list[Any],
-        engine_gpu_counts: list[int] | None = None,
-        engine_gpu_offsets: list[int] | None = None,
-    ) -> None:
-        self.connect_calls.append(
-            dict(
-                rollout_engines=list(rollout_engines),
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-        )
+    def connect_rollout_engines(self, engines: list[Any]) -> None:
+        self.connect_calls.append(list(engines))
 
     def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
@@ -683,14 +667,23 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     return worker
 
 
-def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
+def _updatable_engines(api_clients: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
+    from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, UpdatableEngines
 
+    assert len(snapshot) == len(api_clients), "the snapshot describes one worker generation per engine"
     return UpdatableEngines(
-        rollout_engines=rollout_engines,
-        engine_gpu_counts=[gpu_count] * len(rollout_engines),
-        engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
-        snapshot_cell_id_to_hashes=snapshot,
+        engines=[
+            UpdatableEngine(
+                cell_id=cell_id,
+                api_client=api_client,
+                gpu_count=gpu_count,
+                gpu_offset=index * gpu_count,
+                workers_hash=workers_hash,
+            )
+            for index, (api_client, (cell_id, workers_hash)) in enumerate(
+                zip(api_clients, snapshot.items(), strict=True)
+            )
+        ]
     )
 
 
@@ -705,14 +698,19 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
 
     worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
     worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
-    weight_version = worker.update_weights(_updatable_engines(replacement_engines, {"cell-0": "hash-b"}, gpu_count=2))
+    weight_version = worker.update_weights(
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2)
+    )
 
-    assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
-    assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
-    assert updater.connect_calls[1]["engine_gpu_offsets"] == [0, 2]
+    assert [[engine.api_client for engine in call] for call in updater.connect_calls] == [
+        first_engines,
+        replacement_engines,
+    ]
+    assert [engine.gpu_count for engine in updater.connect_calls[1]] == [2, 2]
+    assert [engine.gpu_offset for engine in updater.connect_calls[1]] == [0, 2]
     assert updater.update_weights_calls == 3
     assert weight_version == 3
-    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
+    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
 
 
 @pytest.mark.parametrize("weight_version", [0, 7])
