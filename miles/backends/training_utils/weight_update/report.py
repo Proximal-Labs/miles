@@ -18,7 +18,9 @@ class WeightUpdateReport:
     def combine(cls, reports: Sequence["WeightUpdateReport"]) -> "WeightUpdateReport":
         assert reports, "no trainer cell reported the outcome of this update"
 
+        versions = {report.weight_version for report in reports if report.weight_version is not None}
+
         return cls(
-            weight_version=reports[0].weight_version,
+            weight_version=next(iter(versions), None),
             updated_cell_ids=tuple(cell_id for report in reports for cell_id in report.updated_cell_ids),
         )

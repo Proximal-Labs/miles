@@ -425,10 +425,20 @@ class TrainerController:
         AsyncioGatherUtils.log_error(outcomes, debug_name="update_weights_on_every_alive_cell")
 
         reports: list[WeightUpdateReport] = []
-        for outcome in outcomes:
+        for (cell, assignment), outcome in zip(assignments, outcomes, strict=True):
             if isinstance(outcome, BaseException):
-                raise outcome
+                logger.error(
+                    f"Trainer cell {cell.cell_id} lost the weight update of "
+                    f"{[engine.cell_id for engine in assignment.engines]}, which are all given up on",
+                    exc_info=outcome,
+                )
+                continue
             reports.append(outcome[0])
+
+        if not reports:
+            cause = _first_exception(outcomes)
+            self._raise_if_no_cell_can_recover(debug_name="update_weights", cause=cause)
+            raise cause
         return WeightUpdateReport.combine(reports)
 
     def _assign_update_targets(self, info: UpdatableEngines) -> list[tuple[TrainerCell, UpdatableEngines]]:
