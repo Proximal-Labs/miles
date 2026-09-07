@@ -55,13 +55,23 @@ class UpdateWeightP2P(WeightTransferProtocol):
         super().__init__(args)
         self.transfer_plan = RemoteTransferPlan(args)
         self.global_rank = dist.get_rank(group=get_gloo_group())
-        self._model_registered = False
         self._model_param_stager = ModelParamStager()
         self._cell_updaters: list[_P2PInferenceCellUpdater] = []
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
         )
+        self._transfer_engine: Any | None = None
+        self._shared_params_dict: dict[str, torch.Tensor] = {}
+        self._shared_param_mapper: ParameterMapper | None = None
+        self._weight_memory_registry: dict[str, tuple[int, int, int]] = {}
+        self._replicas_by_engine_rank: dict[int, torch.nn.Module] = {}
+        self.remote_weight_infos_by_session_id: dict[str, tuple] = {}
+        self.session_id_to_server_args: dict[str, ServerArgs] = {}
+        # in self._transfer_engine_meta_list: tuple of
+        # - single CPU replica shared among all sessions
+        # - related remote weight info
+        self._transfer_engine_meta_list: list[_TransferEngineMeta] = []
 
     def after_base_weights(self) -> None:
         """Wait for all background P2P writes to complete."""
@@ -75,9 +85,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
         """Register shared CPU pinned memory with P2P on the first sync."""
-        if self.is_sender and not self._model_registered:
+        if self.is_sender and not self._weight_memory_registry:
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
-            self._model_registered = True
         return True
 
     def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
@@ -137,6 +146,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
           replica that mirrors the target's sharding layout, enabling correct
           weight format conversion before transfer.
         """
+        self.disconnect()
         self.rollout_engines = rollout_engines
 
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
@@ -154,14 +164,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for target in targets:
                 targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
 
-            # Create ONE transfer engine for all engine ranks
-            self._transfer_engine = create_transfer_engine()
-            self._shared_params_dict: dict[str, torch.Tensor] = {}
-            self._shared_param_mapper: ParameterMapper | None = None
-            # in self._transfer_engine_meta_list: tuple of
-            # - single CPU replica shared among all sessions
-            # - related remote weight info
-            self._transfer_engine_meta_list: list[_TransferEngineMeta] = []
+            if self._transfer_engine is None:
+                # Create ONE transfer engine for all engine ranks
+                self._transfer_engine = create_transfer_engine()
             targets_by_engine_ind: dict[int, dict[int, RemoteWeightInfo]] = {}
             for target in targets:
                 session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
@@ -180,26 +185,14 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 for engine_ind, cell_targets in targets_by_engine_ind.items()
             }
             self._cell_updaters = list(cell_updaters_by_engine_ind.values())
-            first_engine_rank = True
             for engine_rank, rank_targets in targets_grouped_by_engine_rank.items():
                 first_target = rank_targets[0]
                 session_id = targets_to_session_id[(first_target.engine_ind, first_target.engine_rank)]
-                parallelism_config = RankParallelismConfig.from_dict(
-                    self.remote_weight_infos_by_session_id[session_id][1]
+                model_replica = self._ensure_cpu_replica(
+                    engine_rank=engine_rank,
+                    parallelism_info=self.remote_weight_infos_by_session_id[session_id][1],
+                    server_args=self.session_id_to_server_args[session_id],
                 )
-                server_args = self.session_id_to_server_args[session_id]
-
-                model_replica = _create_cpu_replica(
-                    parallelism_config,
-                    self.args.hf_checkpoint,
-                    server_args,
-                    shared_params_dict=self._shared_params_dict,
-                    first_engine_rank=first_engine_rank,
-                )
-                if first_engine_rank:
-                    self._shared_params_dict = dict(model_replica.named_parameters())
-                    self._shared_param_mapper = ParameterMapper.from_model(model_replica)
-                    first_engine_rank = False
 
                 rank_cell_updaters = [cell_updaters_by_engine_ind[target.engine_ind] for target in rank_targets]
 
@@ -208,6 +201,37 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         engine_rank=engine_rank, model_replica=model_replica, cell_updaters=rank_cell_updaters
                     )
                 )
+
+    def disconnect(self) -> None:
+        for cell_updater in self._cell_updaters:
+            cell_updater.wait_for_pending_writes()
+        self._cell_updaters = []
+        self._transfer_engine_meta_list = []
+        self.remote_weight_infos_by_session_id = {}
+        self.session_id_to_server_args = {}
+        self.rollout_engines = []
+        self.is_sender = False
+        self._model_param_stager = ModelParamStager()
+
+    def _ensure_cpu_replica(
+        self, engine_rank: int, parallelism_info: dict, server_args: ServerArgs
+    ) -> torch.nn.Module:
+        if (cached := self._replicas_by_engine_rank.get(engine_rank)) is not None:
+            return cached
+
+        first_engine_rank = not self._shared_params_dict
+        model_replica = _create_cpu_replica(
+            parallelism_config=RankParallelismConfig.from_dict(parallelism_info),
+            model_path=self.args.hf_checkpoint,
+            server_args=server_args,
+            shared_params_dict=self._shared_params_dict,
+            first_engine_rank=first_engine_rank,
+        )
+        if first_engine_rank:
+            self._shared_params_dict = dict(model_replica.named_parameters())
+            self._shared_param_mapper = ParameterMapper.from_model(model_replica)
+        self._replicas_by_engine_rank[engine_rank] = model_replica
+        return model_replica
 
 
 # ============================ inference cell updater ============================
