@@ -109,7 +109,7 @@ def p2p_transfer_utils():
 
 
 def _query(module, engine: _FakeRolloutEngine, engine_ranks: list[int]):
-    return module.query_remote_weight_infos(engine, engine_ranks)
+    return module.query_remote_weight_infos(engine, engine_ranks, request_timeout=30.0)
 
 
 class TestQueryRemoteWeightInfos:

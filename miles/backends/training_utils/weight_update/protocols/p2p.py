@@ -2,6 +2,7 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, NamedTuple
 
 import torch
@@ -261,10 +262,14 @@ class _P2PInferenceCellUpdater:
         return self.error is not None
 
     def connect_targets(self, engine_ranks: list[int]) -> None:
+        self._pending_op = "remote_weight_query"
         try:
-            self._target_by_engine_rank = query_remote_weight_infos(client=self._api_client, engine_ranks=engine_ranks)
+            self._target_by_engine_rank = query_remote_weight_infos(
+                client=self._api_client,
+                engine_ranks=engine_ranks,
+                request_timeout=self._args.update_weight_engine_request_timeout,
+            )
         except Exception as error:
-            logger.exception(f"[P2P-Shared] inference cell {self.cell_id} did not answer the weight query")
             self.mark_errored(error)
 
     def target_of(self, engine_rank: int) -> RemoteWeightInfo:
@@ -300,23 +305,22 @@ class _P2PInferenceCellUpdater:
     def submit_resume(self) -> Future[Any] | None:
         return self._submit("continue_generation", lambda client: client.continue_generation())
 
-    def collect(self, future: Future[Any]) -> None:
+    def collect(self, result: object) -> None:
+        if isinstance(result, BaseException):
+            self.mark_errored(result)
+            return
         try:
-            check_weight_sync_results([future.result()], is_lora=False)
+            check_weight_sync_results([result], is_lora=False)
         except Exception as error:
-            logger.exception(f"[weight-update] {self._pending_op} failed on inference cell {self.cell_id}")
             self.mark_errored(error)
 
-    def collect_weight_version(self, future: Future[Any], *, expected: int) -> None:
-        try:
-            served = future.result()
-        except Exception as error:
-            logger.exception(f"[weight-update] {self._pending_op} failed on inference cell {self.cell_id}")
-            self.mark_errored(error)
+    def collect_weight_version(self, result: object, *, expected: int) -> None:
+        if isinstance(result, BaseException):
+            self.mark_errored(result)
             return
-        if str(served) != str(expected):
+        if str(result) != str(expected):
             self.mark_errored(
-                RuntimeError(f"inference cell {self.cell_id} serves weight version {served}, expected {expected}")
+                RuntimeError(f"inference cell {self.cell_id} serves weight version {result}, expected {expected}")
             )
 
     def mark_errored(self, error: BaseException) -> None:
@@ -324,13 +328,16 @@ class _P2PInferenceCellUpdater:
             logger.warning(f"inference cell {self.cell_id} failed again, keeping the first error", exc_info=error)
             return
         self.error = error
-        logger.error(f"inference cell {self.cell_id} can no longer be updated", exc_info=error)
+        logger.error(
+            f"inference cell {self.cell_id} can no longer be updated, {self._pending_op} failed", exc_info=error
+        )
 
     def submit_write(
         self, engine_rank: int, names: list[str], weight_memory_registry: dict[str, tuple[int, int, int]]
     ) -> None:
         if self.is_errored:
             return
+        self._pending_op = "p2p_write"
         self._pending_writes.append(
             self._transfer_manager.submit(
                 self._write_if_active,
@@ -347,7 +354,13 @@ class _P2PInferenceCellUpdater:
 
     def _collect_write(self, future: Future[None]) -> None:
         try:
-            future.result()
+            future.result(timeout=self._transfer_manager.transfer_timeout)
+        except FutureTimeoutError as error:
+            self.mark_errored(error)
+            if not future.cancel():
+                logger.error(
+                    f"[P2P-Shared] a write to cell {self.cell_id} is still running after the transfer timeout"
+                )
         except Exception as error:
             self.mark_errored(error)
 

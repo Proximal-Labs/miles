@@ -3,8 +3,9 @@ import concurrent.futures
 import inspect
 import logging
 import threading
+import time
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any, TypeVar
@@ -17,6 +18,7 @@ __all__ = [
     "run",
     "submit",
     "wait_futures",
+    "collect_futures_by_key",
     "wait_cancelling_pending_on_first_completion",
     "eager_create_task",
     "gather_and_raise_first",
@@ -26,6 +28,7 @@ __all__ = [
 ]
 
 _T = TypeVar("_T")
+_K = TypeVar("_K")
 
 
 # Create a background event loop thread
@@ -89,6 +92,22 @@ def wait_futures(futures: Sequence[concurrent.futures.Future]) -> list[Any]:
 
     if errors:
         raise errors[0]
+    return results
+
+
+def collect_futures_by_key(
+    futures: Mapping[_K, concurrent.futures.Future], *, timeout: float
+) -> dict[_K, Any | BaseException]:
+    deadline = time.monotonic() + timeout
+    results: dict[_K, Any | BaseException] = {}
+    for key, future in futures.items():
+        try:
+            results[key] = future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except concurrent.futures.TimeoutError as error:
+            future.cancel()
+            results[key] = error
+        except Exception as error:
+            results[key] = error
     return results
 
 

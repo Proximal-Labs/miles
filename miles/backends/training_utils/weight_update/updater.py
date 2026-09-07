@@ -28,6 +28,7 @@ from miles.backends.training_utils.weight_update.session import (
     set_weight_version,
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.multi_lora import is_multi_lora_enabled, slot_lora_name
@@ -154,8 +155,8 @@ class WeightUpdater:
             if self.args.ci_test and not self.is_lora:
                 self._on_every_cell(
                     lambda cell_updater: cell_updater.submit_weight_version_query(),
-                    collect=lambda cell_updater, future: cell_updater.collect_weight_version(
-                        future, expected=weight_version
+                    collect=lambda cell_updater, result: cell_updater.collect_weight_version(
+                        result, expected=weight_version
                     ),
                 )
             self._on_every_cell(lambda cell_updater: cell_updater.submit_resume())
@@ -168,17 +169,18 @@ class WeightUpdater:
     def _on_every_cell(
         self,
         submit: Callable[["_P2PInferenceCellUpdater"], Future[Any] | None],
-        collect: Callable[["_P2PInferenceCellUpdater", Future[Any]], None] | None = None,
+        collect: Callable[["_P2PInferenceCellUpdater", object], None] | None = None,
     ) -> None:
         futures = {}
         for cell_updater in self.protocol.cell_updaters:
             if (future := submit(cell_updater)) is not None:
                 futures[cell_updater] = future
-        for cell_updater, future in futures.items():
+        results = async_utils.collect_futures_by_key(futures, timeout=self.args.update_weight_engine_request_timeout)
+        for cell_updater, result in results.items():
             if collect is None:
-                cell_updater.collect(future)
+                cell_updater.collect(result)
             else:
-                collect(cell_updater, future)
+                collect(cell_updater, result)
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

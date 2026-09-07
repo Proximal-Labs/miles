@@ -194,13 +194,20 @@ def create_transfer_engine():
     return transfer_engine
 
 
-def query_remote_weight_infos(client: SGLangApiClient, engine_ranks: Sequence[int]) -> dict[int, RemoteWeightInfo]:
+def query_remote_weight_infos(
+    client: SGLangApiClient, engine_ranks: Sequence[int], *, request_timeout: float
+) -> dict[int, RemoteWeightInfo]:
     """Query one rollout engine for the weight info, session ID and server args of each of its ranks."""
     futures = {
         engine_rank: async_utils.submit(_query_one_rank(client, engine_rank))
         for engine_rank in sorted(set(engine_ranks))
     }
-    return {engine_rank: future.result() for engine_rank, future in futures.items()}
+
+    targets = async_utils.collect_futures_by_key(futures, timeout=request_timeout)
+    for target in targets.values():
+        if isinstance(target, BaseException):
+            raise target
+    return targets
 
 
 async def _query_one_rank(client: SGLangApiClient, engine_rank: int) -> RemoteWeightInfo:
