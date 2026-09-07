@@ -108,78 +108,46 @@ def p2p_transfer_utils():
                 setattr(package, attribute, saved_attribute)
 
 
-def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
-    return [
-        module.TransferTaskP2PMeta(engine_ind=engine_ind, engine_rank=engine_rank, source_shard=source_shard)
-        for source_shard, (engine_ind, engine_rank) in enumerate(pairs)
-    ]
-
-
-def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]]):
-    return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
+def _query(module, engine: _FakeRolloutEngine, engine_ranks: list[int]):
+    return module.query_remote_weight_infos(engine, engine_ranks)
 
 
 class TestQueryRemoteWeightInfos:
-    """Remote-info discovery over the rollout engines' HTTP API."""
+    """Remote-info discovery over one rollout engine's HTTP API."""
 
-    def test_repeated_targets_are_queried_once_each(self, p2p_transfer_utils):
+    def test_repeated_ranks_are_queried_once_each(self, p2p_transfer_utils):
         """The same engine rank appears once per source shard, and re-querying it wastes round trips."""
-        engines = [_FakeRolloutEngine(0), _FakeRolloutEngine(1)]
+        engine = _FakeRolloutEngine(0)
 
-        _query(p2p_transfer_utils, engines, [(0, 0), (0, 1), (0, 0), (1, 0)])
+        _query(p2p_transfer_utils, engine, [0, 1, 0])
 
-        assert Counter(name for name, _kwargs in engines[0].calls) == Counter(
+        assert Counter(name for name, _kwargs in engine.calls) == Counter(
             {
                 "get_remote_instance_transfer_engine_info": 2,
                 "get_parallelism_info": 2,
                 "get_server_info": 2,
             }
         )
-        assert sorted(kwargs["rank"] for name, kwargs in engines[0].calls if name == "get_parallelism_info") == [0, 1]
-        assert [name for name, _kwargs in engines[1].calls] == [
-            "get_remote_instance_transfer_engine_info",
-            "get_parallelism_info",
-            "get_server_info",
-        ]
+        assert sorted(kwargs["rank"] for name, kwargs in engine.calls if name == "get_parallelism_info") == [0, 1]
 
-    def test_the_returned_maps_agree_on_every_session_id(self, p2p_transfer_utils):
-        """Every weight, parallelism, and converted server-args entry must match its session ID."""
-        engines = [_FakeRolloutEngine(0), _FakeRolloutEngine(1)]
+    def test_every_rank_reports_its_own_session_parallelism_and_server_args(self, p2p_transfer_utils):
+        """One cell serves several shards, and pairing a rank with another rank's session writes the wrong shard."""
+        engine = _FakeRolloutEngine(3)
 
-        weight_infos, targets_to_session_id, session_id_to_server_args = _query(
-            p2p_transfer_utils, engines, [(0, 0), (0, 1), (1, 0)]
-        )
+        targets = _query(p2p_transfer_utils, engine, [0, 1])
 
-        assert targets_to_session_id == {
-            (0, 0): "session-0-0",
-            (0, 1): "session-0-1",
-            (1, 0): "session-1-0",
+        assert {rank: target.session_id for rank, target in targets.items()} == {0: "session-3-0", 1: "session-3-1"}
+        assert {rank: target.parallelism_info for rank, target in targets.items()} == {
+            0: {"tp_rank": 0},
+            1: {"tp_rank": 1},
         }
-        assert weight_infos == {
-            "session-0-0": ({"weight-0": (0x1000, 4, 2)}, {"tp_rank": 0}),
-            "session-0-1": ({"weight-1": (0x1001, 4, 2)}, {"tp_rank": 1}),
-            "session-1-0": ({"weight-0": (0x1000, 4, 2)}, {"tp_rank": 0}),
-        }
-        assert all(
-            isinstance(server_args, p2p_transfer_utils.ServerArgs)
-            for server_args in session_id_to_server_args.values()
-        )
-        assert {
-            session_id: server_args.model_path for session_id, server_args in session_id_to_server_args.items()
-        } == {
-            "session-0-0": "/model/0",
-            "session-0-1": "/model/0",
-            "session-1-0": "/model/1",
-        }
+        assert all(isinstance(target.server_args, p2p_transfer_utils.ServerArgs) for target in targets.values())
+        assert {target.server_args.model_path for target in targets.values()} == {"/model/3"}
 
     def test_weight_locations_are_decoded_from_the_wire_into_named_fields(self, p2p_transfer_utils):
         """The engines answer over HTTP, so JSON lists must become RemoteWeightLocation before any caller indexes them."""
-        engines = [_JsonRolloutEngine(0)]
+        targets = _query(p2p_transfer_utils, _JsonRolloutEngine(0), [0])
 
-        weight_infos, _targets_to_session_id, _session_id_to_server_args = _query(
-            p2p_transfer_utils, engines, [(0, 0)]
-        )
-
-        location = weight_infos["session-0-0"][0]["weight-0"]
+        location = targets[0].weights_info["weight-0"]
         assert isinstance(location, p2p_transfer_utils.RemoteWeightLocation)
         assert (location.address, location.numel, location.element_size) == (0x1000, 4, 2)

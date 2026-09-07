@@ -136,6 +136,8 @@ class RemoteWeightInfo:
 
     session_id: str
     weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
+    parallelism_info: dict
+    server_args: ServerArgs
 
 
 class P2PTransferManager:
@@ -192,28 +194,21 @@ def create_transfer_engine():
     return transfer_engine
 
 
-def query_remote_weight_infos(
-    rollout_engines: Sequence[SGLangApiClient],
-    targets,
-) -> tuple[dict, dict, dict]:
-    """Query remote rollout engines for weight info, session IDs, and server args."""
-    remote_weight_infos_by_session_id = {}
-    targets_to_session_id = {}
-    session_id_to_server_args = {}
-    targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
+def query_remote_weight_infos(client: SGLangApiClient, engine_ranks: Sequence[int]) -> dict[int, RemoteWeightInfo]:
+    """Query one rollout engine for the weight info, session ID and server args of each of its ranks."""
+    futures = {
+        engine_rank: async_utils.submit(_query_one_rank(client, engine_rank))
+        for engine_rank in sorted(set(engine_ranks))
+    }
+    return {engine_rank: future.result() for engine_rank, future in futures.items()}
 
-    for engine_ind, engine_rank in targets_to_query:
-        session_id, raw_weights_info = async_utils.run(
-            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info(rank=engine_rank)
-        )
-        weights_info = {name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()}
-        parallelism_info = async_utils.run(rollout_engines[engine_ind].get_parallelism_info(rank=engine_rank))
 
-        session_id_to_server_args[session_id] = create_server_args_from_dict(
-            async_utils.run(rollout_engines[engine_ind].get_server_info())
-        )
-        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
-        remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
-        targets_to_session_id[(engine_ind, engine_rank)] = session_id
-
-    return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args
+async def _query_one_rank(client: SGLangApiClient, engine_rank: int) -> RemoteWeightInfo:
+    session_id, raw_weights_info = await client.get_remote_instance_transfer_engine_info(rank=engine_rank)
+    assert session_id is not None, f"Failed to get session id from rollout engine rank {engine_rank}"
+    return RemoteWeightInfo(
+        session_id=session_id,
+        weights_info={name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()},
+        parallelism_info=await client.get_parallelism_info(rank=engine_rank),
+        server_args=create_server_args_from_dict(await client.get_server_info()),
+    )

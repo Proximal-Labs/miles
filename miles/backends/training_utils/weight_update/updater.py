@@ -9,6 +9,8 @@ LoRA adapter pushes.
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
@@ -30,6 +32,9 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.multi_lora import is_multi_lora_enabled, slot_lora_name
 from miles.utils.timer import timer
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.weight_update.protocols.p2p import _P2PInferenceCellUpdater
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +102,7 @@ class WeightUpdater:
 
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
-            self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
+            self._open_engine_session(adapters, sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -128,10 +129,55 @@ class WeightUpdater:
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, weight_version)
-                resume_engines(protocol.rollout_engines)
+                self._close_engine_session(checksums, weight_version)
             dist.barrier(group=get_gloo_group())
+
+    def _open_engine_session(self, adapters: list[tuple[str, object]], *, sync_base: bool) -> None:
+        protocol = self.protocol
+        selector = self._hf_weight_iterator.weight_update_selector
+        if protocol.cell_updaters:
+            self._on_every_cell(lambda cell_updater: cell_updater.submit_pause())
+            self._on_every_cell(lambda cell_updater: cell_updater.submit_flush_cache())
+            self._on_every_cell(lambda cell_updater: cell_updater.submit_begin(selector=selector, sync_base=sync_base))
+            return
+
+        pause_engines(self.args, protocol.rollout_engines)
+        self._register_new_lora_adapters(protocol.rollout_engines, adapters)
+        begin_weight_update(protocol.rollout_engines, selector, sync_base=sync_base)
+
+    def _close_engine_session(self, checksums: dict | None, weight_version: int) -> None:
+        protocol = self.protocol
+        if protocol.cell_updaters:
+            self._on_every_cell(lambda cell_updater: cell_updater.submit_end())
+            self._on_every_cell(lambda cell_updater: cell_updater.submit_set_weight_version(weight_version))
+            if self.args.ci_test and not self.is_lora:
+                self._on_every_cell(
+                    lambda cell_updater: cell_updater.submit_weight_version_query(),
+                    collect=lambda cell_updater, future: cell_updater.collect_weight_version(
+                        future, expected=weight_version
+                    ),
+                )
+            self._on_every_cell(lambda cell_updater: cell_updater.submit_resume())
+            return
+
+        end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+        set_weight_version(protocol.rollout_engines, weight_version)
+        resume_engines(protocol.rollout_engines)
+
+    def _on_every_cell(
+        self,
+        submit: Callable[["_P2PInferenceCellUpdater"], Future[Any] | None],
+        collect: Callable[["_P2PInferenceCellUpdater", Future[Any]], None] | None = None,
+    ) -> None:
+        futures = {}
+        for cell_updater in self.protocol.cell_updaters:
+            if (future := submit(cell_updater)) is not None:
+                futures[cell_updater] = future
+        for cell_updater, future in futures.items():
+            if collect is None:
+                cell_updater.collect(future)
+            else:
+                collect(cell_updater, future)
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

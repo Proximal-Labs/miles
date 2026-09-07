@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Future
 from typing import Any, NamedTuple
 
@@ -18,10 +18,13 @@ from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import UpdatableEngine, WeightTransferProtocol
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_transfer_utils import (
@@ -65,8 +68,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self._weight_memory_registry: dict[str, tuple[int, int, int]] = {}
         self._replicas_by_engine_rank: dict[int, torch.nn.Module] = {}
         self.cell_updaters: list[_P2PInferenceCellUpdater] = []
-        self.remote_weight_infos_by_session_id: dict[str, tuple] = {}
-        self.session_id_to_server_args: dict[str, ServerArgs] = {}
         # in self._transfer_engine_meta_list: tuple of
         # - single CPU replica shared among all sessions
         # - related remote weight info
@@ -84,7 +85,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
         """Register shared CPU pinned memory with P2P on the first sync."""
-        if self.is_sender and not self._weight_memory_registry:
+        if self.is_sender and not self._weight_memory_registry and self._shared_params_dict:
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
         return True
 
@@ -146,68 +147,56 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.disconnect()
         self.rollout_engines = [engine.api_client for engine in engines]
 
-        targets = self.transfer_plan.plan_p2p([engine.gpu_count for engine in engines])
-        self.is_sender = bool(targets)
-
-        if self.is_sender and self._transfer_engine is None:
+        planned_targets = self.transfer_plan.plan_p2p([engine.gpu_count for engine in engines])
+        if planned_targets and self._transfer_engine is None:
             # Create ONE transfer engine for all engine ranks
             self._transfer_engine = create_transfer_engine()
-
-        targets_by_cell_id: dict[str, dict[int, RemoteWeightInfo]] = {engine.cell_id: {} for engine in engines}
-        targets_grouped_by_engine_rank: dict[int, list] = {}
-
-        if self.is_sender:
             self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            (
-                self.remote_weight_infos_by_session_id,
-                targets_to_session_id,
-                self.session_id_to_server_args,
-            ) = query_remote_weight_infos(self.rollout_engines, targets)
-
-            for target in targets:
-                targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
-                session_id = targets_to_session_id[(target.engine_ind, target.engine_rank)]
-                cell_targets = targets_by_cell_id[engines[target.engine_ind].cell_id]
-                assert target.engine_rank not in cell_targets
-                cell_targets[target.engine_rank] = RemoteWeightInfo(
-                    session_id, self.remote_weight_infos_by_session_id[session_id][0]
-                )
 
         self.cell_updaters = [
             _P2PInferenceCellUpdater(
+                args=self.args,
                 cell_id=engine.cell_id,
+                api_client=engine.api_client,
                 transfer_engine=self._transfer_engine,
                 transfer_manager=self.transfer_manager,
-                targets_by_engine_rank=targets_by_cell_id[engine.cell_id],
             )
             for engine in engines
         ]
-        updaters_by_cell_id = {cell_updater.cell_id: cell_updater for cell_updater in self.cell_updaters}
 
-        for engine_rank, rank_targets in targets_grouped_by_engine_rank.items():
-            first_target = rank_targets[0]
-            session_id = targets_to_session_id[(first_target.engine_ind, first_target.engine_rank)]
-            model_replica = self._ensure_cpu_replica(
-                engine_rank=engine_rank,
-                parallelism_info=self.remote_weight_infos_by_session_id[session_id][1],
-                server_args=self.session_id_to_server_args[session_id],
-            )
+        planned_ranks_by_engine_ind: dict[int, list[int]] = {}
+        for target in planned_targets:
+            planned_ranks_by_engine_ind.setdefault(target.engine_ind, []).append(target.engine_rank)
+        for engine_ind, engine_ranks in planned_ranks_by_engine_ind.items():
+            self.cell_updaters[engine_ind].connect_targets(engine_ranks)
 
+        updaters_by_engine_rank: dict[int, list[_P2PInferenceCellUpdater]] = {}
+        for target in planned_targets:
+            cell_updater = self.cell_updaters[target.engine_ind]
+            if not cell_updater.is_errored:
+                updaters_by_engine_rank.setdefault(target.engine_rank, []).append(cell_updater)
+
+        for engine_rank, rank_updaters in updaters_by_engine_rank.items():
+            target = rank_updaters[0].target_of(engine_rank)
             self._transfer_engine_meta_list.append(
                 _TransferEngineMeta(
                     engine_rank=engine_rank,
-                    model_replica=model_replica,
-                    cell_updaters=[updaters_by_cell_id[engines[target.engine_ind].cell_id] for target in rank_targets],
+                    model_replica=self._ensure_cpu_replica(
+                        engine_rank=engine_rank,
+                        parallelism_info=target.parallelism_info,
+                        server_args=target.server_args,
+                    ),
+                    cell_updaters=rank_updaters,
                 )
             )
+
+        self.is_sender = bool(self._transfer_engine_meta_list)
 
     def disconnect(self) -> None:
         for cell_updater in self.cell_updaters:
             cell_updater.wait_for_pending_writes()
         self.cell_updaters = []
         self._transfer_engine_meta_list = []
-        self.remote_weight_infos_by_session_id = {}
-        self.session_id_to_server_args = {}
         self.rollout_engines = []
         self.is_sender = False
         self._model_param_stager = ModelParamStager()
@@ -239,21 +228,84 @@ class UpdateWeightP2P(WeightTransferProtocol):
 class _P2PInferenceCellUpdater:
     def __init__(
         self,
+        args: Namespace,
         cell_id: str,
+        api_client: SGLangApiClient,
         transfer_engine: Any,
         transfer_manager: P2PTransferManager,
-        targets_by_engine_rank: dict[int, RemoteWeightInfo],
     ) -> None:
         self.cell_id = cell_id
         self.error: BaseException | None = None
+        self._args = args
+        self._api_client = api_client
         self._transfer_engine = transfer_engine
         self._transfer_manager = transfer_manager
-        self._target_by_engine_rank = targets_by_engine_rank
+        self._target_by_engine_rank: dict[int, RemoteWeightInfo] = {}
+        self._pending_op = ""
         self._pending_writes: list[Future[None]] = []
 
     @property
     def is_errored(self) -> bool:
         return self.error is not None
+
+    def connect_targets(self, engine_ranks: list[int]) -> None:
+        try:
+            self._target_by_engine_rank = query_remote_weight_infos(client=self._api_client, engine_ranks=engine_ranks)
+        except Exception as error:
+            logger.exception(f"[P2P-Shared] inference cell {self.cell_id} did not answer the weight query")
+            self.mark_errored(error)
+
+    def target_of(self, engine_rank: int) -> RemoteWeightInfo:
+        return self._target_by_engine_rank[engine_rank]
+
+    def submit_pause(self) -> Future[Any] | None:
+        mode = self._args.pause_generation_mode
+        return self._submit("pause_generation", lambda client: client.pause_generation(mode=mode))
+
+    def submit_flush_cache(self) -> Future[Any] | None:
+        if self._args.pause_generation_mode == "in_place":
+            return None
+        return self._submit("flush_cache", lambda client: client.flush_cache())
+
+    def submit_begin(self, *, selector: str, sync_base: bool) -> Future[Any] | None:
+        return self._submit(
+            "begin_weight_update",
+            lambda client: client.begin_weight_update(selector=selector, sync_base=sync_base),
+        )
+
+    def submit_end(self) -> Future[Any] | None:
+        return self._submit("end_weight_update", lambda client: client.end_weight_update())
+
+    def submit_set_weight_version(self, weight_version: int) -> Future[Any] | None:
+        return self._submit(
+            "update_weight_version",
+            lambda client: client.update_weight_version(weight_version=str(weight_version)),
+        )
+
+    def submit_weight_version_query(self) -> Future[Any] | None:
+        return self._submit("get_weight_version", lambda client: client.get_weight_version())
+
+    def submit_resume(self) -> Future[Any] | None:
+        return self._submit("continue_generation", lambda client: client.continue_generation())
+
+    def collect(self, future: Future[Any]) -> None:
+        try:
+            check_weight_sync_results([future.result()], is_lora=False)
+        except Exception as error:
+            logger.exception(f"[weight-update] {self._pending_op} failed on inference cell {self.cell_id}")
+            self.mark_errored(error)
+
+    def collect_weight_version(self, future: Future[Any], *, expected: int) -> None:
+        try:
+            served = future.result()
+        except Exception as error:
+            logger.exception(f"[weight-update] {self._pending_op} failed on inference cell {self.cell_id}")
+            self.mark_errored(error)
+            return
+        if str(served) != str(expected):
+            self.mark_errored(
+                RuntimeError(f"inference cell {self.cell_id} serves weight version {served}, expected {expected}")
+            )
 
     def mark_errored(self, error: BaseException) -> None:
         if self.error is not None:
@@ -280,6 +332,14 @@ class _P2PInferenceCellUpdater:
         pending, self._pending_writes = self._pending_writes, []
         for future in pending:
             future.result()
+
+    def _submit(
+        self, op: str, make_request: Callable[[SGLangApiClient], Coroutine[Any, Any, Any]]
+    ) -> Future[Any] | None:
+        if self.is_errored:
+            return None
+        self._pending_op = op
+        return async_utils.submit(make_request(self._api_client))
 
     def _write_if_active(
         self,
