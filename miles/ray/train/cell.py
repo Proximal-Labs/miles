@@ -150,13 +150,16 @@ class TrainerCell:
         )
         start = time.monotonic()
         await asyncio.gather(*[_kill_worker(handle) for handle in handles])
-        await asyncio.gather(*[handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_S) for handle in handles])
+        confirmed = all(
+            await asyncio.gather(*[handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_S) for handle in handles])
+        )
         log_structured(
-            logger.info,
+            logger.info if confirmed else logger.error,
             tag="ft",
             op="confirm_dead",
             phase="end",
             cell=self.cell_id,
+            confirmed=confirmed,
             elapsed_s=round(time.monotonic() - start, 1),
         )
 
@@ -214,11 +217,14 @@ class TrainerCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def execute(self, fn_name: str, *, kill_on_failure: bool = True, **kwargs) -> list:
+    async def execute(
+        self, fn_name: str, *, kill_on_failure: bool = True, timeout: float | None = None, **kwargs
+    ) -> list:
         return await self._execute_raw(
             fn_name,
             compute_kwargs=lambda _: kwargs,
             kill_on_failure=kill_on_failure,
+            timeout=timeout,
         )
 
     async def _execute_raw(
@@ -226,6 +232,7 @@ class TrainerCell:
         fn_name: str,
         compute_kwargs,
         kill_on_failure: bool = True,
+        timeout: float | None = None,
     ) -> list:
         handles = self._get_worker_handles()
         log_structured(
@@ -233,8 +240,9 @@ class TrainerCell:
         )
         start = time.monotonic()
         try:
-            result = await asyncio.gather(
-                *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]
+            result = await asyncio.wait_for(
+                asyncio.gather(*[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]),
+                timeout=timeout,
             )
             log_structured(
                 logger.info,

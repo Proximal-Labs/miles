@@ -29,14 +29,14 @@ class BaseWorkerHandle(abc.ABC):
     async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
         raise NotImplementedError(f"{type(self).__name__} cannot submit a call it will never get an answer to")
 
-    async def wait_dead(self, *, timeout: float) -> None:
+    async def wait_dead(self, *, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while True:
             if await self.probe_is_dead():
-                return
+                return True
             if time.monotonic() >= deadline:
                 logger.error("Timed out after %.0fs waiting for %r to die; proceeding anyway", timeout, self)
-                return
+                return False
             await asyncio.sleep(_WAIT_DEAD_PROBE_INTERVAL_SECONDS)
 
     @abc.abstractmethod

@@ -65,8 +65,9 @@ class _FailingConfigureWorkerHandle:
     async def kill_self(self) -> None:
         self.kill_self_count += 1
 
-    async def wait_dead(self, *, timeout: float) -> None:
+    async def wait_dead(self, *, timeout: float) -> bool:
         self.wait_dead_count += 1
+        return True
 
 
 class TestMasterAddrConfigurationFailure:

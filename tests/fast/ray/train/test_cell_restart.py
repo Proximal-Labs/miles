@@ -25,8 +25,9 @@ class _HangingKillSelfHandle(BaseWorkerHandle):
     async def wait_ready(self, *, timeout: float) -> None:
         raise NotImplementedError
 
-    async def wait_dead(self, *, timeout: float) -> None:
+    async def wait_dead(self, *, timeout: float) -> bool:
         self.wait_dead_call_count += 1
+        return True
 
     async def probe_is_dead(self) -> bool:
         raise NotImplementedError
@@ -97,9 +98,10 @@ class _OrderRecordingKillHandle:
         self._events.append(f"kill-{self._index}")
         await asyncio.sleep(0)
 
-    async def wait_dead(self, *, timeout: float) -> None:
+    async def wait_dead(self, *, timeout: float) -> bool:
         self._events.append(f"wait-{self._index}")
         await asyncio.sleep(0)
+        return True
 
 
 class TestKillOrdering:
