@@ -15,6 +15,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora import slot_capacity
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
@@ -507,6 +508,11 @@ class MegatronTrainRayActor(TrainRayActor):
         except CheckpointIOError as error:
             return {"error": str(error)}
         return None
+
+    @with_logs
+    def multi_lora_memory_probe(self, phase: str) -> dict:
+        assert self.args.multi_lora, "multi_lora_memory_probe is a multi-LoRA slot command"
+        return slot_capacity.memory_snapshot(self.args, self.model, phase)
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:
