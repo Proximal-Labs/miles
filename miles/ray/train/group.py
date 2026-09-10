@@ -260,7 +260,13 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, attempt=attempt, role=self._role, cell_outcomes=cell_outcomes),
+                dict(
+                    rollout_id=rollout_id,
+                    attempt=attempt,
+                    role=self._role,
+                    cell_outcomes=cell_outcomes,
+                    cell_incarnations={cell.cell_id: cell.workers_hash for cell in snapshot_alive_cells},
+                ),
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
