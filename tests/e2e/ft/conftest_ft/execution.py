@@ -169,7 +169,8 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
 
 
 def get_ft_args(mode: FTTestMode, *, api_server_args: str = "--api-server-port 0 ") -> str:
-    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} {api_server_args}"
+    checksum_args = "--save-inference-engine-weight-checksum " if mode.has_real_rollout else ""
+    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} {api_server_args}{checksum_args}"
 
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (

@@ -2435,6 +2435,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-inference-engine-weight-checksum",
+                action="store_true",
+                help="Save per-tensor inference engine checksums after weight publication.",
+            )
+            parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
                 help="Save per-rank local weight checksum per-step.",
@@ -3451,6 +3456,7 @@ def miles_validate_args(args):
         args.indep_dp = True
         args.delay_split_train_data_by_dp = True
         args.save_local_weight_checksum = True
+        args.save_inference_engine_weight_checksum = True
         args.enable_event_analyzer = True
         args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
@@ -3460,7 +3466,7 @@ def miles_validate_args(args):
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
         args.non_persistent_local_ckpt_algo = "atomic"
         logger.info(
-            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, save_inference_engine_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
             args.non_persistent_local_ckpt_algo,
         )
 
