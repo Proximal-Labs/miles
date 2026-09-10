@@ -8,7 +8,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     RolloutCrashIntervalSecondsOption,
     TrainerCrashIntervalSecondsOption,
 )
-from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
+from tests.utils.soak.checks.ft import assert_healing
 from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
 from tests.utils.soak.recipes.gsm8k import (
