@@ -36,6 +36,7 @@ class WeightTransferProtocol(ABC):
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
         self.cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater] = {}
+        self.expected_base_weight_checksums_by_cell: dict[str, dict[str, dict[str, str]]] | None = None
 
     @abstractmethod
     def connect(
