@@ -5,8 +5,9 @@ import random
 import threading
 import time
 from collections.abc import Callable
-import requests
+from dataclasses import dataclass
 
+import requests
 from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
 from tests.utils.soak.state import Event, EventLog, cell_is_alive, cell_type_of
 from tests.utils.soak.views import compute_successful_form_names
@@ -35,22 +36,24 @@ def run_fault_injection_loop(
     quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
 ) -> None:
     rng = random.Random(seed)
-    next_injection_time_of_cell_type: dict[str, float] = {
-        cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
-        for cell_type, mean_interval_seconds in sorted(mean_interval_seconds_of_cell_type.items())
-    }
-    quiescent_polls_of_cell_type: dict[str, int] = dict.fromkeys(next_injection_time_of_cell_type, 0)
-    max_num_cells_of_cell_type: dict[str, int] = dict.fromkeys(next_injection_time_of_cell_type, 0)
+    observer = SoakObserver(
+        base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type), get_virtual_cells=get_virtual_cells
+    )
+    scheduler = SoakActionScheduler(
+        rng=rng,
+        mean_intervals=mean_interval_seconds_of_cell_type,
+        forms=cell_fault_forms,
+        injection_enabled=injection_enabled,
+        quiescent_polls_required=quiescent_polls_required,
+    )
 
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll_interval_seconds):
             break
 
-        cells = list_cells(base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type))
+        cells = observer.observe()
         if cells is None:
             continue
-        if get_virtual_cells is not None:
-            cells.extend(get_virtual_cells())
 
         # Record every poll so the post-run witnesses see the same stream the injector saw.
         event_log.observe(cells)
@@ -58,20 +61,63 @@ def run_fault_injection_loop(
         if stop_event.is_set():
             break
 
-        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in next_injection_time_of_cell_type}
+        if (action := scheduler.choose(cells=cells, events=event_log.events)) is not None:
+            injected = _execute_action(action=action, rng=rng, event_log=event_log)
+            scheduler.note_attempt(cell_type_of(action.target), injected=injected)
+
+
+@dataclass(frozen=True)
+class SoakObserver:
+    base_url: str
+    cell_types: set[str]
+    get_virtual_cells: Callable[[], list[dict]] | None = None
+
+    def observe(self) -> list[dict] | None:
+        cells = list_cells(base_url=self.base_url, cell_types=self.cell_types)
+        if cells is None:
+            return None
+        if self.get_virtual_cells is not None:
+            cells.extend(self.get_virtual_cells())
+        return cells
+
+
+class SoakActionScheduler:
+    def __init__(
+        self,
+        *,
+        rng: random.Random,
+        mean_intervals: dict[str, float],
+        forms: CellFaultForms,
+        injection_enabled: Callable[[], bool] | None = None,
+        quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
+    ) -> None:
+        self._rng = rng
+        self._mean_intervals = mean_intervals
+        self._forms = forms
+        self._injection_enabled = injection_enabled
+        self._next_due = {
+            cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
+            for cell_type, mean_interval_seconds in sorted(mean_intervals.items())
+        }
+        self._quiescent_polls_required = quiescent_polls_required
+        self._quiescent_polls = dict.fromkeys(self._next_due, 0)
+        self._max_num_cells = dict.fromkeys(self._next_due, 0)
+
+    def choose(self, *, cells: list[dict], events: list[Event]) -> "_SelectedAction | None":
+        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._next_due}
         for cell in cells:
             cells_of_type[cell_type_of(cell)].append(cell)
         for cell_type, kind_cells in sorted(cells_of_type.items()):
-            max_num_cells_of_cell_type[cell_type] = max(max_num_cells_of_cell_type[cell_type], len(kind_cells))
-            if _kind_is_quiescent(kind_cells, expected_num_cells=max_num_cells_of_cell_type[cell_type]):
-                quiescent_polls_of_cell_type[cell_type] += 1
+            self._max_num_cells[cell_type] = max(self._max_num_cells[cell_type], len(kind_cells))
+            if _kind_is_quiescent(kind_cells, expected_num_cells=self._max_num_cells[cell_type]):
+                self._quiescent_polls[cell_type] += 1
             else:
-                quiescent_polls_of_cell_type[cell_type] = 0
+                self._quiescent_polls[cell_type] = 0
 
         now: float = time.monotonic()
-        due_types = sorted(kind for kind, due_at in next_injection_time_of_cell_type.items() if now >= due_at)
+        due_types = sorted(kind for kind, due_at in self._next_due.items() if now >= due_at)
         if not due_types:
-            continue
+            return None
 
         # Inject only at a quiescent point: every replica of the kind present and alive for long
         # enough that the readings cannot all be stale. A due kind that is still recovering (or has
@@ -79,42 +125,52 @@ def run_fault_injection_loop(
         ready_types = [
             kind
             for kind in due_types
-            if quiescent_polls_of_cell_type[kind] >= quiescent_polls_required and len(cells_of_type[kind]) > 1
+            if self._quiescent_polls[kind] >= self._quiescent_polls_required and len(cells_of_type[kind]) > 1
         ]
         if not ready_types:
             logger.info(
                 "Deferring injection: no due cell kind is quiescent with a spare replica (due %s, "
                 "quiescent polls %s, replicas %s)",
                 due_types,
-                {kind: quiescent_polls_of_cell_type[kind] for kind in due_types},
+                {kind: self._quiescent_polls[kind] for kind in due_types},
                 {kind: len(cells_of_type[kind]) for kind in due_types},
             )
-            continue
+            return None
 
-        cell_type = rng.choice(ready_types)
-        target = rng.choice(cells_of_type[cell_type])
-        cell_name = target["metadata"]["name"]
-        form = _draw_form(cell_fault_forms[cell_type], events=event_log.events, cell_type=cell_type, rng=rng)
-        if injection_enabled is not None and not injection_enabled():
-            continue
-        try:
-            form.inject(target, rng)
-        except Exception:
-            event_log.note_injection_attempt(
-                cell_name=cell_name, form_name=form.name, succeeded=False, harmed=form.harms_cell
-            )
-            quiescent_polls_of_cell_type[cell_type] = 0
-            logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
-            continue
+        cell_type = self._rng.choice(ready_types)
+        target = self._rng.choice(cells_of_type[cell_type])
+        form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
+        if self._injection_enabled is not None and not self._injection_enabled():
+            return None
+        return _SelectedAction(target=target, form=form)
 
+    def note_attempt(self, cell_type: str, *, injected: bool) -> None:
+        self._quiescent_polls[cell_type] = 0
+        if injected:
+            self._next_due[cell_type] = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+
+
+@dataclass(frozen=True)
+class _SelectedAction:
+    target: dict
+    form: BaseFaultForm
+
+
+def _execute_action(*, action: _SelectedAction, rng: random.Random, event_log: EventLog) -> bool:
+    form = action.form
+    cell_name = action.target["metadata"]["name"]
+    try:
+        form.inject(action.target, rng)
+    except Exception:
         event_log.note_injection_attempt(
-            cell_name=cell_name, form_name=form.name, succeeded=True, harmed=form.harms_cell
+            cell_name=cell_name, form_name=form.name, succeeded=False, harmed=form.harms_cell
         )
-        quiescent_polls_of_cell_type[cell_type] = 0
-        next_injection_time_of_cell_type[cell_type] = _compute_next_injection_time(
-            rng, mean_interval_seconds_of_cell_type[cell_type]
-        )
-        logger.info("Injected fault %s into %s", form.name, cell_name)
+        logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
+        return False
+
+    event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=True, harmed=form.harms_cell)
+    logger.info("Injected fault %s into %s", form.name, cell_name)
+    return True
 
 
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
