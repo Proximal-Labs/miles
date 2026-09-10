@@ -7,6 +7,7 @@ from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.data import get_rollout_data
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
 from miles.utils.multi_lora import AdapterSpec
@@ -31,7 +32,11 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
     def forward_backward(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         self._heartbeat.bump()
         with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
+            rollout_data, store_get_result = get_rollout_data(
+                args=self.args,
+                rollout_data_ref=rollout_data_ref,
+                train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+            )
             stack.enter_context(store_get_result)
             return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
 
@@ -46,7 +51,11 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         forward() contract returns the requested loss per datum."""
         self._heartbeat.bump()
         with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
+            rollout_data, store_get_result = get_rollout_data(
+                args=self.args,
+                rollout_data_ref=rollout_data_ref,
+                train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+            )
             stack.enter_context(store_get_result)
             return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
 
