@@ -187,6 +187,18 @@ class TrainerModelCompanionInfoEvent(EventBase):
     skipped_nonfinite_sample_counts: list[OutputConsumption]
 
 
+class FaultHookEvent(EventBase):
+    type: Literal["fault_hook"] = "fault_hook"
+    request_id: str
+    instance_id: str
+    hook: str
+    mode: str
+    status: Literal["armed", "cancelled", "expired", "fired", "failed"]
+    monotonic_time: float
+    rollout_id: int | None = None
+    attempt: int | None = None
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -200,7 +212,8 @@ Event = Annotated[
     | MetricEvent
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
-    | TrainerModelCompanionInfoEvent,
+    | TrainerModelCompanionInfoEvent
+    | FaultHookEvent,
     Discriminator("type"),
 ]
 
