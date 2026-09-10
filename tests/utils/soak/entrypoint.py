@@ -14,7 +14,7 @@ from tests.utils.soak.core import (
     list_cells,
     run_fault_injection_loop,
 )
-from tests.utils.soak.fault_forms import CellFaultForms
+from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.runner import SoakRunner
 from tests.utils.soak.state import EventLog, SoakRunContextEvent
@@ -60,7 +60,24 @@ class FaultInjectorHandle:
                     observer
                     if observer is not None
                     else SoakObserver(
-                        base_url=base_url, cell_types=self._cell_types, namespace=namespace, release=release
+                        base_url=base_url,
+                        cell_types=self._cell_types,
+                        namespace=namespace,
+                        release=release,
+                        fault_target_cell_types=frozenset(
+                            kind
+                            for kind in self._cell_types
+                            if any(form.name.startswith("inject_fault:") for form in cell_fault_forms[kind])
+                        ),
+                        process_patterns_of_type={
+                            kind: {
+                                container: pattern
+                                for form in cell_fault_forms[kind]
+                                if isinstance(form, ExecSigkillFaultForm)
+                                for container, pattern in form.process_patterns.items()
+                            }
+                            for kind in self._cell_types
+                        },
                     )
                 ),
                 scheduler=SoakActionScheduler(

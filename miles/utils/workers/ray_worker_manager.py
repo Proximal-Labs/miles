@@ -4,9 +4,10 @@ import asyncio
 import functools
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from uuid import uuid4
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -20,6 +21,7 @@ from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
@@ -102,8 +104,22 @@ class RayWorkerManager:
         async with self._membership_lock:
             await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
 
-    def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
+    def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
         cell = self._find_cell(cell_id)
+        if not cell.alive or not 0 <= sub_index < len(cell.actors):
+            raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {sub_index}")
+        return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=cell.get_info().workers_hash)
+
+    def inject_fault(
+        self, cell_id: str, *, mode: str, worker_in_cell_index: int, expected_target: FaultTarget | None = None
+    ) -> None:
+        cell = self._find_cell(cell_id)
+        if expected_target is not None and (
+            expected_target.cell_id != cell_id
+            or expected_target.sub_index != worker_in_cell_index
+            or expected_target.workers_hash != cell.get_info().workers_hash
+        ):
+            raise StaleFaultTargetError(f"Cell {cell_id} no longer matches the observed fault target")
         if not cell.alive:
             raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
         if not 0 <= worker_in_cell_index < len(cell.actors):
@@ -211,6 +227,7 @@ class _CellManager(Generic[SpecT]):
     spec: SpecT
     actors: list[_BaseActorManager] | None
     generation: int = 0
+    identity: str = field(default_factory=lambda: uuid4().hex)
     liveness_scan_task: asyncio.Task | None = None
 
     async def launch_actors(self):
@@ -288,7 +305,7 @@ class _CellManager(Generic[SpecT]):
             pool_id=self.spec.name,
             alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
-            workers_hash=f"pseudo-hash-{self.generation}",
+            workers_hash=f"{self.identity}:{self.generation}",
             meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
         )
 
