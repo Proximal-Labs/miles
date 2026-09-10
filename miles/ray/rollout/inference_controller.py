@@ -398,6 +398,7 @@ class UpdatableEngines:
     engine_gpu_offsets: list[int]
     engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
+    update_id: str | None = None
 
     def __getitem__(self, s: slice) -> "UpdatableEngines":
         cell_ids = self.engine_cell_ids[s]
@@ -407,6 +408,7 @@ class UpdatableEngines:
             engine_gpu_offsets=self.engine_gpu_offsets[s],
             engine_cell_ids=cell_ids,
             snapshot_cell_id_to_hashes={c: self.snapshot_cell_id_to_hashes[c] for c in cell_ids},
+            update_id=self.update_id,
         )
 
 

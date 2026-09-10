@@ -194,6 +194,7 @@ class FaultHookEvent(EventBase):
     instance_id: str
     hook: str
     mode: str
+    action: Literal["inject", "observe"] = "inject"
     status: Literal["armed", "scheduled", "cancelled", "expired", "fired", "failed"]
     monotonic_time: float
     reached_at: float | None = None
@@ -201,6 +202,26 @@ class FaultHookEvent(EventBase):
     rollout_id: int | None = None
     attempt: int | None = None
     weight_version: int | None = None
+    update_id: str | None = None
+    target_incarnations: dict[str, str] = Field(default_factory=dict)
+
+
+class WeightUpdateAssignmentEvent(EventBase):
+    type: Literal["weight_update_assignment"] = "weight_update_assignment"
+    update_id: str
+    trainer_incarnations: dict[str, str]
+    targets_by_trainer: dict[str, dict[str, str]]
+
+
+class WeightUpdateResultEvent(EventBase):
+    type: Literal["weight_update_result"] = "weight_update_result"
+    update_id: str
+    rollout_id: int | None
+    candidate_version: int | None
+    published_version: int | None
+    target_incarnations: dict[str, str]
+    updated_cell_ids: list[str]
+    failed_cell_ids: list[str]
 
 
 Event = Annotated[
@@ -217,7 +238,9 @@ Event = Annotated[
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
     | TrainerModelCompanionInfoEvent
-    | FaultHookEvent,
+    | FaultHookEvent
+    | WeightUpdateAssignmentEvent
+    | WeightUpdateResultEvent,
     Discriminator("type"),
 ]
 

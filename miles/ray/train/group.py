@@ -2,8 +2,10 @@ import asyncio
 import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -19,6 +21,8 @@ from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_eve
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     TrainGroupStepEndEvent,
+    WeightUpdateAssignmentEvent,
+    WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
@@ -400,10 +404,27 @@ class TrainerController:
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
         """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
+        info = replace(info, update_id=uuid4().hex)
+
         if supports_partial_target_weight_update(self.args):
-            return await self._update_weights_on_every_alive_cell(info)
+            output = await self._update_weights_on_every_alive_cell(info)
         else:
-            return await self._update_weights_on_first_alive_cell(info)
+            output = await self._update_weights_on_first_alive_cell(info)
+        updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateResultEvent,
+                dict(
+                    update_id=info.update_id,
+                    rollout_id=rollout_id,
+                    candidate_version=output.weight_version,
+                    published_version=output.weight_version if updated_cell_ids else None,
+                    target_incarnations=info.snapshot_cell_id_to_hashes,
+                    updated_cell_ids=updated_cell_ids,
+                    failed_cell_ids=list(output.failed_cell_ids),
+                ),
+            )
+        return output
 
     async def _update_weights_on_first_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
@@ -421,6 +442,16 @@ class TrainerController:
         cells_and_splitted_infos = [
             (c, s) for c, s in zip(alive_cells, splitted_infos, strict=True) if s.engine_cell_ids
         ]
+
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateAssignmentEvent,
+                dict(
+                    update_id=info.update_id,
+                    trainer_incarnations={c.cell_id: c.workers_hash for c, _ in cells_and_splitted_infos},
+                    targets_by_trainer={c.cell_id: s.snapshot_cell_id_to_hashes for c, s in cells_and_splitted_infos},
+                ),
+            )
 
         outcomes = await asyncio.gather(
             *[
