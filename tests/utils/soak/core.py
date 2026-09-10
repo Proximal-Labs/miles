@@ -5,6 +5,7 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 
 import requests
@@ -12,8 +13,11 @@ from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
 from tests.utils.soak.state import (
     Event,
     EventLog,
+    ObservationsEvent,
     SoakActionRequest,
+    SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakScheduleEvent,
     cell_is_alive,
     cell_type_of,
 )
@@ -53,6 +57,7 @@ def run_fault_injection_loop(
         injection_enabled=injection_enabled,
         quiescent_polls_required=quiescent_polls_required,
     )
+    event_log.note_schedule(scheduler.initial_schedule())
 
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll_interval_seconds):
@@ -68,9 +73,8 @@ def run_fault_injection_loop(
         if stop_event.is_set():
             break
 
-        if (action := scheduler.choose(cells=cells, events=event_log.events)) is not None:
-            injected = _execute_action(action=action, rng=rng, event_log=event_log)
-            scheduler.note_attempt(cell_type_of(action.target), injected=injected)
+        if (action := scheduler.choose(events=event_log.events, now=time.monotonic())) is not None:
+            _execute_action(action=action, forms=cell_fault_forms, rng=rng, event_log=event_log)
 
 
 @dataclass(frozen=True)
@@ -102,27 +106,52 @@ class SoakActionScheduler:
         self._mean_intervals = mean_intervals
         self._forms = forms
         self._injection_enabled = injection_enabled
-        self._next_due = {
-            cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
-            for cell_type, mean_interval_seconds in sorted(mean_intervals.items())
-        }
         self._quiescent_polls_required = quiescent_polls_required
-        self._quiescent_polls = dict.fromkeys(self._next_due, 0)
-        self._max_num_cells = dict.fromkeys(self._next_due, 0)
 
-    def choose(self, *, cells: list[dict], events: list[Event]) -> "_SelectedAction | None":
-        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._next_due}
-        for cell in cells:
+    def initial_schedule(self) -> SoakScheduleEvent:
+        return SoakScheduleEvent(
+            due_of_type={
+                cell_type: _compute_next_injection_time(self._rng, mean_interval_seconds)
+                for cell_type, mean_interval_seconds in sorted(self._mean_intervals.items())
+            }
+        )
+
+    def choose(self, *, events: list[Event], now: float) -> SoakActionRequest | None:
+        due_of_type: dict[str, float] = {}
+        # Quiescence is derived, not remembered: the largest replica count a kind ever showed, and
+        # how many consecutive polls it has looked settled since its last injection attempt.
+        max_num_cells_of_type: dict[str, int] = dict.fromkeys(self._mean_intervals, 0)
+        quiescent_polls_of_type: dict[str, int] = dict.fromkeys(self._mean_intervals, 0)
+        landed_request_ids = {
+            event.request_id for event in events if isinstance(event, SoakActionResultEvent) and event.returned
+        }
+        observation = None
+        for event in events:
+            if isinstance(event, SoakScheduleEvent):
+                due_of_type.update(event.due_of_type)
+            elif isinstance(event, SoakActionRequestedEvent):
+                # M38 moves the deadline only once an injection lands, and clears the streak on
+                # every attempt, so a failed one leaves the kind due again on the next poll.
+                if event.request.next_due_at is not None and event.request.request_id in landed_request_ids:
+                    due_of_type[cell_type_of(event.request.target)] = event.request.next_due_at
+                quiescent_polls_of_type[cell_type_of(event.request.target)] = 0
+            elif isinstance(event, ObservationsEvent):
+                observation = event
+                polled_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
+                for cell in event.cells:
+                    polled_of_type[cell_type_of(cell)].append(cell)
+                for cell_type, kind_cells in sorted(polled_of_type.items()):
+                    max_num_cells_of_type[cell_type] = max(max_num_cells_of_type[cell_type], len(kind_cells))
+                    if _kind_is_quiescent(kind_cells, expected_num_cells=max_num_cells_of_type[cell_type]):
+                        quiescent_polls_of_type[cell_type] += 1
+                    else:
+                        quiescent_polls_of_type[cell_type] = 0
+        if observation is None:
+            return None
+        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
+        for cell in observation.cells:
             cells_of_type[cell_type_of(cell)].append(cell)
-        for cell_type, kind_cells in sorted(cells_of_type.items()):
-            self._max_num_cells[cell_type] = max(self._max_num_cells[cell_type], len(kind_cells))
-            if _kind_is_quiescent(kind_cells, expected_num_cells=self._max_num_cells[cell_type]):
-                self._quiescent_polls[cell_type] += 1
-            else:
-                self._quiescent_polls[cell_type] = 0
-
-        now: float = time.monotonic()
-        due_types = sorted(kind for kind, due_at in self._next_due.items() if now >= due_at)
+        due_types = sorted(kind for kind, due_at in due_of_type.items() if now >= due_at)
         if not due_types:
             return None
 
@@ -132,14 +161,14 @@ class SoakActionScheduler:
         ready_types = [
             kind
             for kind in due_types
-            if self._quiescent_polls[kind] >= self._quiescent_polls_required and len(cells_of_type[kind]) > 1
+            if quiescent_polls_of_type[kind] >= self._quiescent_polls_required and len(cells_of_type[kind]) > 1
         ]
         if not ready_types:
             logger.info(
                 "Deferring injection: no due cell kind is quiescent with a spare replica (due %s, "
                 "quiescent polls %s, replicas %s)",
                 due_types,
-                {kind: self._quiescent_polls[kind] for kind in due_types},
+                {kind: quiescent_polls_of_type[kind] for kind in due_types},
                 {kind: len(cells_of_type[kind]) for kind in due_types},
             )
             return None
@@ -149,24 +178,20 @@ class SoakActionScheduler:
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
-        return _SelectedAction(target=target, form=form)
-
-    def note_attempt(self, cell_type: str, *, injected: bool) -> None:
-        self._quiescent_polls[cell_type] = 0
-        if injected:
-            self._next_due[cell_type] = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+        next_due_at = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+        return SoakActionRequest(
+            target=deepcopy(target), form_name=form.name, harms_cell=form.harms_cell, next_due_at=next_due_at
+        )
 
 
-@dataclass(frozen=True)
-class _SelectedAction:
-    target: dict
-    form: BaseFaultForm
-
-
-def _execute_action(*, action: _SelectedAction, rng: random.Random, event_log: EventLog) -> bool:
-    form = action.form
+def _execute_action(
+    *, action: SoakActionRequest, forms: CellFaultForms, rng: random.Random, event_log: EventLog
+) -> None:
+    matching = [form for form in forms[cell_type_of(action.target)] if form.name == action.form_name]
+    assert len(matching) == 1, f"Expected one form named {action.form_name}, found {len(matching)}"
+    form = matching[0]
     cell_name = action.target["metadata"]["name"]
-    request = SoakActionRequest(target=action.target, form_name=form.name, harms_cell=form.harms_cell)
+    request = action
     event_log.note_action_requested(request)
     try:
         form.inject(action.target, rng)
@@ -175,11 +200,10 @@ def _execute_action(*, action: _SelectedAction, rng: random.Random, event_log: E
             SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
         )
         logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
-        return False
+        return
 
     event_log.note_action_result(SoakActionResultEvent(request_id=request.request_id, returned=True))
     logger.info("Injected fault %s into %s", form.name, cell_name)
-    return True
 
 
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
