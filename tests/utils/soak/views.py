@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import Literal
 
 from tests.utils.soak.state import (
-    Event,
     InjectionEvent,
     ObservationsEvent,
     ObservedCellState,
@@ -14,6 +13,7 @@ from tests.utils.soak.state import (
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakDeploymentTarget,
+    SoakEvent,
     SoakObservation,
     compute_cell_infos,
 )
@@ -21,10 +21,10 @@ from tests.utils.soak.state import (
 STALE_STATUS_GRACE_SECONDS: float = 120.0
 
 
-def project_legacy_events(events: list[Event]) -> list[Event]:
+def project_legacy_events(events: list[SoakEvent]) -> list[SoakEvent]:
     requests: dict[str, SoakActionRequest] = {}
     completed: set[str] = set()
-    projected: list[Event] = []
+    projected: list[SoakEvent] = []
     for event in events:
         if isinstance(event, SoakObservation):
             if event.cells is not None:
@@ -55,12 +55,12 @@ def project_legacy_events(events: list[Event]) -> list[Event]:
     return projected
 
 
-def compute_num_injections(events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
+def compute_num_injections(events: list[SoakEvent], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
     return len(compute_injected_cell_names(events, cell_type=cell_type, harmed_only=harmed_only))
 
 
 def compute_injected_cell_names(
-    events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True
+    events: list[SoakEvent], *, cell_type: str | None = None, harmed_only: bool = True
 ) -> list[str]:
     return [
         name
@@ -72,7 +72,7 @@ def compute_injected_cell_names(
     ]
 
 
-def compute_num_successful_injections_of_form(events: list[Event], *, form_name: str) -> int:
+def compute_num_successful_injections_of_form(events: list[SoakEvent], *, form_name: str) -> int:
     events = project_legacy_events(events)
     return len(
         [
@@ -84,7 +84,7 @@ def compute_num_successful_injections_of_form(events: list[Event], *, form_name:
 
 
 def compute_cells_not_serving_after_injection(
-    events: list[Event], *, cell_type: str, grace_seconds: float | None = None
+    events: list[SoakEvent], *, cell_type: str, grace_seconds: float | None = None
 ) -> dict[str, list[str]]:
     events = project_legacy_events(events)
     if grace_seconds is None:
@@ -122,7 +122,7 @@ def compute_cells_not_serving_after_injection(
     }
 
 
-def compute_successful_form_names(events: list[Event], *, cell_type: str) -> set[str]:
+def compute_successful_form_names(events: list[SoakEvent], *, cell_type: str) -> set[str]:
     if cell_type == "deployment":
         requests = {
             event.request.request_id: event.request
@@ -145,7 +145,7 @@ def compute_successful_form_names(events: list[Event], *, cell_type: str) -> set
     }
 
 
-def compute_forms_drawn_without_success(events: list[Event]) -> list[tuple[str, str]]:
+def compute_forms_drawn_without_success(events: list[SoakEvent]) -> list[tuple[str, str]]:
     events = project_legacy_events(events)
     cell_type_of_name = _compute_cell_type_of_name(events)
     drawn: set[tuple[str, str]] = set()
@@ -160,7 +160,7 @@ def compute_forms_drawn_without_success(events: list[Event]) -> list[tuple[str, 
     return sorted(drawn - worked)
 
 
-def compute_injection_times(events: list[Event], *, cell_type: str | None = None) -> list[datetime]:
+def compute_injection_times(events: list[SoakEvent], *, cell_type: str | None = None) -> list[datetime]:
     events = project_legacy_events(events)
     cell_type_of_name = _compute_cell_type_of_name(events)
     return [
@@ -172,7 +172,7 @@ def compute_injection_times(events: list[Event], *, cell_type: str | None = None
     ]
 
 
-def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedCellState]]:
+def compute_states_of_cell_name(events: list[SoakEvent]) -> dict[str, list[ObservedCellState]]:
     return {
         name: states
         for name, cell_events in _compute_cell_events(events).items()
@@ -186,7 +186,7 @@ class _CellEvent:
     state: ObservedCellState | None = None
 
 
-def _compute_cell_events(events: list[Event], *, harmed_only: bool = True) -> dict[str, list[_CellEvent]]:
+def _compute_cell_events(events: list[SoakEvent], *, harmed_only: bool = True) -> dict[str, list[_CellEvent]]:
     events = project_legacy_events(events)
     cell_events_of_name: dict[str, list[_CellEvent]] = {}
     for event in events:
@@ -200,7 +200,7 @@ def _compute_cell_events(events: list[Event], *, harmed_only: bool = True) -> di
 
 
 def _compute_matching_cell_events(
-    events: list[Event], *, cell_type: str | None, harmed_only: bool
+    events: list[SoakEvent], *, cell_type: str | None, harmed_only: bool
 ) -> dict[str, list[_CellEvent]]:
     cell_events_of_name = _compute_cell_events(events, harmed_only=harmed_only)
     if cell_type is None:
@@ -213,7 +213,7 @@ def _compute_matching_cell_events(
     }
 
 
-def _compute_cell_type_of_name(events: list[Event]) -> dict[str, str]:
+def _compute_cell_type_of_name(events: list[SoakEvent]) -> dict[str, str]:
     events = project_legacy_events(events)
     cell_type_of_name: dict[str, str] = {}
     for event in events:

@@ -9,13 +9,13 @@ from tests.utils.soak.core import POLL_INTERVAL_SECONDS, SoakActionScheduler
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.observer import SoakObserver
 from tests.utils.soak.state import (
-    Event,
     EventLog,
     SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakDeploymentTarget,
+    SoakEvent,
     target_type_of,
 )
 
@@ -56,7 +56,7 @@ class SoakRunner:
             self._finalize_cancelled_actions()
             self._event_log.note_observation(await self._observer.observe())
 
-    def get_events(self) -> list[Event]:
+    def get_events(self) -> list[SoakEvent]:
         return self._event_log.events
 
     async def _observe_and_choose(self, stop_event: asyncio.Event) -> None:
@@ -105,7 +105,7 @@ class SoakRunner:
                 )
 
 
-def _has_pending_action(events: list[Event]) -> bool:
+def _has_pending_action(events: list[SoakEvent]) -> bool:
     pending: dict[str, SoakActionRequest] = {}
     for event in events:
         if isinstance(event, SoakActionRequestedEvent):

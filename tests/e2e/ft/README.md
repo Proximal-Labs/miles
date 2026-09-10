@@ -409,6 +409,7 @@ membership is asserted.
 - **Why the step budget is 60**: a rollout injection needs a 60-poll (~120s) quiescent streak plus a mean-240s exponential wait, so the second accepted rollout injection the witness demands takes well over ten minutes. The budget buys that time instead of lowering the quiescence gate that keeps the injector from killing a kind's last live replica.
 - **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
 - **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
+- **Independent evidence**: random FT and rollout-deterministic runs write ordered typed events to `<dump_dir>-soak/<session_id>/events.jsonl`. Requests are flushed before dispatch. After task collection, training-event files and discarded generations are copied under `sources/`; checks use those paths. A terminal marker and per-file SHA-256 digests distinguish a complete collection from a truncated or changed archive.
 
 ### `scenario_realistic_gsm8k`
 

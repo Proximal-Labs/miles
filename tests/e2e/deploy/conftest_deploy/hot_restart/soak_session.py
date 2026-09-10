@@ -6,11 +6,11 @@ from tests.utils.soak.entrypoint import FaultInjectorHandle
 from tests.utils.soak.recipes.gsm8k import Gsm8kRun
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
 from tests.utils.soak.state import (
-    Event,
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakDeploymentTarget,
+    SoakEvent,
     SoakLauncherExitedEvent,
 )
 
@@ -19,7 +19,7 @@ def execute_hot_restart_session(run: Gsm8kRun, injector: FaultInjectorHandle) ->
     asyncio.run(_run_session(run=run, injector=injector))
 
 
-def assert_hot_restart_launches_finished(events: list[Event]) -> None:
+def assert_hot_restart_launches_finished(events: list[SoakEvent]) -> None:
     requests = [
         event
         for event in events

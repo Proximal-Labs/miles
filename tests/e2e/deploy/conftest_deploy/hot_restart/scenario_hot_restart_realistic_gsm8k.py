@@ -6,13 +6,14 @@ from typing import Annotated
 import typer
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_cluster_can_deploy_runs
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
+from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, ClusterSnapshot
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+    HotRestartEvidence,
+    HotRestartRecord,
     read_discarded_event_dirs,
     read_step_events,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, ClusterSnapshot
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME
 from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SoakActionFormHotRestart
 from tests.e2e.deploy.conftest_deploy.hot_restart.soak_observer import HotRestartSoakObserver
@@ -29,12 +30,13 @@ from tests.utils.soak.recipes.gsm8k import (
 )
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import (
-    Event,
     InjectionEvent,
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakEvent,
     SoakObservation,
+    event_source,
 )
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
@@ -102,14 +104,15 @@ def run_ci(
     assert_no_take_over_attempt_failed(events)
 
     evidence = _project_evidence(events=events, release=compute_release_of_config(config), namespace=config.namespace)
-    evidence.write(dump_dir=outcome.run.dump_dir)
+    evidence.write(dump_dir=str(outcome.run.evidence_dir))
     assert_take_overs_replaced_only_script(
         evidence,
         num_restarts=len(evidence.records),
         minimum_restarts=MIN_HOT_RESTARTS,
     )
     assert_take_over_loss_within_save_interval(evidence.records)
-    assert_take_overs_resumed_within_save_interval(outcome.run.dump_dir, records=evidence.records)
+    source = event_source(events, name="training_events", fallback=outcome.run.events_dir)
+    assert_take_overs_resumed_within_save_interval(str(source.parent), records=evidence.records)
 
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
 
@@ -118,7 +121,7 @@ def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
     return build_checkpoint_args(dump_dir) + f"--wandb-run-id {wandb_run_id} " + "--ci-disable-weight-update-checker "
 
 
-def assert_no_take_over_attempt_failed(events: list[Event]) -> None:
+def assert_no_take_over_attempt_failed(events: list[SoakEvent]) -> None:
     requests = {
         event.request.request_id
         for event in events
@@ -225,7 +228,7 @@ def _create_observer(run: Gsm8kRun) -> HotRestartSoakObserver:
     )
 
 
-def _project_evidence(*, events: list[Event], release: str, namespace: str) -> HotRestartEvidence:
+def _project_evidence(*, events: list[SoakEvent], release: str, namespace: str) -> HotRestartEvidence:
     observer = ClusterObserver(release=release, namespace=namespace, trainer_id=DEFAULT_TRAINER_ID)
     for event in events:
         if isinstance(event, SoakObservation) and (raw := event.details.get("hot_restart_cluster")) is not None:

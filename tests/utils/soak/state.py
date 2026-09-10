@@ -1,11 +1,14 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import enum
+import hashlib
+import os
+import shutil
 import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 from uuid import uuid4
 
 from pydantic import Field, field_validator
@@ -112,6 +115,21 @@ class SoakLauncherExitedEvent(BaseEvent):
     log_path: Path
 
 
+class SoakRunContextEvent(BaseEvent):
+    details: dict
+    sources: dict[str, Path]
+
+
+class SoakCollectionClosedEvent(BaseEvent):
+    pass
+
+
+class SoakEvidenceArchivedEvent(BaseEvent):
+    sources: dict[str, Path]
+    missing_sources: list[str]
+    sha256_of_file: dict[str, str]
+
+
 class CellInfo(FrozenStrictBaseModel):
     cell_type: str
     state: ObservedCellState
@@ -124,7 +142,7 @@ class ObservationsEvent(BaseEvent):
     cells: list[dict] = Field(default_factory=list)
 
 
-Event = (
+SoakEvent = (
     InjectionEvent
     | ObservationsEvent
     | SoakActionRequestedEvent
@@ -133,20 +151,76 @@ Event = (
     | SoakObservation
     | SoakActionAppliedEvent
     | SoakLauncherExitedEvent
+    | SoakRunContextEvent
+    | SoakCollectionClosedEvent
+    | SoakEvidenceArchivedEvent
 )
+
+
+class _StoredEvent(FrozenStrictBaseModel):
+    version: Literal[1] = 1
+    sequence: int = Field(ge=0)
+    event_type: str
+    event: dict
+
+
+def read_events(path: Path, *, require_closed: bool = True) -> list[SoakEvent]:
+    event_types = {event_type.__name__: event_type for event_type in get_args(SoakEvent)}
+    events: list[SoakEvent] = []
+    with path.open() as stream:
+        for sequence, line in enumerate(stream):
+            stored = _StoredEvent.model_validate_json(line)
+            assert stored.sequence == sequence, f"Missing or reordered soak event at {path}:{sequence + 1}"
+            assert stored.event_type in event_types, f"Unknown soak event type: {stored.event_type}"
+            assert not events or not isinstance(
+                events[-1], SoakCollectionClosedEvent
+            ), f"Events after closure in {path}"
+            events.append(event_types[stored.event_type].model_validate(stored.event))
+    if require_closed:
+        assert events and isinstance(events[-1], SoakCollectionClosedEvent), f"Soak evidence is incomplete: {path}"
+        for event in events:
+            if isinstance(event, SoakEvidenceArchivedEvent):
+                for relative, expected in event.sha256_of_file.items():
+                    source = path.parent / relative
+                    assert source.resolve().is_relative_to(
+                        path.parent.resolve()
+                    ), f"Evidence path escapes its archive: {relative}"
+                    assert _file_sha256(source) == expected, f"Archived evidence changed: {source}"
+    return events
 
 
 class EventLog:
     """The fault injector's only mutable state: what happened, in order. Every question is a view of it."""
 
     def __init__(self) -> None:
-        self._events: list[Event] = []
+        self._events: list[SoakEvent] = []
         self._lock = threading.Lock()
+        self._path: Path | None = None
+
+    def persist_to(self, path: Path) -> None:
+        with self._lock:
+            assert self._path is None and not self._events, "Configure evidence persistence before recording events"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("x"):
+                pass
+            self._path = path
 
     @property
-    def events(self) -> list[Event]:
+    def events(self) -> list[SoakEvent]:
         with self._lock:
             return list(self._events)
+
+    def finish(self) -> None:
+        if self._path is not None:
+            contexts = [event for event in self.events if isinstance(event, SoakRunContextEvent)]
+            if contexts:
+                self._append(_archive_sources(sources=contexts[-1].sources, destination=self._path.parent / "sources"))
+        self._append(SoakCollectionClosedEvent())
+        if self._path is not None:
+            assert read_events(self._path) == self.events, f"Persisted soak evidence differs from memory: {self._path}"
+
+    def note_context(self, event: SoakRunContextEvent) -> None:
+        self._append(event)
 
     def note_injection_attempt(self, *, cell_name: str, form_name: str, succeeded: bool, harmed: bool = True) -> None:
         self._append(InjectionEvent(cell_name=cell_name, form_name=form_name, succeeded=succeeded, harmed=harmed))
@@ -160,13 +234,13 @@ class EventLog:
         )
 
     def note_action_requested(self, request: SoakActionRequest) -> None:
-        self._append(SoakActionRequestedEvent(request=request.model_copy(deep=True)))
+        self._append(SoakActionRequestedEvent(request=request))
 
     def note_action_result(self, result: SoakActionResultEvent) -> None:
         self._append(result)
 
     def note_action_applied(self, event: SoakActionAppliedEvent) -> None:
-        self._append(event.model_copy(deep=True))
+        self._append(event)
 
     def note_launcher_exited(self, event: SoakLauncherExitedEvent) -> None:
         self._append(event)
@@ -175,11 +249,26 @@ class EventLog:
         self._append(schedule)
 
     def note_observation(self, observation: SoakObservation) -> None:
-        self._append(observation.model_copy(deep=True))
+        self._append(observation)
 
-    def _append(self, event: Event) -> None:
+    def _append(self, event: SoakEvent) -> None:
         with self._lock:
-            self._events.append(event)
+            assert not self._events or not isinstance(
+                self._events[-1], SoakCollectionClosedEvent
+            ), "Soak evidence is closed"
+            snapshot = type(event).model_validate(event.model_dump(mode="json"))
+            if self._path is not None:
+                stored = _StoredEvent(
+                    sequence=len(self._events),
+                    event_type=type(snapshot).__name__,
+                    event=snapshot.model_dump(mode="json"),
+                )
+                with self._path.open("r+b") as stream:
+                    stream.seek(0, os.SEEK_END)
+                    stream.write((stored.model_dump_json() + "\n").encode())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            self._events.append(snapshot)
 
 
 def compute_cell_infos(cells: list[dict]) -> dict[str, CellInfo]:
@@ -199,3 +288,42 @@ def cell_type_of(cell: dict) -> str:
 
 def target_type_of(target: SoakDeploymentTarget | dict) -> str:
     return "deployment" if isinstance(target, SoakDeploymentTarget) else cell_type_of(target)
+
+
+def event_source(events: list[SoakEvent], *, name: str, fallback: Path) -> Path:
+    for event in reversed(events):
+        if isinstance(event, SoakEvidenceArchivedEvent):
+            assert name not in event.missing_sources, f"Missing archived soak evidence: {name}"
+            if name in event.sources:
+                return event.sources[name]
+    return fallback
+
+
+def _archive_sources(*, sources: dict[str, Path], destination: Path) -> SoakEvidenceArchivedEvent:
+    archived: dict[str, Path] = {}
+    missing: list[str] = []
+    hashes: dict[str, str] = {}
+    for name, source in sources.items():
+        assert name and Path(name).name == name and name not in (".", ".."), f"Invalid evidence source name: {name}"
+        if not source.is_dir():
+            missing.append(name)
+            continue
+        root = destination / name
+        target = root / source.name
+        shutil.copytree(source, target)
+        for discarded in sorted(source.parent.glob(".trash_*")):
+            if discarded.is_dir():
+                shutil.copytree(discarded, root / discarded.name)
+        archived[name] = target
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                hashes[str(path.relative_to(destination.parent))] = _file_sha256(path)
+    return SoakEvidenceArchivedEvent(sources=archived, missing_sources=missing, sha256_of_file=hashes)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()

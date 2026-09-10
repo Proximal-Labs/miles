@@ -11,7 +11,6 @@ from dataclasses import dataclass
 import requests
 from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms
 from tests.utils.soak.state import (
-    Event,
     EventLog,
     ObservationsEvent,
     SoakActionAppliedEvent,
@@ -19,6 +18,7 @@ from tests.utils.soak.state import (
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakDeploymentTarget,
+    SoakEvent,
     SoakObservation,
     SoakScheduleEvent,
     cell_is_alive,
@@ -120,7 +120,7 @@ class SoakActionScheduler:
             }
         )
 
-    def choose(self, *, events: list[Event], now: float) -> SoakActionRequest | None:
+    def choose(self, *, events: list[SoakEvent], now: float) -> SoakActionRequest | None:
         due_of_type: dict[str, float] = {}
         # Quiescence is derived, not remembered: the largest replica count a kind ever showed, and
         # how many consecutive polls it has looked settled since its last injection attempt.
@@ -248,7 +248,7 @@ def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bo
 
 
 def _draw_form(
-    forms: list[BaseFaultForm], *, events: list[Event], cell_type: str, rng: random.Random
+    forms: list[BaseFaultForm], *, events: list[SoakEvent], cell_type: str, rng: random.Random
 ) -> BaseFaultForm:
     worked = compute_successful_form_names(events, cell_type=cell_type)
     unproven = [form for form in forms if form.name not in worked]
