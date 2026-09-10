@@ -19,6 +19,7 @@ from tests.utils.soak.state import (
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakAdmissionClosedEvent,
     SoakDeploymentTarget,
     SoakEvent,
     SoakObservation,
@@ -128,6 +129,8 @@ class SoakActionScheduler:
         )
 
     def choose(self, *, events: list[SoakEvent], now: float) -> SoakActionRequest | None:
+        if any(isinstance(event, SoakAdmissionClosedEvent) for event in events):
+            return None
         if len(pending_actions(events)) >= self.policy.max_concurrent_actions:
             return None
         due_of_type: dict[str, float] = {}
@@ -275,7 +278,8 @@ def _execute_action(
     form = matching[0]
     cell_name = action.target["metadata"]["name"]
     request = action
-    event_log.note_action_requested(request)
+    if not event_log.note_action_requested(request):
+        return
     try:
         form.inject(action.target, rng)
     except Exception as error:

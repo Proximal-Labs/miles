@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import threading
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import Field, field_validator
 from tests.utils.soak.config import SoakPolicy
 from tests.utils.soak.process_target import ProcessTarget
 
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.cell_operations.base import FaultTarget
 
@@ -79,6 +81,7 @@ class SoakObservation(BaseEvent):
     details: dict[str, dict] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
     fault_targets: dict[str, FaultTarget] = Field(default_factory=dict)
+    training_events: list[CellReconfigureEvent | TrainGroupStepEndEvent] = Field(default_factory=list)
 
 
 class SoakActionRequest(FrozenStrictBaseModel):
@@ -133,6 +136,16 @@ class SoakCollectionClosedEvent(BaseEvent):
     pass
 
 
+class SoakAdmissionClosedEvent(BaseEvent):
+    monotonic_time: float = Field(default_factory=time.monotonic)
+
+
+class SoakTeardownEvent(BaseEvent):
+    resource: str
+    returned: bool
+    error: str | None = None
+
+
 class SoakEvidenceArchivedEvent(BaseEvent):
     sources: dict[str, Path]
     missing_sources: list[str]
@@ -162,6 +175,8 @@ SoakEvent = (
     | SoakLauncherExitedEvent
     | SoakRunContextEvent
     | SoakCollectionClosedEvent
+    | SoakAdmissionClosedEvent
+    | SoakTeardownEvent
     | SoakEvidenceArchivedEvent
 )
 
@@ -187,14 +202,14 @@ def read_events(path: Path, *, require_closed: bool = True) -> list[SoakEvent]:
             events.append(event_types[stored.event_type].model_validate(stored.event))
     if require_closed:
         assert events and isinstance(events[-1], SoakCollectionClosedEvent), f"Soak evidence is incomplete: {path}"
-        for event in events:
-            if isinstance(event, SoakEvidenceArchivedEvent):
-                for relative, expected in event.sha256_of_file.items():
-                    source = path.parent / relative
-                    assert source.resolve().is_relative_to(
-                        path.parent.resolve()
-                    ), f"Evidence path escapes its archive: {relative}"
-                    assert _file_sha256(source) == expected, f"Archived evidence changed: {source}"
+    for event in events:
+        if isinstance(event, SoakEvidenceArchivedEvent):
+            for relative, expected in event.sha256_of_file.items():
+                source = path.parent / relative
+                assert source.resolve().is_relative_to(
+                    path.parent.resolve()
+                ), f"Evidence path escapes its archive: {relative}"
+                assert _file_sha256(source) == expected, f"Archived evidence changed: {source}"
     return events
 
 
@@ -220,13 +235,23 @@ class EventLog:
             return list(self._events)
 
     def finish(self) -> None:
+        from tests.utils.soak.archive import collect_events
+
+        if self._path is None:
+            self._append(SoakCollectionClosedEvent())
+            return
+        with self._lock:
+            self._events = collect_events(path=self._path, events=self._events)
+
+    def _finish_collection(self) -> None:
         if self._path is not None:
             contexts = [event for event in self.events if isinstance(event, SoakRunContextEvent)]
             if contexts:
                 self._append(_archive_sources(sources=contexts[-1].sources, destination=self._path.parent / "sources"))
+            assert (
+                read_events(self._path, require_closed=False) == self.events
+            ), f"Persisted soak evidence differs from memory: {self._path}"
         self._append(SoakCollectionClosedEvent())
-        if self._path is not None:
-            assert read_events(self._path) == self.events, f"Persisted soak evidence differs from memory: {self._path}"
 
     def note_context(self, event: SoakRunContextEvent) -> None:
         self._append(event)
@@ -242,8 +267,11 @@ class EventLog:
             )
         )
 
-    def note_action_requested(self, request: SoakActionRequest) -> None:
-        self._append(SoakActionRequestedEvent(request=request))
+    def close_admission(self) -> None:
+        self._append(SoakAdmissionClosedEvent())
+
+    def note_action_requested(self, request: SoakActionRequest) -> bool:
+        return self._append(SoakActionRequestedEvent(request=request))
 
     def note_action_result(self, result: SoakActionResultEvent) -> None:
         self._append(result)
@@ -254,17 +282,24 @@ class EventLog:
     def note_launcher_exited(self, event: SoakLauncherExitedEvent) -> None:
         self._append(event)
 
+    def note_teardown(self, event: SoakTeardownEvent) -> None:
+        self._append(event)
+
     def note_schedule(self, schedule: SoakScheduleEvent) -> None:
         self._append(schedule)
 
     def note_observation(self, observation: SoakObservation) -> None:
         self._append(observation)
 
-    def _append(self, event: SoakEvent) -> None:
+    def _append(self, event: SoakEvent) -> bool:
         with self._lock:
             assert not self._events or not isinstance(
                 self._events[-1], SoakCollectionClosedEvent
             ), "Soak evidence is closed"
+            if isinstance(event, (SoakActionRequestedEvent, SoakAdmissionClosedEvent)) and any(
+                isinstance(previous, SoakAdmissionClosedEvent) for previous in self._events
+            ):
+                return False
             snapshot = type(event).model_validate(event.model_dump(mode="json"))
             if self._path is not None:
                 stored = _StoredEvent(
@@ -278,6 +313,7 @@ class EventLog:
                     stream.flush()
                     os.fsync(stream.fileno())
             self._events.append(snapshot)
+            return True
 
 
 def compute_cell_infos(cells: list[dict]) -> dict[str, CellInfo]:
