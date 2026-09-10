@@ -3,12 +3,7 @@
 import threading
 from collections.abc import Callable
 
-from tests.utils.soak.core import (
-    POLL_INTERVAL_SECONDS,
-    QUIESCENT_POLLS_REQUIRED,
-    list_cells,
-    run_fault_injection_loop,
-)
+from tests.utils.soak.core import POLL_INTERVAL_SECONDS, QUIESCENT_POLLS_REQUIRED, list_cells, run_fault_injection_loop
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.state import EventLog
 

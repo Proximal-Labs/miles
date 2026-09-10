@@ -8,9 +8,9 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     ModeOption,
     NumStepsOption,
     RolloutCrashIntervalSecondsOption,
-    SeedOption,
     TrainerCrashIntervalSecondsOption,
 )
+from tests.utils.soak.cli_options import SeedOption
 
 app: typer.Typer = typer.Typer()
 

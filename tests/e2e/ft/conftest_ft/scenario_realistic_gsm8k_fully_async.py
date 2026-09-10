@@ -4,13 +4,8 @@
 
 import typer
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
-from tests.e2e.ft.conftest_ft.cli_options import (
-    MetricThresholdOption,
-    NumRolloutOption,
-    RolloutCrashIntervalSecondsOption,
-    SeedOption,
-    TrainerCrashIntervalSecondsOption,
-)
+from tests.e2e.ft.conftest_ft.cli_options import RolloutCrashIntervalSecondsOption, TrainerCrashIntervalSecondsOption
+from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 
 app: typer.Typer = typer.Typer()
 
