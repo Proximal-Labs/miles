@@ -14,13 +14,16 @@ from tests.utils.soak.state import (
     Event,
     EventLog,
     ObservationsEvent,
+    SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakDeploymentTarget,
     SoakObservation,
     SoakScheduleEvent,
     cell_is_alive,
     cell_type_of,
+    target_type_of,
 )
 from tests.utils.soak.views import compute_successful_form_names
 
@@ -123,9 +126,7 @@ class SoakActionScheduler:
         # how many consecutive polls it has looked settled since its last injection attempt.
         max_num_cells_of_type: dict[str, int] = dict.fromkeys(self._mean_intervals, 0)
         quiescent_polls_of_type: dict[str, int] = dict.fromkeys(self._mean_intervals, 0)
-        landed_request_ids = {
-            event.request_id for event in events if isinstance(event, SoakActionResultEvent) and event.returned
-        }
+        landed_request_ids = {event.request_id for event in events if isinstance(event, SoakActionAppliedEvent)}
         observation = None
         for event in events:
             if isinstance(event, SoakScheduleEvent):
@@ -134,25 +135,44 @@ class SoakActionScheduler:
                 # M38 moves the deadline only once an injection lands, and clears the streak on
                 # every attempt, so a failed one leaves the kind due again on the next poll.
                 if event.request.next_due_at is not None and event.request.request_id in landed_request_ids:
-                    due_of_type[cell_type_of(event.request.target)] = event.request.next_due_at
-                quiescent_polls_of_type[cell_type_of(event.request.target)] = 0
+                    due_of_type[target_type_of(event.request.target)] = event.request.next_due_at
+                quiescent_polls_of_type[target_type_of(event.request.target)] = 0
             elif isinstance(event, (ObservationsEvent, SoakObservation)):
                 observation = event
                 if event.cells is not None:
-                    polled_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
+                    polled_of_type: dict[str, list[dict]] = {
+                        cell_type: [] for cell_type in self._mean_intervals if cell_type != "deployment"
+                    }
                     for cell in event.cells:
-                        polled_of_type[cell_type_of(cell)].append(cell)
+                        if cell_type_of(cell) in polled_of_type:
+                            polled_of_type[cell_type_of(cell)].append(cell)
                     for cell_type, kind_cells in sorted(polled_of_type.items()):
                         max_num_cells_of_type[cell_type] = max(max_num_cells_of_type[cell_type], len(kind_cells))
                         if _kind_is_quiescent(kind_cells, expected_num_cells=max_num_cells_of_type[cell_type]):
                             quiescent_polls_of_type[cell_type] += 1
                         else:
                             quiescent_polls_of_type[cell_type] = 0
-        if observation is None or observation.cells is None:
+                if isinstance(event, SoakObservation) and "deployment" in quiescent_polls_of_type:
+                    if event.deployments and not event.errors:
+                        max_num_cells_of_type["deployment"] = max(
+                            max_num_cells_of_type["deployment"], len(event.deployments)
+                        )
+                        if len(event.deployments) == max_num_cells_of_type["deployment"]:
+                            quiescent_polls_of_type["deployment"] += 1
+                        else:
+                            quiescent_polls_of_type["deployment"] = 0
+                    else:
+                        quiescent_polls_of_type["deployment"] = 0
+        if observation is None:
             return None
-        cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
-        for cell in observation.cells:
-            cells_of_type[cell_type_of(cell)].append(cell)
+        cells_of_type: dict[str, list[dict | SoakDeploymentTarget]] = {
+            cell_type: [] for cell_type in self._mean_intervals
+        }
+        for cell in observation.cells or []:
+            if cell_type_of(cell) in cells_of_type:
+                cells_of_type[cell_type_of(cell)].append(cell)
+        if isinstance(observation, SoakObservation) and "deployment" in cells_of_type:
+            cells_of_type["deployment"].extend(observation.deployments)
         due_types = sorted(kind for kind, due_at in due_of_type.items() if now >= due_at)
         if not due_types:
             return None
@@ -163,7 +183,8 @@ class SoakActionScheduler:
         ready_types = [
             kind
             for kind in due_types
-            if quiescent_polls_of_type[kind] >= self._quiescent_polls_required and len(cells_of_type[kind]) > 1
+            if quiescent_polls_of_type[kind] >= self._quiescent_polls_required
+            and len(cells_of_type[kind]) >= (1 if kind == "deployment" else 2)
         ]
         if not ready_types:
             logger.info(
@@ -182,6 +203,7 @@ class SoakActionScheduler:
             return None
         candidates = None
         if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill"}:
+            assert isinstance(target, dict), "Pod faults require a cell target"
             candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
             if not candidates:
                 return None
@@ -199,6 +221,7 @@ class SoakActionScheduler:
 def _execute_action(
     *, action: SoakActionRequest, forms: CellFaultForms, rng: random.Random, event_log: EventLog
 ) -> None:
+    assert isinstance(action.target, dict), "The synchronous bridge only supports cell targets"
     matching = [form for form in forms[cell_type_of(action.target)] if form.name == action.form_name]
     assert len(matching) == 1, f"Expected one form named {action.form_name}, found {len(matching)}"
     form = matching[0]

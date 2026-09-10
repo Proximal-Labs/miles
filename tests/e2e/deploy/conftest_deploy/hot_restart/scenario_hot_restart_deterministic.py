@@ -30,8 +30,6 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
-    compute_checkpoint_dir,
-    compute_release_of_config,
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
@@ -41,6 +39,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
     compute_freeze_plan_path,
     write_freeze_plan,
 )
+from tests.e2e.deploy.conftest_deploy.hot_restart.utils import compute_checkpoint_dir, compute_release_of_config
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
 from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
