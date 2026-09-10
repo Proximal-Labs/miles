@@ -9,7 +9,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 import requests
+from tests.utils.soak.config import SoakCellPolicy, SoakPolicy
 from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms, ExecSigkillFaultForm
+from tests.utils.soak.policy import eligible_cells, pending_actions
 from tests.utils.soak.state import (
     EventLog,
     ObservationsEvent,
@@ -105,22 +107,29 @@ class SoakActionScheduler:
         forms: CellFaultForms,
         injection_enabled: Callable[[], bool] | None = None,
         quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
+        policy: SoakPolicy | None = None,
     ) -> None:
         self._rng = rng
         self._mean_intervals = mean_intervals
         self._forms = forms
         self._injection_enabled = injection_enabled
         self._quiescent_polls_required = quiescent_polls_required
+        self.policy = policy if policy is not None else SoakPolicy()
+        if set(self.policy.cell_policies) - set(mean_intervals):
+            raise ValueError("Cell policies must name scheduled cell types")
 
     def initial_schedule(self) -> SoakScheduleEvent:
         return SoakScheduleEvent(
             due_of_type={
                 cell_type: _compute_next_injection_time(self._rng, mean_interval_seconds)
                 for cell_type, mean_interval_seconds in sorted(self._mean_intervals.items())
-            }
+            },
+            policy=self.policy,
         )
 
     def choose(self, *, events: list[SoakEvent], now: float) -> SoakActionRequest | None:
+        if len(pending_actions(events)) >= self.policy.max_concurrent_actions:
+            return None
         due_of_type: dict[str, float] = {}
         # Quiescence is derived, not remembered: the largest replica count a kind ever showed, and
         # how many consecutive polls it has looked settled since its last injection attempt.
@@ -130,6 +139,8 @@ class SoakActionScheduler:
         observation = None
         for event in events:
             if isinstance(event, SoakScheduleEvent):
+                if event.policy is not None and event.policy != self.policy:
+                    raise ValueError("Recorded scheduling policy differs from the scheduler configuration")
                 due_of_type.update(event.due_of_type)
             elif isinstance(event, SoakActionRequestedEvent):
                 # M38 moves the deadline only once an injection lands, and clears the streak on
@@ -180,11 +191,22 @@ class SoakActionScheduler:
         # Inject only at a quiescent point: every replica of the kind present and alive for long
         # enough that the readings cannot all be stale. A due kind that is still recovering (or has
         # no spare replica to survive the kill) waits for a later poll.
+        quiescent_types = {
+            kind
+            for kind in due_types
+            if quiescent_polls_of_type[kind] >= self._quiescent_polls_required and cells_of_type[kind]
+        }
         ready_types = [
             kind
             for kind in due_types
-            if quiescent_polls_of_type[kind] >= self._quiescent_polls_required
-            and len(cells_of_type[kind]) >= (1 if kind == "deployment" else 2)
+            if cells_of_type[kind]
+            and (
+                kind in quiescent_types
+                or (
+                    kind != "deployment"
+                    and self.policy.cell_policies.get(kind, SoakCellPolicy()).allow_during_recovery
+                )
+            )
         ]
         if not ready_types:
             logger.info(
@@ -197,8 +219,18 @@ class SoakActionScheduler:
             return None
 
         cell_type = self._rng.choice(ready_types)
-        target = self._rng.choice(cells_of_type[cell_type])
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
+        targets = cells_of_type[cell_type]
+        if cell_type != "deployment" and isinstance(observation, SoakObservation):
+            targets = eligible_cells(
+                cells=targets,
+                events=events,
+                policy=self.policy.cell_policies.get(cell_type, SoakCellPolicy()),
+                harms_cell=form.harms_cell,
+            )
+        if not targets:
+            return None
+        target = self._rng.choice(targets)
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
         candidates = None
@@ -222,7 +254,7 @@ class SoakActionScheduler:
                 ]
             if not candidates:
                 return None
-        next_due_at = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+        next_due_at = now + self._rng.expovariate(1.0 / self._mean_intervals[cell_type])
         pod = self._rng.choice(candidates) if candidates is not None else None
         return SoakActionRequest(
             target=deepcopy(target),
