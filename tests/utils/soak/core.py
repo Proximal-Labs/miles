@@ -17,6 +17,7 @@ from tests.utils.soak.state import (
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakObservation,
     SoakScheduleEvent,
     cell_is_alive,
     cell_type_of,
@@ -47,7 +48,7 @@ def run_fault_injection_loop(
     quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
 ) -> None:
     rng = random.Random(seed)
-    observer = SoakObserver(
+    observer = _SynchronousObserver(
         base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type), get_virtual_cells=get_virtual_cells
     )
     scheduler = SoakActionScheduler(
@@ -78,7 +79,7 @@ def run_fault_injection_loop(
 
 
 @dataclass(frozen=True)
-class SoakObserver:
+class _SynchronousObserver:
     base_url: str
     cell_types: set[str]
     get_virtual_cells: Callable[[], list[dict]] | None = None
@@ -135,18 +136,19 @@ class SoakActionScheduler:
                 if event.request.next_due_at is not None and event.request.request_id in landed_request_ids:
                     due_of_type[cell_type_of(event.request.target)] = event.request.next_due_at
                 quiescent_polls_of_type[cell_type_of(event.request.target)] = 0
-            elif isinstance(event, ObservationsEvent):
+            elif isinstance(event, (ObservationsEvent, SoakObservation)):
                 observation = event
-                polled_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
-                for cell in event.cells:
-                    polled_of_type[cell_type_of(cell)].append(cell)
-                for cell_type, kind_cells in sorted(polled_of_type.items()):
-                    max_num_cells_of_type[cell_type] = max(max_num_cells_of_type[cell_type], len(kind_cells))
-                    if _kind_is_quiescent(kind_cells, expected_num_cells=max_num_cells_of_type[cell_type]):
-                        quiescent_polls_of_type[cell_type] += 1
-                    else:
-                        quiescent_polls_of_type[cell_type] = 0
-        if observation is None:
+                if event.cells is not None:
+                    polled_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
+                    for cell in event.cells:
+                        polled_of_type[cell_type_of(cell)].append(cell)
+                    for cell_type, kind_cells in sorted(polled_of_type.items()):
+                        max_num_cells_of_type[cell_type] = max(max_num_cells_of_type[cell_type], len(kind_cells))
+                        if _kind_is_quiescent(kind_cells, expected_num_cells=max_num_cells_of_type[cell_type]):
+                            quiescent_polls_of_type[cell_type] += 1
+                        else:
+                            quiescent_polls_of_type[cell_type] = 0
+        if observation is None or observation.cells is None:
             return None
         cells_of_type: dict[str, list[dict]] = {cell_type: [] for cell_type in self._mean_intervals}
         for cell in observation.cells:
@@ -178,9 +180,19 @@ class SoakActionScheduler:
         form = _draw_form(self._forms[cell_type], events=events, cell_type=cell_type, rng=self._rng)
         if self._injection_enabled is not None and not self._injection_enabled():
             return None
+        candidates = None
+        if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill"}:
+            candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
+            if not candidates:
+                return None
         next_due_at = _compute_next_injection_time(self._rng, self._mean_intervals[cell_type])
+        pod = self._rng.choice(candidates) if candidates is not None else None
         return SoakActionRequest(
-            target=deepcopy(target), form_name=form.name, harms_cell=form.harms_cell, next_due_at=next_due_at
+            target=deepcopy(target),
+            form_name=form.name,
+            harms_cell=form.harms_cell,
+            next_due_at=next_due_at,
+            pod=pod,
         )
 
 
