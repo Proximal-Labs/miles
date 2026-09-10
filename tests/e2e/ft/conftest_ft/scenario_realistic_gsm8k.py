@@ -9,6 +9,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     TrainerCrashIntervalSecondsOption,
 )
 from tests.utils.soak.checks.ft import assert_healing
+from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
 from tests.utils.soak.recipes.gsm8k import (
@@ -18,7 +19,9 @@ from tests.utils.soak.recipes.gsm8k import (
     FT_COMPONENTS,
     run_realistic_gsm8k,
 )
+from tests.utils.soak.state import event_source
 
+from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.external_utils import command_utils
 
 app: typer.Typer = typer.Typer()
@@ -56,6 +59,11 @@ def run_ci(
     )
 
     assert_healing(FT_COMPONENTS, injector=outcome.injector, event_dir=outcome.run.events_dir, context=test_name)
+    assert_published_weight_checksums(
+        read_events(
+            event_source(outcome.injector.event_log.events, name="training_events", fallback=outcome.run.events_dir)
+        )
+    )
 
     print(f"Random failure gsm8k accuracy test PASSED ({test_name}, seed={seed}, rollouts={num_rollout})")
 

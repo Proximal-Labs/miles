@@ -19,6 +19,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.soak_form import SoakActionFor
 from tests.e2e.deploy.conftest_deploy.hot_restart.soak_observer import HotRestartSoakObserver
 from tests.e2e.deploy.conftest_deploy.hot_restart.soak_session import execute_hot_restart_session
 from tests.e2e.deploy.conftest_deploy.hot_restart.utils import compute_checkpoint_dir, compute_release_of_config
+from tests.utils.soak.checks.weights import assert_published_weight_checksums, assert_weight_checksum_history
 from tests.utils.soak.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.utils.soak.fault_forms import CellFaultForms
 from tests.utils.soak.recipes.gsm8k import (
@@ -34,13 +35,15 @@ from tests.utils.soak.state import (
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakAdmissionClosedEvent,
     SoakDeploymentTarget,
     SoakEvent,
     SoakObservation,
     event_source,
 )
 
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.external_utils import command_utils
 from miles.utils.misc import MutableBox
 
@@ -114,13 +117,33 @@ def run_ci(
     )
     assert_take_over_loss_within_save_interval(evidence.records)
     source = event_source(events, name="training_events", fallback=outcome.run.events_dir)
+    closures = [event.timestamp for event in events if isinstance(event, SoakAdmissionClosedEvent)]
+    assert len(closures) == 1, "Hot restart checksum audit requires one closed admission boundary"
+    cutoff = max([*closures, *(event.timestamp for event in events if isinstance(event, SoakActionAppliedEvent))])
+    assert_published_weight_checksums(read_events(source), publication_since=cutoff, minimum_publications=2)
+    _assert_archived_weight_checksum_history(source)
     assert_take_overs_resumed_within_save_interval(str(source.parent), records=evidence.records)
 
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
 
 
+def _assert_archived_weight_checksum_history(source: Path) -> None:
+    checksums: dict[str, InferenceEngineWeightChecksumEvent] = {}
+    for directory in [*read_discarded_event_dirs(str(source.parent)), source]:
+        events = read_events(directory)
+        assert_weight_checksum_history(events)
+        for event in events:
+            if isinstance(event, InferenceEngineWeightChecksumEvent):
+                checksums[event.model_dump_json()] = event
+    assert_weight_checksum_history(list(checksums.values()))
+
+
 def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
-    return build_checkpoint_args(dump_dir) + f"--wandb-run-id {wandb_run_id} " + "--ci-disable-weight-update-checker "
+    return (
+        build_checkpoint_args(dump_dir)
+        + f"--wandb-run-id {wandb_run_id} "
+        + "--ci-disable-weight-update-checker --save-inference-engine-weight-checksum "
+    )
 
 
 def _assert_checkpoints_advanced_between_takeovers(events: list[SoakEvent]) -> None:

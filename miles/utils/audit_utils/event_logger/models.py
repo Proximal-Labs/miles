@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import Discriminator, Field, model_validator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.utils.audit_utils.checksum_policy import ChecksumMovementSkipReason
+from miles.utils.audit_utils.checksum_policy import DEFAULT_MOVEMENT_MAX_STEPS, ChecksumMovementSkipReason
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -127,6 +127,9 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     weight_version: int | None = None
     engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(default_factory=list)
     movement_skip_reasons: list[ChecksumMovementSkipReason] | None = None
+    movement_max_steps: int = Field(default=DEFAULT_MOVEMENT_MAX_STEPS, gt=0, strict=True)
+    version_epoch: str | None = None
+    update_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_snapshot_identity(self) -> Self:
@@ -237,6 +240,7 @@ class WeightUpdateAssignmentEvent(EventBase):
 class WeightUpdateResultEvent(EventBase):
     type: Literal["weight_update_result"] = "weight_update_result"
     update_id: str
+    version_epoch: str | None = None
     rollout_id: int | None
     candidate_version: int | None
     published_version: int | None

@@ -333,6 +333,8 @@ async def update_weights(
         rollout_id=rollout_id,
         trainer_model_id=trainer_model_id,
         weight_version=output.weight_version,
+        version_epoch=output.version_epoch,
+        update_id=output.update_id,
     )
 
     if output.weight_version is not None:
@@ -346,6 +348,8 @@ async def _maybe_log_inference_engine_weight_checksums(
     rollout_id: int | None,
     trainer_model_id: str | None,
     weight_version: int | None,
+    version_epoch: str | None,
+    update_id: str | None,
 ) -> None:
     if not is_event_logger_initialized():
         return
@@ -363,7 +367,10 @@ async def _maybe_log_inference_engine_weight_checksums(
             trainer_model_id=trainer_model_id,
             engine_checksums=engine_checksums,
             weight_version=weight_version,
+            version_epoch=version_epoch,
+            update_id=update_id,
             engine_snapshots=snapshots,
+            movement_max_steps=args.inference_engine_weight_movement_max_steps,
             movement_skip_reasons=checksum_movement_skip_reasons(
                 lora_enabled=args.lora_rank > 0 or args.lora_adapter_path is not None,
                 update_weights_interval=args.update_weights_interval,

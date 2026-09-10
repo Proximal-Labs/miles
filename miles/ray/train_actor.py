@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 class WeightUpdateOutput:
     weight_version: int | None
     failed_cell_ids: tuple[str, ...]
+    version_epoch: str | None = None
+    update_id: str | None = None
 
     @classmethod
     def merge(cls, outputs: list["WeightUpdateOutput"]) -> "WeightUpdateOutput":

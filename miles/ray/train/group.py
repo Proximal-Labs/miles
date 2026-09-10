@@ -89,6 +89,7 @@ class TrainerController:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._weight_version_epoch = uuid4().hex
 
     @property
     def pool_id(self) -> str:
@@ -384,6 +385,7 @@ class TrainerController:
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
 
         cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        self._weight_version_epoch = uuid4().hex
         return [item for sublist in cell_results for item in sublist]
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
@@ -410,12 +412,14 @@ class TrainerController:
             output = await self._update_weights_on_every_alive_cell(info)
         else:
             output = await self._update_weights_on_first_alive_cell(info)
+        output = replace(output, version_epoch=self._weight_version_epoch, update_id=info.update_id)
         updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
         if is_event_logger_initialized():
             get_event_logger().log(
                 WeightUpdateResultEvent,
                 dict(
                     update_id=info.update_id,
+                    version_epoch=self._weight_version_epoch,
                     rollout_id=rollout_id,
                     candidate_version=output.weight_version,
                     published_version=output.weight_version if updated_cell_ids else None,

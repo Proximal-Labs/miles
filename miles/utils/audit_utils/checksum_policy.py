@@ -1,6 +1,7 @@
 from typing import Literal
 
 ChecksumMovementSkipReason = Literal["lora_base_weights", "update_interval"]
+DEFAULT_MOVEMENT_MAX_STEPS = 10
 
 
 def checksum_movement_skip_reasons(
