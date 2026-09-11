@@ -111,9 +111,6 @@ class RolloutDataSource(DataSource):
         return samples
 
     def save(self, directory: Path) -> None:
-        if not self.args.rollout_global_dataset:
-            return
-
         state_dict = {
             "sample_offset": self.sample_offset,
             "epoch_id": self.epoch_id,
@@ -124,10 +121,6 @@ class RolloutDataSource(DataSource):
         save_simple_checkpoint(directory=directory, data=state_dict)
 
     def load(self, directory: Path) -> None:
-        if not self.args.rollout_global_dataset:
-            logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
-            return
-
         state_dict = load_simple_checkpoint(directory=directory)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)

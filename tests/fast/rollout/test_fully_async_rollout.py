@@ -107,6 +107,10 @@ def make_args(**overrides) -> Namespace:
     return Namespace(**defaults)
 
 
+def train_input(**overrides) -> RolloutFnTrainInput:
+    return RolloutFnTrainInput(**{"weight_version": 0, **overrides})
+
+
 def make_fn(monkeypatch, args, data_source, generate=None):
     async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
@@ -123,7 +127,7 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     args = make_args(rollout_batch_size=3)
     fn = make_fn(monkeypatch, args, FakeDataSource())
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert len(output.samples) == 3
     indices = [group[0].index for group in output.samples]
@@ -133,7 +137,7 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 0
 
     # The worker persists across calls; a second drain works on the same instance.
-    output2 = await fn(RolloutFnTrainInput(rollout_id=1))
+    output2 = await fn(train_input(rollout_id=1))
     assert len(output2.samples) == 3
 
 
@@ -163,7 +167,7 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
     monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
 
     # Start the producer via a train call, then run eval concurrently.
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    drain = asyncio.create_task(fn(train_input(rollout_id=0)))
     await asyncio.sleep(0.05)
     submitted_before_eval = data_source.num_get_calls
 
@@ -241,7 +245,7 @@ async def test_aborted_group_recycled(monkeypatch):
 
     fn = make_fn(monkeypatch, args, data_source, generate=abort_once)
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert data_source.num_get_calls == 1
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
@@ -281,7 +285,7 @@ async def test_stale_group_recycled(monkeypatch):
 
     fn = make_fn(monkeypatch, args, data_source, generate=regenerate_with_fresh_weights)
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
+    output = await fn(train_input(rollout_id=0, weight_version=10))
 
     assert data_source.num_get_calls == 1
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
@@ -293,7 +297,7 @@ async def test_stale_group_dropped_by_default(monkeypatch):
     data_source = FakeDataSource(scripted=[stale])
     fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=2), data_source)
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
+    output = await fn(train_input(rollout_id=0, weight_version=10))
 
     assert not fn._retry_buffer
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
@@ -306,7 +310,7 @@ async def test_worker_error_propagates(monkeypatch):
     fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
 
     with pytest.raises(RuntimeError, match="generation exploded"):
-        await fn(RolloutFnTrainInput(rollout_id=0))
+        await fn(train_input(rollout_id=0))
 
 
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
@@ -321,7 +325,7 @@ async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     args = make_args(rollout_batch_size=4, async_max_concurrent_samples=3)
     fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
 
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    drain = asyncio.create_task(fn(train_input(rollout_id=0)))
     await asyncio.sleep(0.05)
     assert data_source.num_get_calls == 1
 
@@ -344,7 +348,7 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
     await asyncio.sleep(0)
 
     with pytest.raises(RuntimeError, match="generation exploded"):
-        await fn(RolloutFnTrainInput(rollout_id=0))
+        await fn(train_input(rollout_id=0))
 
 
 async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
@@ -369,7 +373,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
 
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert data_source.num_get_calls == 1
     assert all(isinstance(sample, Sample) for sample in submitted[1])
@@ -392,7 +396,7 @@ async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
     )
     fn = make_fn(monkeypatch, args, data_source)
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert len(output.samples) == 1
     assert output.samples[0][0].group_index != 1
@@ -410,23 +414,10 @@ async def test_sample_filter_marks_samples_without_shrinking_the_batch(monkeypat
 
     fn._sample_filter = mark_first_of_each_group
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert len(output.samples) == 2
     assert [sample.remove_sample for sample in output.samples[0]] == [True, False]
-
-
-async def test_staleness_filter_off_before_the_first_weight_update(monkeypatch):
-    """weight_version is None until the trainer pushes weights; staleness is unknown, not zero."""
-    stale = make_group(1, weight_versions=["5"])
-    data_source = FakeDataSource(scripted=[stale])
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=0), data_source)
-
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
-
-    assert not fn._retry_buffer
-    assert output.samples[0][0].group_index == 1
-    assert "rollout/fully_async/max_staleness" not in output.metrics
 
 
 # ── DataBuffer: staleness-bounded buffering ─────────────────────────
@@ -887,7 +878,7 @@ async def test_custom_data_buffer_path_replaces_default(monkeypatch):
     args = make_args(custom_async_data_buffer_path=path, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, FakeDataSource())
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert type(fn._output) is RecordingBuffer
     assert RecordingBuffer.constructed_with.unused_handler_fn == fn._recycle
@@ -1010,12 +1001,22 @@ async def _die_now() -> None:
     return None
 
 
+async def test_the_producer_refuses_to_start_before_a_weight_version_arrives(monkeypatch):
+    """A producer started before the restored weight version measures restored groups against nothing."""
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+    with pytest.raises(AssertionError, match="publishes the restored weight version"):
+        await fn(RolloutFnTrainInput(rollout_id=0, weight_version=None))
+
+    assert fn._worker is None
+
+
 class TestDisposal:
     async def test_disposing_ends_the_producer_before_it_returns(self, monkeypatch):
         """Teardown has to be done when it returns, or the rest of it races the producer's unwinding."""
         args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
         fn = make_fn(monkeypatch, args, FakeDataSource())
-        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        step = asyncio.create_task(fn(train_input(rollout_id=0)))
         await asyncio.sleep(0.05)
         assert not step.done()
 
@@ -1027,7 +1028,7 @@ class TestDisposal:
         """A run whose producer is parked when it ends must not leave the waiting step there forever."""
         args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
         fn = make_fn(monkeypatch, args, FakeDataSource())
-        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        step = asyncio.create_task(fn(train_input(rollout_id=0)))
         await asyncio.sleep(0.05)
 
         await fn.dispose()
@@ -1057,7 +1058,7 @@ class TestBufferSelection:
         """Every existing run goes through this line, and a per-policy buffer would key it under a model id."""
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=0))
+        await fn(train_input(rollout_id=0))
 
         assert type(fn._output) is data_buffer.DefaultDataBuffer
 
@@ -1066,7 +1067,7 @@ class TestBufferSelection:
         args = make_args(rollout_batch_size=1, megatron_config=encode_megatron_config("a", "b"))
         fn = make_fn(monkeypatch, args, MultiPolicyDataSource())
 
-        output = await fn(RolloutFnTrainInput(rollout_id=0, trainer_model_id="a"))
+        output = await fn(train_input(rollout_id=0, trainer_model_id="a"))
 
         assert type(fn._output) is data_buffer.DefaultMultiDataBuffer
         assert [sample.trainer_model_id for group in output.samples for sample in group] == ["a", "a"]
@@ -1081,7 +1082,7 @@ class TestBufferSelection:
         )
         fn = make_fn(monkeypatch, args, MultiPolicyDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=0, trainer_model_id="a"))
+        await fn(train_input(rollout_id=0, trainer_model_id="a"))
 
         assert type(fn._output) is RecordingMultiBuffer
 
@@ -1095,7 +1096,7 @@ class TestBufferSelection:
         )
         fn = make_fn(monkeypatch, args, MultiPolicyDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=0, weight_version=4, trainer_model_id="a"))
+        await fn(train_input(rollout_id=0, weight_version=4, trainer_model_id="a"))
 
         assert RecordingMultiBuffer.get_calls == [dict(num_groups=1, current_version=4, trainer_model_id="a")]
 
@@ -1114,7 +1115,7 @@ async def test_worker_defaults_to_sample_granularity(monkeypatch):
     args = make_args(rollout_batch_size=1)
     fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
 
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    drain = asyncio.create_task(fn(train_input(rollout_id=0)))
     await asyncio.sleep(0.01)
     assert data_source.num_get_calls == 1
 
@@ -1144,7 +1145,7 @@ async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
     args = make_args(rollout_batch_size=1, rollout_submission_granularity="group")
     fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
 
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    drain = asyncio.create_task(fn(train_input(rollout_id=0)))
     await asyncio.sleep(0.01)
     assert data_source.num_get_calls == 1
     # no callback wired at group level
@@ -1183,7 +1184,7 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
     data_source = FakeDataSource()
     fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), data_source, generate=blocking_generate)
 
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    drain = asyncio.create_task(fn(train_input(rollout_id=0)))
     await asyncio.sleep(0.05)
     assert data_source.num_get_calls == 2  # in-flight bound, not more
 

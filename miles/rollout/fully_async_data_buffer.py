@@ -1,6 +1,6 @@
 """Data buffer between fully-async rollout production and training consumption.
 
-``DataBuffer`` is the contract (put / get / get_metrics); ``DefaultDataBuffer``
+``DataBuffer`` is the contract (put / get / metrics / checkpoint state); ``DefaultDataBuffer``
 is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
 Every group-level decision lives here — what to keep, what to hand to
 ``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
@@ -14,6 +14,7 @@ from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
@@ -92,6 +93,9 @@ class DataBufferInput:
     group: Group  # finished samples
 
 
+MULTI_POLICY_CHECKPOINT_UNSUPPORTED = "multi-policy rollout state is not checkpointed"
+
+
 class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
@@ -121,6 +125,12 @@ class DataBuffer(ABC):
 
     def notify_producer_failed(self, error: BaseException) -> None:
         self._producer_error = error
+
+    def state_dict(self) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} must implement state_dict() for checkpointing")
+
+    def load_state_dict(self, state: Any) -> None:
+        raise NotImplementedError(f"{type(self).__name__} must implement load_state_dict() for checkpointing")
 
 
 # ============================= one policy buffer ==============================
@@ -228,6 +238,13 @@ class DefaultDataBuffer(DataBuffer):
             self._buffer = kept
             self._cond.notify_all()
 
+    def state_dict(self) -> list[DataBufferInput]:
+        return list(self._buffer)
+
+    def load_state_dict(self, state: list[DataBufferInput]) -> None:
+        assert not self._buffer
+        self._buffer = list(state)
+
     def notify_producer_failed(self, error: BaseException) -> None:
         super().notify_producer_failed(error)
         self._producer_failed.set()
@@ -315,6 +332,13 @@ class DefaultMultiDataBuffer(DataBuffer):
     def notify_producer_failed(self, error: BaseException) -> None:
         for inner in self._inners.values():
             inner.notify_producer_failed(error)
+
+    def state_dict(self) -> Any:
+        logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
+        return []
+
+    def load_state_dict(self, state: Any) -> None:
+        logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
 
     def _inner_of(self, trainer_model_id: str | None) -> DataBuffer:
         assert trainer_model_id in self._inners, (

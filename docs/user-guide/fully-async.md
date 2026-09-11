@@ -127,6 +127,19 @@ replaceable component with the following interface:
 | `get(num_groups=...)` | The trainer, once per training batch | Return that many groups at once, waiting until the buffer holds them |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
 | `notify_producer_failed(error)` | The rollout function, once, when the producer dies | Fail every `get` that would otherwise wait for groups nobody will produce |
+| `state_dict()` | Checkpoint save | Return every accepted entry needed to resume without loss or duplication |
+| `load_state_dict(state)` | Checkpoint load | Replace the buffer state with a previously returned state |
+
+`DataBufferInput.prompt_group` is the source material used for retry and `group` is the
+finished output. A custom buffer must not await between mutating its buffer state and
+returning from `put()`: a group whose `put()` is still suspended at save time counts as
+running, and a restored run regenerates every running group from its prompt, so an entry
+must never be both stored and still running.
+`UnusedReason.ABORTED` and `UnusedReason.STALE` identify entries passed to the
+unused-sample handler.
+
+Multi-policy runs do not checkpoint the rollout data buffer: its state is skipped on save, so a
+resumed run has none to load.
 
 These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.

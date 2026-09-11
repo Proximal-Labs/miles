@@ -32,7 +32,7 @@ class RolloutFnBaseInput:
 # subclassing for different data in the future
 @dataclass(frozen=True)
 class RolloutFnTrainInput(RolloutFnBaseInput):
-    # engine weight version, None before the first weight update
+    # engine weight version; the orchestration publishes one before the first train call
     weight_version: int | None = None
     # which policy model asked for this rollout; None when the run trains one policy
     trainer_model_id: str | None = None
