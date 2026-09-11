@@ -30,15 +30,20 @@
 
 ### Scenarios
 
+- **CI**: Ray random, deterministic-rollout, realistic GSM8K, fully-async and precise/mixed entries are enabled on `stage-c-8-gpu-h200` under `ft-long`. The workflow sets `MILES_TEST_DUMPS_ROOT=/data/miles_ci/dumps`; the scenario verifies the backing filesystem before writing dumps.
+- **Kubernetes**: the same random FT scenario accepts a Kubernetes backend through the launch configuration. Kubernetes execution requires shared storage, worker images and release-management credentials; the Ray CI lane does not provide those resources. Hot restart remains Kubernetes-only.
+- **Validation status**: registration is not execution evidence. This implementation has not run the scenarios, calibrated durations, or verified convergence on the CI machines.
+
 - **Random transfer coverage**: all real-rollout random soaks use P2P and reject colocation; fake-rollout modes retain trainer-only coverage and do not exercise weight transfer.
 - **Precise all-gather entry**: `test_precise_all_gather__kill_train__dp2_tp2.py` calls the shared random-crash runner with `precise_all_gather=True`.
 - **Precise topology**: real rollout engines, disaggregated TP2 trainers, and p2p weight transfer.
 - **Precise faults**: trainer all-gather hooks inject `sigkill`, GIL deadlock, and training-thread deadlock; every enabled form must produce an independently observed effect and matching worker dispatch evidence.
 - **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
-- **Checksum movement applicability**: each identified checksum event records explicit exclusions for LoRA base weights and `update_weights_interval != 1`. These exclusions apply to adjacent-version movement; same-version replica consistency remains required. Missing applicability metadata is unknown, not an exemption.
+- **Checksum movement applicability**: each identified checksum event records explicit exclusions for LoRA base weights and `update_weights_interval != 1`. These exclusions apply to per-tensor movement; same-version replica consistency remains required. Missing applicability metadata is unknown, not an exemption. Frozen tensors receive no additional exemption.
+- **Checksum movement deadline**: `--inference-engine-weight-movement-max-steps` is a positive integer, default `10` (not calibrated). Each tensor must change within this many transitions between distinct published weight versions of the same `(trainer_model_id, model_name, version_epoch)`. Repeated versions and replica observations do not advance the count; an epoch starts a new window. A change exactly at the deadline passes and starts a new window for that tensor.
+- **Checksum movement evidence**: each new event stores `movement_max_steps`; legacy events missing it use `10`. The threshold cannot change within a model epoch. Offline analysis and soak acceptance use this same event-based rule. A final window shorter than the threshold does not fail, but does not establish coverage of a complete movement window.
 - **Mixed injection**: `scenario_random_crash --precise-p2p --mix-wall-clock` (or `--precise-all-gather`) draws both hook and wall-clock forms through the same scheduler. Every enabled form must produce an effect; hook forms additionally require worker-side hit evidence. The dedicated all-target scenario stays separate.
 - **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
-- **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
 - **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
 - **Precise P2P entries**: `scenario_precise_p2p` uses `kill_train__dp2_tp2` for sender faults and `kill_rollout__dp2_tp2` for receiver faults; both have explicit CI entries and reuse the shared soak runner.
 - **Receiver triggers**: an observation-only trainer hook precedes a fault through the selected backend's cell operation; worker hit evidence and an independently observed victim state change are both required. Controller polling and network latency separate hook arrival from receiver failure.
@@ -96,8 +101,8 @@
 - **Broad scopes**: `run-ci-all` includes both; the nightly cadence includes `ft-short` but not `ft-long`; `run-ci-image` excludes both.
 - **Suite**: `suite="stage-c-8-gpu-h200"`, run by the job of the same name in `.github/workflows/pr-test.yml`.
 - **Hardware**: every entry declares `hardware=["hopper", "blackwell"]`.
-- **ft-long is disabled**: every ft-long entry passes `disabled="FT soak tests pending CI infra support"`, and `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; nothing in the tests is known broken.
-- **Fast-layer stand-in**: `tests/fast/e2e/ft/test_rollout_gated_recovery.py` covers suspend → gated relaunch → recovery on CPU meanwhile.
+- **ft-long is enabled**: the registered soak entries run on `stage-c-8-gpu-h200` when selected by `run-ci-ft-long` or `run-ci-all`.
+- **Validation boundary**: these scenarios have not been run for this implementation; duration estimates and convergence remain unverified.
 - **Add a `(scenario, mode)`**: copy an entry file, change `_MODE`.
 - **Add a label**: an entry in `tests/ci/labels.py` plus the matching `run-ci-<key>` GitHub label; the workflow needs no edit.
 
@@ -173,16 +178,16 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 
 | Backend | Cell type | Forms, drawn from uniformly |
 | --- | --- | --- |
-| ray | actor | `inject_fault:sigkill`, `inject_fault:exit`, `inject_fault:segfault` |
-| ray | rollout | `inject_fault:sigkill` |
-| kubernetes | actor | those three kills, plus `delete_pod` |
-| kubernetes | rollout | `exec_sigkill`, `delete_pod` |
+| ray | actor | `inject_fault:sigkill`, `inject_fault:exit`, `inject_fault:segfault`, `inject_fault:sigstop`, `inject_fault:deadlock` |
+| ray | rollout | `inject_fault:sigkill`, `inject_fault:sigstop` |
+| kubernetes | actor | those five forms, plus `delete_pod` |
+| kubernetes | rollout | `exec_sigkill`, `exec_sigstop`, `delete_pod` |
 
-- **Each `FailureMode` is its own form**: pod deletion is a quarter of a kubernetes trainer injection, not half of it.
+- **Each `FailureMode` is its own form**: pod deletion has the same weight as each individual failure mode.
 - **The actor class decides what a kill means**, since an injection carries only a mode and a `sub_index`: `TrainRayActor` and `ServeActor` crash their own process, the only thing that costs torchft a member, while `CommandActor` SIGKILLs the isolated process group rooted at the engine subprocess. That includes the launch shell and every engine child it spawned, so a dead cell cannot leave an orphaned scheduler holding GPU memory while its replacement starts; the Ray actor observes the subprocess exit and reports the death as production sees it.
-- **Why an engine takes sigkill alone**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. The other modes are refused, not approximated.
+- **Engine modes**: external SIGKILL and SIGSTOP have separate exit and stopped-process receipts. In-process exit, segfault and deadlock are not approximated with external signals.
 - **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive `inject_fault`. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
-- **Deletion is the test layer's own `kubectl delete pod`**, timeout-bounded and selecting on release, pool and cell index. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
+- **Deletion**: the async Kubernetes client deletes the observed pod with UID and resource-version preconditions, then confirms that UID is absent. A pre-existing deletion or a failed read cannot prove an applied fault.
 
 ### `scenario_trainer_no_failure`
 
@@ -365,7 +370,7 @@ Assertions:
 - **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
 - **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation for its rollout witness.
 - **Why this scenario polls the fault window every 0.2 seconds**: colocated generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
-- **Why one quiescent poll on Ray only**: colocate exposes Serving only between train phases, and a fault may land during a weight update or an offloaded phase by design, so a stable-serving gate would only delay it. The Kubernetes forms (`exec_sigkill`, `delete_pod`) keep the generic 60-poll gate.
+- **Quiescence policy**: this scenario uses the default `allow_during_recovery=True`, so cell faults bypass the fleet-wide quiescence gate on both backends. The configured one-poll Ray and 60-poll Kubernetes thresholds apply only when that policy is disabled; incarnation reservations and `min_survivors` always constrain harmful faults.
 - **Why the final three rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 4, so teardown cannot race a newly accepted replacement.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
@@ -388,34 +393,23 @@ Targeting and assertions follow the mode's ft_components:
     that does not exist, so FTTestMode refuses to be constructed at all
 
 Architecture (external fault injection, not inside the training loop):
-  1. Start indep_dp training + api server (port 18080) + --mini-ft-controller-enable
-  2. A background daemon thread iterates every 2s:
-     a. GET /api/v1/cells, keeping only the targeted cell types
-     b. Append that whole snapshot to the injector's event log, its only state
-     c. Collect the cell kinds whose own schedule is due; stop here if none
-     d. A due kind is ready only at a quiescent point: every replica of that kind present
-        and Healthy for 60 consecutive polls (~120s) - long enough to outlast the ~95s
-        stale-status window - and at least one spare replica to survive the kill
-     e. Draw a ready kind, a cell of that kind and one of its fault forms - preferring a form
-        the log shows has never worked - apply it, record the attempt, reset that kind's
-        quiescence streak, then draw its next injection time
-  3. inject_fault() runs on the actor's own ray concurrency group thread and kills the process,
-     or the test layer deletes the pod on kubernetes
-  4. The health checker notices by heartbeat timeout
-  5. The mini FT controller recovers it (suspend -> resume)
-  6. Verify: training completes, no hangs, prod assertions pass
+  1. Launch training with its own control endpoint and --mini-ft-controller-enable
+  2. SoakSession owns training and SoakRunner on one asyncio loop
+  3. SoakActionScheduler derives eligibility and deadlines from events and policy:
+     default allow_during_recovery=True bypasses fleet-wide quiescence for cell faults;
+     incarnation reservations and min_survivors constrain targets
+  4. Record the incarnation-bound request before starting its async action
+  5. Record effect evidence separately from command return; keep observing concurrently
+  6. Close admission, observe the recovery tail, collect tasks and take a final observation
+  7. Tear down the owned run, archive evidence, then check archived events
 
 Per-kind schedules: exponential, mean that kind's --*-crash-interval-seconds
 
 Witnesses, counted per kind:
-  forms   -> every form the enabled components make available succeeded at least once, so a
-             soak that clears the injection floors on one form still has to draw the others
-  train   -> >= 2 accepted actor injections, >= 2 healed cells across the
-             CellReconfigureEvents, and every injected cell index paired with a healing of
-             that same index - no debt left when training ends
-  rollout -> >= 2 accepted rollout injections, and every injected cell observed Serving
-             at least once on a reading taken >= 120s after its last injection - late
-             enough that the ~95s stale-status window cannot have produced it
+  forms   -> every enabled form has a confirmed effect, not merely a successful RPC
+  train   -> >= 2 actor effects, matched incarnation replacement/reconfiguration and normal progress
+  rollout -> >= 2 rollout effects, matched new incarnation observed Serving
+  tail    -> every action resolved, every recovery complete, then normal training progress
 
 Faults are random, so beyond the witnesses neither an exact sequence nor the end-state
 membership is asserted.
@@ -424,14 +418,19 @@ membership is asserted.
 - **Why per-kind schedules and counting**: each kind's cadence stays what it would be in a single-kind soak, and the trainer assertion reads only `actor` injections while the rollout one reads only `rollout` — a mixed soak cannot let one kind's crashes pay for the other's missing heal.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
-- **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-healthy streak (~120s, the same bound the recovery witness uses) outlasts that window, so by the time a kind is ready again its readings are fresh and every replica really is back; the injector itself keeps no per-cell recovery state to corrupt. A failed injection attempt forfeits the streak too - the kill, not the response, may be what survived the failure.
-- **A form that leaves its cell running**: `SoakActionForm.harms_cell` is false for it, so the draw is recorded without charging that cell a recovery; the reset quiescence streak alone paces the next injection.
-- **Why quiescence counts replicas against the most ever seen**: a deleted pod vanishes from the listing instead of reading unhealthy, and the survivors all read healthy; only the missing replica says the kind is still recovering.
+- **Faults during recovery**: the default `allow_during_recovery=True` permits another cell fault without waiting for every replica to recover. A harmful request reserves its target incarnation immediately, so stale Healthy observations cannot make that incarnation a survivor or another victim; the remaining ready, unreserved cells must satisfy `min_survivors`.
+- **Optional quiescence gate**: `allow_during_recovery=False` also requires the expected fleet to be ready and the configured healthy streak, normally 60 polls (~120s). Deployment takeovers retain their quiescence gate independently of cell policy.
+- **A form that leaves its cell running**: `SoakActionForm.harms_cell=False` creates no victim reservation or recovery obligation. Per-kind deadlines and action limits still apply; quiescence gates apply only where the policy requires them.
+- **Quiescence fleet size**: when enabled, the streak counts replicas against the most ever seen, so a deleted pod cannot disappear from the listing and leave a smaller fleet looking complete.
 - **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:sigkill` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
 - **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
-- **Why the step budget is 60**: a rollout injection needs a 60-poll (~120s) quiescent streak plus a mean-240s exponential wait, so the second accepted rollout injection the witness demands takes well over ten minutes. The budget buys that time instead of lowering the quiescence gate that keeps the injector from killing a kind's last live replica.
-- **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
-- **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
+- **Why the step budget is 60**: the run needs time for multiple faults drawn with a mean-240s rollout interval, replacement and recovery, and a completed fault-free tail. The default policy adds no fixed 60-poll wait before cell faults; this budget has not been calibrated by a run.
+- **Why the rollout witness is one-sided**: sampled polls may miss the down transition. Recovery instead requires a different incarnation observed Serving after the request; elapsed time or a stale Healthy reading of the victim cannot satisfy it.
+- **Recovery identity**: the same cell name or a long delay cannot prove replacement. Recovery uses the requested incarnation, a new incarnation, and the corresponding Serving or trainer reconfiguration evidence.
+- **Policy**: minimum survivors, actions in flight and faults during recovery are explicit scenario settings. Unknown action outcomes reserve the affected incarnation; an observation failure is not a disappearance.
+- **Session ownership**: `SoakSession.run` owns training and observation tasks; failures propagate through their task group. Training completion stops the runner explicitly. Cancellation still collects action tasks before final observation, teardown and evidence collection; cleanup failures do not erase the original failure.
+- **Fresh random-run evidence**: the random-crash entry requires an empty dump directory before starting observation. Reusing a nonempty directory fails with its path instead of reading stale progress or deleting previous evidence; select a fresh run ID.
+- **Action projection**: `project_actions(events)` associates Requested, Applied and Result by request ID without caching derived state. Missing Applied or Result represents an incomplete action; views and recovery expand batches per victim, while launcher and tail checks retain the original action boundary.
 - **Independent evidence**: random FT and rollout-deterministic runs write ordered typed events to `<dump_dir>-soak/<session_id>/events.jsonl`. Requests are flushed before dispatch. After task collection, training-event files and discarded generations are copied under `sources/`; checks use those paths. A terminal marker and per-file SHA-256 digests distinguish a complete collection from a truncated or changed archive.
 
 ### `scenario_realistic_gsm8k`
@@ -452,8 +451,8 @@ Faults: scenario_random_crash's injection loop (shared tests/utils/soak/), with
         --ft-components train rollout asked for outright, so both trainer cells and engines crash
 
 Assertions:
-  1. --ci-metric-checker-key eval/gsm8k against a threshold that must stay identical to the
-     no-fault baseline's (0.55); passes if ANY eval reaches it
+  1. At least two distinct tail evaluations started after the final applied fault and
+     admission closure, each meeting the unchanged no-fault threshold (0.55)
   2. assert_healing, shared with scenario_random_crash, so both the trainer reconfigure
      assertions and the rollout recovery witness apply here
 
