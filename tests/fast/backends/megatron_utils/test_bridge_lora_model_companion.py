@@ -53,10 +53,11 @@ def fake_parallel_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_every_bridge_lora_chunk_receives_a_model_companion(helpers_module, fake_parallel_state: None) -> None:
-    """Every bridge LoRA chunk carries its own companion for sample bookkeeping."""
+    """Without a companion the first weight sync asserts on an empty version set."""
     chunks = [torch.nn.Module(), torch.nn.Module()]
 
     helpers_module._install_model_companions(chunks)
 
     assert [chunk.model_companion.chunk_index for chunk in chunks] == [0, 1]
     assert all(chunk.model_companion.snapshot_sample_consumptions(is_skipped=False) == {} for chunk in chunks)
+    assert all(chunk.model_companion.weight_version.item() == 0 for chunk in chunks)
