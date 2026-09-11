@@ -791,11 +791,13 @@ class TestWeightVersionsPerCallFromMetaInfo:
 class TestWeightVersionsPerCallDict:
     def test_older_mapping_without_engine_prompt_length_keeps_text_validation(self) -> None:
         """Older call mappings retain the sample-coordinate prompt boundary fallback."""
-        call = WeightVersionsPerCall.from_dict({
-            "spans": [{"version": "3", "abs_start": 4, "abs_end": 6}],
-            "prefill_spans": [{"version": "2", "abs_start": 0, "abs_end": 3}],
-            "output_start": 4,
-        })
+        call = WeightVersionsPerCall.from_dict(
+            {
+                "spans": [{"version": "3", "abs_start": 4, "abs_end": 6}],
+                "prefill_spans": [{"version": "2", "abs_start": 0, "abs_end": 3}],
+                "output_start": 4,
+            }
+        )
 
         assert call.prompt_tokens is None
         with pytest.raises(AssertionError, match="must cover exactly the 4 prompt tokens"):
@@ -978,3 +980,17 @@ class TestSpecInfo:
             spec_verify_ct=2,
             completion_tokens=7,
         )
+
+
+class TestTrainingIdentity:
+    def test_serialization_preserves_child_row_identity(self) -> None:
+        """Sample serialization restores a typed identity for generated child rows."""
+        from miles.utils.types import SampleLineage
+
+        identity = SampleLineage(source_sample_index=7, output_index=1, output_count=3)
+        sample = Sample(index=101, lineage=identity)
+
+        restored = Sample.from_dict(sample.to_dict())
+
+        assert restored.index == 101
+        assert restored.lineage == identity
