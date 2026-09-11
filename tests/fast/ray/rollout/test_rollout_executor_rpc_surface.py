@@ -69,6 +69,7 @@ class TestRolloutExecutorLifecycleRpc:
         worker.args = Namespace(load="/checkpoint", save_debug_event_data=None)
         worker.use_legacy_rollout_v1 = True
         monkeypatch.setattr(RolloutExecutor, "_resolve_checkpoint_dir", lambda _self, **_kwargs: Path("/checkpoint"))
+        worker._output_snapshotter = SimpleNamespace(load=lambda _directory: None)
         worker.data_source = SimpleNamespace(load=load_state)
         specs = collect_rpc_method_specs(RolloutExecutor)
         assert specs["load"].is_async and specs["save"].is_async
