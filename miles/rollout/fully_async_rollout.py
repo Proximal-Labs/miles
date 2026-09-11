@@ -52,8 +52,6 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-NO_PROGRESS_WARN_SECS = 30.0
-
 
 class FullyAsyncRolloutFn(BaseRolloutFn):
     """Continuous rollout generation decoupled from training steps.
@@ -98,6 +96,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                 DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
             )
             self._worker = asyncio.create_task(self._worker_loop())
+            self._worker.add_done_callback(self._on_worker_done)
             logger.info("Started fully-async rollout worker")
         return await self._drain(input)
 
@@ -156,43 +155,29 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
-        queue_get = asyncio.create_task(
-            self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
-        )
-        try:
-            while True:
-                done, _ = await asyncio.wait(
-                    {queue_get, self._worker},
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=NO_PROGRESS_WARN_SECS,
-                )
-                # Checked before the queue: the worker loop never returns normally, so a
-                # dead worker fails the step now instead of after its backlog drains.
-                if self._worker in done:
-                    if self._worker.cancelled():
-                        raise RuntimeError("fully-async rollout was disposed while a step waited for groups")
-                    self._worker.result()
-                    raise RuntimeError("fully-async rollout worker exited without an exception")
-                if queue_get in done:
-                    return queue_get.result()
-                logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
-        finally:
-            if not queue_get.done():
-                queue_get.cancel()
+    def _on_worker_done(self, worker: asyncio.Task) -> None:
+        # The worker loop never returns normally, so any completion fails the waiting step.
+        if worker.cancelled():
+            error: BaseException = RuntimeError("fully-async rollout was disposed while a step waited for groups")
+        elif (exception := worker.exception()) is not None:
+            error = exception
+        else:
+            error = RuntimeError("fully-async rollout worker exited without an exception")
+        self._output.notify_producer_failed(error)
 
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
-        target_data_size = args.rollout_batch_size
+        entries = await self._output.get(
+            current_version=input.weight_version,
+            num_groups=args.rollout_batch_size,
+            trainer_model_id=input.trainer_model_id,
+        )
         data: list[Group] = []
         do_print = True
 
-        while len(data) < target_data_size:
-            entry = await self._next_group(
-                current_version=input.weight_version, trainer_model_id=input.trainer_model_id
-            )
+        for entry in entries:
             assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:

@@ -29,6 +29,8 @@ Group = list[Sample | list[Sample]]
 
 DATA_BUFFER_PATH_PER_MODEL_FLAG = "--custom-async-data-buffer-path-per-model"
 
+NO_PROGRESS_WARN_SECS = 30.0
+
 
 class UnusedReason(str, Enum):
     ABORTED = "aborted"
@@ -93,19 +95,21 @@ class DataBufferInput:
 class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
-    The producer puts each finished group as it completes; the consumer gets one
-    group at a time; get_metrics is collected once per training step. Storage,
+    The producer puts each finished group as it completes; the consumer gets a whole
+    training batch at once; get_metrics is collected once per training step. Storage,
     ordering, and filtering are invisible to callers — an implementation is free
     to reject a group on put, on get, or not at all.
     """
+
+    _producer_error: BaseException | None = None
 
     @abstractmethod
     async def put(self, input: DataBufferInput) -> None:
         """Accept a finished group; may store it, reject it, or evict to make room."""
 
     @abstractmethod
-    async def get(self, **context) -> DataBufferInput:
-        """Return one group to train on, waiting until one is available.
+    async def get(self, *, num_groups: int, **context) -> list[DataBufferInput]:
+        """Return exactly ``num_groups`` groups at once, waiting until that many are available.
 
         ``context`` is the extra information for sample processing at get() time,
         including the ``trainer_model_id`` whose groups are asked for.
@@ -114,6 +118,9 @@ class DataBuffer(ABC):
     @abstractmethod
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         """Report the metrics of one policy since its previous call (its window counters reset here)."""
+
+    def notify_producer_failed(self, error: BaseException) -> None:
+        self._producer_error = error
 
 
 # ============================= one policy buffer ==============================
@@ -149,11 +156,15 @@ class DefaultDataBuffer(DataBuffer):
         self._buffer: list[DataBufferInput] = []
         assert args.async_data_buffer_capacity_factor > 0
         self._capacity = int(args.async_data_buffer_capacity_factor * args.rollout_batch_size)
-        assert self._capacity >= 1
+        assert self._capacity >= args.rollout_batch_size, (
+            f"buffer capacity {self._capacity} is below the rollout batch of {args.rollout_batch_size} groups that "
+            f"one get asks for, so --async-data-buffer-capacity-factor must be at least 1.0"
+        )
 
         self._unused_handler_fn = input.unused_handler_fn
         self._dynamic_filter = load_function(args.dynamic_sampling_filter_path)
         self._cond = asyncio.Condition()
+        self._producer_failed = asyncio.Event()
         self._current_version: int | None = None
 
         self._metric_gatherer = MetricGatherer()
@@ -183,26 +194,60 @@ class DefaultDataBuffer(DataBuffer):
             self._buffer.append(input)
             self._cond.notify_all()
 
-    async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
+    async def get(self, *, num_groups: int, current_version: int | None = None, **_) -> list[DataBufferInput]:
         if current_version is not None:
             self._current_version = current_version
         async with self._cond:
+            self._raise_if_producer_failed()
             while True:
-                while not self._buffer:
-                    await self._cond.wait()
-                entry = self._buffer.pop(0)
-                self._cond.notify_all()  # wake producers blocked on a full buffer
-
                 # filters at retrieving sample: staleness filter
-                staleness = self._staleness(entry.group, current_version)
-                if staleness is None:
-                    return entry
-                self._metric_consumed_staleness.append(staleness)
-                if self._args.max_weight_staleness is None or staleness <= self._args.max_weight_staleness:
-                    return entry
-                logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
-                self._metric_stale_groups += 1
-                self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
+                self._drop_stale(current_version)
+                if len(self._buffer) >= num_groups:
+                    entries = self._buffer[:num_groups]
+                    del self._buffer[:num_groups]
+                    self._cond.notify_all()  # wake producers blocked on a full buffer
+                    for entry in entries:
+                        if (staleness := self._staleness(entry.group, current_version)) is not None:
+                            self._metric_consumed_staleness.append(staleness)
+                    return entries
+                await self._wait_for_groups()
+
+    def _drop_stale(self, current_version: int | None) -> None:
+        limit = self._args.max_weight_staleness
+        kept: list[DataBufferInput] = []
+        for entry in self._buffer:
+            staleness = self._staleness(entry.group, current_version)
+            if limit is None or staleness is None or staleness <= limit:
+                kept.append(entry)
+                continue
+            logger.info(f"Filtered stale group ({staleness=} > max={limit})")
+            self._metric_consumed_staleness.append(staleness)
+            self._metric_stale_groups += 1
+            self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
+        if len(kept) != len(self._buffer):
+            self._buffer = kept
+            self._cond.notify_all()
+
+    def notify_producer_failed(self, error: BaseException) -> None:
+        super().notify_producer_failed(error)
+        self._producer_failed.set()
+
+    async def _wait_for_groups(self) -> None:
+        waiters = [asyncio.ensure_future(self._cond.wait()), asyncio.ensure_future(self._producer_failed.wait())]
+        try:
+            done, _ = await asyncio.wait(waiters, timeout=NO_PROGRESS_WARN_SECS, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
+        self._raise_if_producer_failed()
+
+    def _raise_if_producer_failed(self) -> None:
+        if (error := self._producer_error) is not None:
+            raise error
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
@@ -261,11 +306,15 @@ class DefaultMultiDataBuffer(DataBuffer):
         for trainer_model_id, entry in _split_by_trainer_model_id(input).items():
             await self._inner_of(trainer_model_id).put(entry)
 
-    async def get(self, trainer_model_id: str | None = None, **context) -> DataBufferInput:
+    async def get(self, *, trainer_model_id: str | None = None, **context) -> list[DataBufferInput]:
         return await self._inner_of(trainer_model_id).get(trainer_model_id=trainer_model_id, **context)
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         return self._inner_of(trainer_model_id).get_metrics(trainer_model_id=trainer_model_id)
+
+    def notify_producer_failed(self, error: BaseException) -> None:
+        for inner in self._inners.values():
+            inner.notify_producer_failed(error)
 
     def _inner_of(self, trainer_model_id: str | None) -> DataBuffer:
         assert trainer_model_id in self._inners, (
