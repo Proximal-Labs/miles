@@ -1,249 +1,106 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
-import dataclasses
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Literal
 
 from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.state import (
-    InjectionEvent,
-    ObservationsEvent,
-    ObservedCellState,
     SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakDeploymentTarget,
     SoakEvent,
-    SoakObservation,
-    compute_cell_infos,
+    target_type_of,
 )
 
-STALE_STATUS_GRACE_SECONDS: float = 120.0
+
+@dataclass(frozen=True)
+class SoakActionRecord:
+    requested: SoakActionRequestedEvent
+    applied: SoakActionAppliedEvent | None = None
+    result: SoakActionResultEvent | None = None
 
 
-def project_legacy_events(events: list[SoakEvent]) -> list[SoakEvent]:
-    events = expand_fault_batches(events)
-    requests: dict[str, SoakActionRequest] = {}
-    completed: set[str] = set()
-    applied: set[str] = set()
-    projected: list[SoakEvent] = []
+def project_actions(events: list[SoakEvent]) -> dict[str, SoakActionRecord]:
+    actions: dict[str, SoakActionRecord] = {}
     for event in events:
-        if isinstance(event, SoakObservation):
-            if event.cells is not None:
-                projected.append(
-                    ObservationsEvent(timestamp=event.timestamp, cell_infos=compute_cell_infos(event.cells))
-                )
-        elif isinstance(event, SoakActionRequestedEvent):
-            assert event.request.request_id not in requests, f"Duplicate soak request: {event.request.request_id}"
-            requests[event.request.request_id] = event.request
-        elif isinstance(event, SoakActionResultEvent):
-            assert event.request_id in requests, f"Soak result without request: {event.request_id}"
-            assert event.request_id not in completed, f"Duplicate soak result: {event.request_id}"
-            completed.add(event.request_id)
-            request = requests[event.request_id]
-            if isinstance(request.target, SoakDeploymentTarget) or event.returned or event.request_id in applied:
-                continue
-            projected.append(
-                InjectionEvent(
-                    timestamp=event.timestamp,
-                    cell_name=request.target["metadata"]["name"],
-                    form_name=request.form_name,
-                    succeeded=False,
-                    harmed=request.harms_cell,
-                )
-            )
+        if isinstance(event, SoakActionRequestedEvent):
+            request_id = event.request.request_id
+            if request_id in actions:
+                raise ValueError(f"Duplicate soak request: {request_id}")
+            actions[request_id] = SoakActionRecord(requested=event)
         elif isinstance(event, SoakActionAppliedEvent):
-            assert event.request_id in requests, f"Soak application without request: {event.request_id}"
-            assert event.request_id not in applied, f"Duplicate soak application: {event.request_id}"
-            applied.add(event.request_id)
-            request = requests[event.request_id]
-            if isinstance(request.target, SoakDeploymentTarget):
-                continue
-            projected.append(
-                InjectionEvent(
-                    timestamp=event.timestamp,
-                    cell_name=request.target["metadata"]["name"],
-                    form_name=request.form_name,
-                    succeeded=True,
-                    harmed=request.harms_cell,
-                )
-            )
-        elif isinstance(event, (InjectionEvent, ObservationsEvent)):
-            projected.append(event)
-    return projected
+            if event.request_id not in actions:
+                raise ValueError(f"Soak application without request: {event.request_id}")
+            action = actions[event.request_id]
+            if action.applied is not None:
+                raise ValueError(f"Duplicate soak application: {event.request_id}")
+            actions[event.request_id] = replace(action, applied=event)
+        elif isinstance(event, SoakActionResultEvent):
+            if event.request_id not in actions:
+                raise ValueError(f"Soak result without request: {event.request_id}")
+            action = actions[event.request_id]
+            if action.result is not None:
+                raise ValueError(f"Duplicate soak result: {event.request_id}")
+            actions[event.request_id] = replace(action, result=event)
+    return actions
 
 
 def compute_num_injections(events: list[SoakEvent], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
-    return len(compute_injected_cell_names(events, cell_type=cell_type, harmed_only=harmed_only))
-
-
-def compute_injected_cell_names(
-    events: list[SoakEvent], *, cell_type: str | None = None, harmed_only: bool = True
-) -> list[str]:
-    return [
-        name
-        for name, cell_events in _compute_matching_cell_events(
-            events, cell_type=cell_type, harmed_only=harmed_only
-        ).items()
-        for one in cell_events
-        if one.kind == "injected"
-    ]
-
-
-def compute_num_successful_injections_of_form(events: list[SoakEvent], *, form_name: str) -> int:
-    events = project_legacy_events(events)
-    return len(
-        [
-            event
-            for event in events
-            if isinstance(event, InjectionEvent) and event.succeeded and event.form_name == form_name
-        ]
+    return sum(
+        1
+        for request, outcome in _compute_action_outcomes(events)
+        if isinstance(outcome, SoakActionAppliedEvent)
+        and not isinstance(request.target, SoakDeploymentTarget)
+        and (cell_type is None or target_type_of(request.target) == cell_type)
+        and (request.harms_cell or not harmed_only)
     )
 
 
-def compute_cells_not_serving_after_injection(
-    events: list[SoakEvent], *, cell_type: str, grace_seconds: float | None = None
-) -> dict[str, list[str]]:
-    events = project_legacy_events(events)
-    if grace_seconds is None:
-        grace_seconds = STALE_STATUS_GRACE_SECONDS
-
-    cell_type_of_name = _compute_cell_type_of_name(events)
-    last_injection_time_of_name: dict[str, datetime] = {
-        event.cell_name: event.timestamp
-        for event in events
-        if isinstance(event, InjectionEvent)
-        and event.succeeded
-        and event.harmed
-        and cell_type_of_name.get(event.cell_name) == cell_type
-    }
-
-    served: set[str] = set()
-    for event in events:
-        if not isinstance(event, ObservationsEvent):
-            continue
-        for name, injected_at in last_injection_time_of_name.items():
-            info = event.cell_infos.get(name)
-            if (
-                name not in served
-                and info is not None
-                and info.alive
-                and info.state is ObservedCellState.SERVING
-                and (event.timestamp - injected_at).total_seconds() >= grace_seconds
-            ):
-                served.add(name)
-
-    observed_states = compute_states_of_cell_name(events)
-    return {
-        name: [one.value for one in observed_states.get(name, [])]
-        for name in sorted(set(last_injection_time_of_name) - served)
-    }
+def compute_injection_times(events: list[SoakEvent], *, cell_type: str | None = None) -> list[datetime]:
+    return [
+        outcome.timestamp
+        for request, outcome in _compute_action_outcomes(events)
+        if isinstance(outcome, SoakActionAppliedEvent)
+        and not isinstance(request.target, SoakDeploymentTarget)
+        and (cell_type is None or target_type_of(request.target) == cell_type)
+    ]
 
 
 def compute_successful_form_names(events: list[SoakEvent], *, cell_type: str) -> set[str]:
-    if cell_type == "deployment":
-        requests = {
-            event.request.request_id: event.request
-            for event in events
-            if isinstance(event, SoakActionRequestedEvent) and isinstance(event.request.target, SoakDeploymentTarget)
-        }
-        return {
-            requests[event.request_id].form_name
-            for event in events
-            if isinstance(event, SoakActionAppliedEvent) and event.request_id in requests
-        }
-    events = project_legacy_events(events)
-    cell_type_of_name = _compute_cell_type_of_name(events)
     return {
-        event.form_name
-        for event in events
-        if isinstance(event, InjectionEvent)
-        and event.succeeded
-        and cell_type_of_name.get(event.cell_name) == cell_type
+        request.form_name
+        for request, outcome in _compute_action_outcomes(events)
+        if isinstance(outcome, SoakActionAppliedEvent) and target_type_of(request.target) == cell_type
     }
 
 
 def compute_forms_drawn_without_success(events: list[SoakEvent]) -> list[tuple[str, str]]:
-    events = project_legacy_events(events)
-    cell_type_of_name = _compute_cell_type_of_name(events)
     drawn: set[tuple[str, str]] = set()
     worked: set[tuple[str, str]] = set()
-    for event in events:
-        if not isinstance(event, InjectionEvent):
+    for request, outcome in _compute_action_outcomes(events):
+        if isinstance(request.target, SoakDeploymentTarget):
             continue
-        key = (cell_type_of_name.get(event.cell_name, ""), event.form_name)
+        key = (target_type_of(request.target), request.form_name)
         drawn.add(key)
-        if event.succeeded:
+        if isinstance(outcome, SoakActionAppliedEvent):
             worked.add(key)
     return sorted(drawn - worked)
 
 
-def compute_injection_times(events: list[SoakEvent], *, cell_type: str | None = None) -> list[datetime]:
-    events = project_legacy_events(events)
-    cell_type_of_name = _compute_cell_type_of_name(events)
-    return [
-        event.timestamp
-        for event in events
-        if isinstance(event, InjectionEvent)
-        and event.succeeded
-        and (cell_type is None or cell_type_of_name.get(event.cell_name) == cell_type)
-    ]
-
-
-def compute_states_of_cell_name(events: list[SoakEvent]) -> dict[str, list[ObservedCellState]]:
-    return {
-        name: states
-        for name, cell_events in _compute_cell_events(events).items()
-        if (states := _compute_distinct_states(cell_events))
-    }
-
-
-@dataclasses.dataclass(frozen=True)
-class _CellEvent:
-    kind: Literal["injected", "observed"]
-    state: ObservedCellState | None = None
-
-
-def _compute_cell_events(events: list[SoakEvent], *, harmed_only: bool = True) -> dict[str, list[_CellEvent]]:
-    events = project_legacy_events(events)
-    cell_events_of_name: dict[str, list[_CellEvent]] = {}
+def _compute_action_outcomes(
+    events: list[SoakEvent],
+) -> list[tuple[SoakActionRequest, SoakActionAppliedEvent | SoakActionResultEvent]]:
+    events = expand_fault_batches(events)
+    actions = project_actions(events)
+    applied: set[str] = set()
+    outcomes: list[tuple[SoakActionRequest, SoakActionAppliedEvent | SoakActionResultEvent]] = []
     for event in events:
-        if isinstance(event, InjectionEvent):
-            if event.succeeded and (event.harmed or not harmed_only):
-                cell_events_of_name.setdefault(event.cell_name, []).append(_CellEvent(kind="injected"))
-            continue
-        for name, info in event.cell_infos.items():
-            cell_events_of_name.setdefault(name, []).append(_CellEvent(kind="observed", state=info.state))
-    return cell_events_of_name
-
-
-def _compute_matching_cell_events(
-    events: list[SoakEvent], *, cell_type: str | None, harmed_only: bool
-) -> dict[str, list[_CellEvent]]:
-    cell_events_of_name = _compute_cell_events(events, harmed_only=harmed_only)
-    if cell_type is None:
-        return cell_events_of_name
-    cell_type_of_name = _compute_cell_type_of_name(events)
-    return {
-        name: cell_events
-        for name, cell_events in cell_events_of_name.items()
-        if cell_type_of_name.get(name) == cell_type
-    }
-
-
-def _compute_cell_type_of_name(events: list[SoakEvent]) -> dict[str, str]:
-    events = project_legacy_events(events)
-    cell_type_of_name: dict[str, str] = {}
-    for event in events:
-        if isinstance(event, ObservationsEvent):
-            cell_type_of_name.update({name: info.cell_type for name, info in event.cell_infos.items()})
-    return cell_type_of_name
-
-
-def _compute_distinct_states(events: list[_CellEvent]) -> list[ObservedCellState]:
-    states: list[ObservedCellState] = []
-    for event in events:
-        if event.kind == "observed" and event.state is not None and (not states or states[-1] != event.state):
-            states.append(event.state)
-    return states
+        if isinstance(event, SoakActionResultEvent):
+            if not event.returned and event.request_id not in applied:
+                outcomes.append((actions[event.request_id].requested.request, event))
+        elif isinstance(event, SoakActionAppliedEvent):
+            applied.add(event.request_id)
+            outcomes.append((actions[event.request_id].requested.request, event))
+    return outcomes

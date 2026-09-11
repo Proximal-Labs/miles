@@ -196,12 +196,8 @@ class TrainRayActor(NodeProbeMixin):
         return self._heartbeat.status()
 
     @rpc(concurrency_group="fault_injector")
-    def inject_fault(self, mode: str, *, request_id: str | None = None, receipt_url: str | None = None) -> None:
-        _inject_fault(
-            mode=mode,
-            **({"request_id": request_id} if request_id is not None else {}),
-            **({"receipt_url": receipt_url} if receipt_url is not None else {}),
-        )
+    def inject_fault(self, mode: str) -> None:
+        _inject_fault(mode=mode)
 
     @rpc(concurrency_group="fault_injector")
     def control_fault_hook(self, command: FaultHookCommand) -> str | FaultHookRecord:

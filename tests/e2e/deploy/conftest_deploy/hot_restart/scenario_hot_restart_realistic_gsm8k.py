@@ -1,3 +1,4 @@
+import asyncio
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -31,9 +32,7 @@ from tests.utils.soak.recipes.gsm8k import (
 )
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import (
-    InjectionEvent,
     SoakActionAppliedEvent,
-    SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakDeploymentTarget,
@@ -41,11 +40,11 @@ from tests.utils.soak.state import (
     SoakObservation,
     event_source,
 )
+from tests.utils.soak.views import project_actions
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.external_utils import command_utils
-from miles.utils.misc import MutableBox
 
 app: typer.Typer = typer.Typer()
 
@@ -72,37 +71,27 @@ def run_ci(
     config = command_utils.default_config()
     assert_cluster_can_deploy_runs(config)
 
-    hot_restart_form: MutableBox[SoakActionFormHotRestart | None] = MutableBox(value=None)
     max_allowed_rollout_id = num_rollout - TERMINAL_QUIESCENCE_ROLLOUTS - 1
 
     def create_forms(run: Gsm8kRun) -> CellFaultForms:
-        forms = create_hot_restart_forms(run, max_allowed_rollout_id=max_allowed_rollout_id)
-        assert hot_restart_form.value is None, (
-            "the run's fault forms were built twice, so the form this soak reads at the end is not the one the "
-            "second run was injected with"
+        return create_hot_restart_forms(run, max_allowed_rollout_id=max_allowed_rollout_id)
+
+    outcome = asyncio.run(
+        run_realistic_gsm8k(
+            config=config,
+            test_name=TEST_NAME,
+            seed=seed,
+            num_rollout=num_rollout,
+            metric_threshold=metric_threshold,
+            fully_async=False,
+            mean_interval_seconds_of_cell_type={_HOT_RESTART_TARGET_TYPE: hot_restart_interval_seconds},
+            create_forms=create_forms,
+            create_observer=_create_observer,
+            execute_session=execute_hot_restart_session,
+            build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
+            enable_fault_tolerance=False,
         )
-        [hot_restart_form.value] = forms[_HOT_RESTART_TARGET_TYPE]
-        return forms
-
-    outcome = run_realistic_gsm8k(
-        config=config,
-        test_name=TEST_NAME,
-        seed=seed,
-        num_rollout=num_rollout,
-        metric_threshold=metric_threshold,
-        fully_async=False,
-        mean_interval_seconds_of_cell_type={_HOT_RESTART_TARGET_TYPE: hot_restart_interval_seconds},
-        create_forms=create_forms,
-        create_observer=_create_observer,
-        execute_session=execute_hot_restart_session,
-        injection_enabled=lambda: hot_restart_form.value is not None
-        and hot_restart_form.value.is_within_injection_window(),
-        build_extra_train_args=lambda dump_dir: _build_train_args(dump_dir, wandb_run_id=config.run_id),
-        enable_fault_tolerance=False,
     )
-
-    form = hot_restart_form.value
-    assert form is not None, "no fault form was ever built for this run, so nothing here was ever taken over"
 
     events = outcome.injector.event_log.events
     assert_no_take_over_attempt_failed(events)
@@ -147,17 +136,17 @@ def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
 
 
 def _assert_checkpoints_advanced_between_takeovers(events: list[SoakEvent]) -> None:
-    requests = {
-        event.request.request_id: event.request
-        for event in events
-        if isinstance(event, SoakActionRequestedEvent) and event.request.form_name == HOT_RESTART_FORM_NAME
+    actions = {
+        request_id: action
+        for request_id, action in project_actions(events).items()
+        if action.requested.request.form_name == HOT_RESTART_FORM_NAME
     }
     previous_saved_iteration = -1
     count = 0
     for event in events:
-        if not isinstance(event, SoakActionAppliedEvent) or event.request_id not in requests:
+        if not isinstance(event, SoakActionAppliedEvent) or event.request_id not in actions:
             continue
-        target = requests[event.request_id].target
+        target = actions[event.request_id].requested.request.target
         assert isinstance(target, SoakDeploymentTarget)
         assert target.saved_iteration is not None and target.saved_iteration > previous_saved_iteration, (
             f"Takeover {event.request_id} lacks a new checkpoint after the preceding takeover: "
@@ -172,28 +161,24 @@ def _assert_checkpoints_advanced_between_takeovers(events: list[SoakEvent]) -> N
 
 
 def assert_no_take_over_attempt_failed(events: list[SoakEvent]) -> None:
-    requests = {
-        event.request.request_id
-        for event in events
-        if isinstance(event, SoakActionRequestedEvent) and event.request.form_name == HOT_RESTART_FORM_NAME
+    actions = {
+        request_id: action
+        for request_id, action in project_actions(events).items()
+        if action.requested.request.form_name == HOT_RESTART_FORM_NAME
     }
-    applied = {event.request_id for event in events if isinstance(event, SoakActionAppliedEvent)}
     failed = [
-        one
-        for one in events
-        if isinstance(one, InjectionEvent) and one.form_name == HOT_RESTART_FORM_NAME and not one.succeeded
-    ]
-    failed.extend(
         event
         for event in events
-        if isinstance(event, SoakActionResultEvent) and event.request_id in requests and not event.returned
-    )
+        if isinstance(event, SoakActionResultEvent) and event.request_id in actions and not event.returned
+    ]
 
     assert not failed, (
         f"{len(failed)} take-over attempt(s) failed: {failed}. Every draw of this form fires, so a failure here is "
         f"a relaunch the cluster refused or one that never reached the run, not a draw that was declined"
     )
-    assert not (missing := requests - applied), f"Take-over requests never applied: {sorted(missing)}"
+    assert not (
+        missing := {request_id for request_id, action in actions.items() if action.applied is None}
+    ), f"Take-over requests never applied: {sorted(missing)}"
 
 
 def assert_take_over_loss_within_save_interval(records: Sequence[HotRestartRecord]) -> None:

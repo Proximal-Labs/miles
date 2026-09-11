@@ -1,10 +1,8 @@
 from collections.abc import Sequence
 from datetime import datetime
 
-from miles.utils.audit_utils.event_analyzer.rules import (
-    inference_engine_weight_checksum_consistency,
-    inference_engine_weight_movement,
-)
+from tests.utils.soak.checks import inference_engine_weight_checksum_consistency, inference_engine_weight_movement
+
 from miles.utils.audit_utils.event_logger.models import (
     Event,
     InferenceEngineWeightChecksumEvent,

@@ -4,10 +4,9 @@ import asyncio
 import functools
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
-from uuid import uuid4
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -124,8 +123,6 @@ class RayWorkerManager:
         mode: str,
         worker_in_cell_index: int,
         expected_target: FaultTarget | None = None,
-        request_id: str | None = None,
-        receipt_url: str | None = None,
     ) -> None:
         cell = self._find_cell(cell_id)
         if expected_target is not None and (
@@ -141,12 +138,7 @@ class RayWorkerManager:
                 f"worker_in_cell_index {worker_in_cell_index} out of range for cell {cell_id} "
                 f"(has {len(cell.actors)} workers)"
             )
-        if request_id is None:
-            cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
-        else:
-            cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(
-                mode, request_id=request_id, **({"receipt_url": receipt_url} if receipt_url is not None else {})
-            )
+        cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         addrs = self._find_actor(worker_name).self_addrs
@@ -246,7 +238,6 @@ class _CellManager(Generic[SpecT]):
     spec: SpecT
     actors: list[_BaseActorManager] | None
     generation: int = 0
-    identity: str = field(default_factory=lambda: uuid4().hex)
     liveness_scan_task: asyncio.Task | None = None
 
     async def launch_actors(self):
@@ -324,7 +315,7 @@ class _CellManager(Generic[SpecT]):
             pool_id=self.spec.name,
             alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
-            workers_hash=f"{self.identity}:{self.generation}",
+            workers_hash=f"pseudo-hash-{self.generation}",
             meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
         )
 

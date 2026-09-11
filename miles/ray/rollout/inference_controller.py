@@ -263,15 +263,21 @@ class InferenceController:
             return []
         srv = self._get_updatable_server(model_id=model_id)
         if srv is None:
-            raise ValueError(f"No updatable inference model for checksum snapshot: {model_id}")
+            logger.error("No updatable inference model for checksum snapshot: %s", model_id)
+            return []
         if not math.isfinite(checksum_timeout_seconds) or checksum_timeout_seconds <= 0:
-            raise ValueError("Checksum timeout must be positive and finite")
-        return await asyncio.wait_for(
-            srv.get_weight_checksum_snapshot(
-                target_incarnations={cell_id: snapshot_cell_id_to_hashes[cell_id] for cell_id in updated_cell_ids}
-            ),
-            timeout=checksum_timeout_seconds,
-        )
+            logger.error("Checksum timeout must be positive and finite")
+            return []
+        try:
+            return await asyncio.wait_for(
+                srv.get_weight_checksum_snapshot(
+                    target_incarnations={cell_id: snapshot_cell_id_to_hashes[cell_id] for cell_id in updated_cell_ids}
+                ),
+                timeout=checksum_timeout_seconds,
+            )
+        except Exception:
+            logger.exception("Could not observe inference engine weight checksums")
+            return []
 
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:

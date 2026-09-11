@@ -1,26 +1,18 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
-import abc
 import asyncio
 import logging
-import random
 from typing import Literal
 
 import httpx
-import requests
 from tests.utils.soak.action import SoakActionForm, run_command
-from tests.utils.soak.pod_manipulation import (
-    delete_observed_pod,
-    delete_one_pod_of_cell,
-    list_pod_names_of_cell,
-    sigkill_process_patterns_in_pod,
-)
+from tests.utils.soak.pod_manipulation import delete_observed_pod
 from tests.utils.soak.process_target import ProcessExitReceipt, ProcessStopReceipt
 from tests.utils.soak.state import SoakActionRequest, SoakPodTarget
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
-from miles.utils.ft_utils.api_server.fault_receipts import FaultDeadlockReceipt, FaultReceipt, FaultStopReceipt
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS
 from miles.utils.workers.types import ClusterBackend, DeployComponent
@@ -46,20 +38,15 @@ ACTOR_CELL_TYPE: str = "actor"
 ROLLOUT_CELL_TYPE: str = "rollout"
 
 
-class BaseFaultForm(abc.ABC):
-    @property
-    @abc.abstractmethod
-    def name(self) -> str: ...
-
-    @property
-    def harms_cell(self) -> bool:
-        return True
-
-    @abc.abstractmethod
-    def inject(self, cell: dict, rng: random.Random) -> None: ...
+class ObservedCellFault(FrozenStrictBaseModel):
+    request_id: str
+    target: dict
+    mode: FailureMode
+    observed: Literal["missing", "replaced", "unhealthy"]
+    observed_workers_hash: str | None = None
 
 
-class InjectFaultForm(BaseFaultForm, SoakActionForm):
+class InjectFaultForm(SoakActionForm):
     def __init__(self, *, base_url: str, failure_mode: FailureMode) -> None:
         self._base_url = base_url
         self._failure_mode = failure_mode
@@ -82,52 +69,60 @@ class InjectFaultForm(BaseFaultForm, SoakActionForm):
                         "mode": self._failure_mode.value,
                         "sub_index": request.fault_target.sub_index,
                         "expected_target": request.fault_target.model_dump(mode="json"),
-                        "request_id": request.request_id,
                     },
                 )
                 if response.status_code < 500:
                     response.raise_for_status()
             except httpx.TransportError:
                 logger.warning("Fault submission outcome is unknown: %s", request.request_id, exc_info=True)
-            return await self._read_receipt(client=client, request=request)
+            return await self._read_effect(client=client, request=request)
 
-    async def _read_receipt(
+    async def _read_effect(
         self, *, client: httpx.AsyncClient, request: SoakActionRequest, timeout_seconds: float = 30.0
     ) -> dict:
         async with asyncio.timeout(timeout_seconds):
             while True:
                 try:
-                    response = await client.get(f"{self._base_url}/api/v1/fault-receipts/{request.request_id}")
-                    if response.status_code != 404 and response.status_code < 500:
+                    response = await client.get(f"{self._base_url}/api/v1/cells/{request.fault_target.cell_id}")
+                    if response.status_code == 404:
+                        return self._effect(request=request, observed="missing")
+                    if response.status_code < 500:
                         response.raise_for_status()
-                        if (payload := response.json()) is not None:
-                            receipt_type = (
-                                FaultDeadlockReceipt
-                                if self._failure_mode in {FailureMode.DEADLOCK, FailureMode.THREAD_DEADLOCK}
-                                else FaultStopReceipt if self._failure_mode is FailureMode.SIGSTOP else FaultReceipt
+                        cell = response.json()
+                        workers_hash = cell["status"]["workers_hash"]
+                        if workers_hash != request.fault_target.workers_hash:
+                            return self._effect(
+                                request=request, observed="replaced", observed_workers_hash=workers_hash
                             )
-                            receipt = receipt_type.model_validate(payload)
-                            if (receipt.request_id, receipt.target, receipt.mode) != (
-                                request.request_id,
-                                request.fault_target,
-                                self._failure_mode,
-                            ):
-                                raise ValueError("Fault receipt does not match the requested injection")
-                            return receipt.model_dump(mode="json")
+                        if any(
+                            condition["type"] == "Healthy" and condition["status"] == "False"
+                            for condition in cell["status"]["conditions"]
+                        ):
+                            return self._effect(
+                                request=request, observed="unhealthy", observed_workers_hash=workers_hash
+                            )
                 except httpx.TransportError:
-                    logger.warning("Fault receipt read failed: %s", request.request_id, exc_info=True)
+                    logger.warning("Fault effect observation failed: %s", request.request_id, exc_info=True)
                 await asyncio.sleep(0.2)
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        resp = requests.post(
-            f"{self._base_url}/api/v1/cells/{cell['metadata']['name']}/inject-fault",
-            json={"mode": self._failure_mode.value, "sub_index": 0},
-            timeout=5,
-        )
-        resp.raise_for_status()
+    def _effect(
+        self,
+        *,
+        request: SoakActionRequest,
+        observed: Literal["missing", "replaced", "unhealthy"],
+        observed_workers_hash: str | None = None,
+    ) -> dict:
+        assert request.fault_target is not None
+        return ObservedCellFault(
+            request_id=request.request_id,
+            target=request.fault_target.model_dump(mode="json"),
+            mode=self._failure_mode,
+            observed=observed,
+            observed_workers_hash=observed_workers_hash,
+        ).model_dump(mode="json")
 
 
-class DeletePodFaultForm(BaseFaultForm, SoakActionForm):
+class DeletePodFaultForm(SoakActionForm):
     def __init__(self, *, namespace: str, run_id: str) -> None:
         assert namespace, "Deleting a cell's pod needs the namespace the run was installed into"
         assert run_id, "Deleting a cell's pod needs the run_id naming the release that owns it"
@@ -147,13 +142,8 @@ class DeletePodFaultForm(BaseFaultForm, SoakActionForm):
         )
         return await delete_observed_pod(pod)
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        delete_one_pod_of_cell(
-            namespace=self._namespace, release=self._release, cell_id=cell["metadata"]["name"], rng=rng
-        )
 
-
-class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
+class ExecSigkillFaultForm(SoakActionForm):
     def __init__(self, *, namespace: str, run_id: str, container: str, process_pattern: str) -> None:
         assert namespace, "Crashing a process inside a cell's pod needs the namespace the run was installed into"
         assert run_id, "Crashing a process inside a cell's pod needs the run_id naming the release that owns it"
@@ -175,18 +165,6 @@ class ExecSigkillFaultForm(BaseFaultForm, SoakActionForm):
 
     async def execute(self, request: SoakActionRequest) -> dict:
         return await self._execute_signal(request=request, operation="kill")
-
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        cell_id = cell["metadata"]["name"]
-        pod_names = list_pod_names_of_cell(namespace=self._namespace, release=self._release, cell_id=cell_id)
-        assert pod_names, f"Release {self._release} has no pod of cell {cell_id} in {self._namespace} to crash"
-
-        sigkill_process_patterns_in_pod(
-            namespace=self._namespace,
-            pod_name=rng.choice(pod_names),
-            container=self._container,
-            process_pattern=self._process_pattern,
-        )
 
     async def _execute_signal(self, *, request: SoakActionRequest, operation: Literal["kill", "stop"]) -> dict:
         pod = _validate_pod_request(
@@ -237,9 +215,6 @@ class ExecSigstopFaultForm(ExecSigkillFaultForm):
     async def execute(self, request: SoakActionRequest) -> dict:
         return await self._execute_signal(request=request, operation="stop")
 
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        raise NotImplementedError("Process-stop injection requires an observed asynchronous request")
-
 
 def _validate_pod_request(
     *, request: SoakActionRequest, form_name: str, namespace: str, release: str
@@ -252,7 +227,7 @@ def _validate_pod_request(
     return request.pod
 
 
-CellFaultForms = dict[str, list[BaseFaultForm]]
+CellFaultForms = dict[str, list[SoakActionForm]]
 
 
 def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
@@ -286,7 +261,7 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
             }
 
 
-def _inject_fault_forms(*, base_url: str, failure_modes: list[FailureMode]) -> list[BaseFaultForm]:
+def _inject_fault_forms(*, base_url: str, failure_modes: list[FailureMode]) -> list[SoakActionForm]:
     return [InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in failure_modes]
 
 

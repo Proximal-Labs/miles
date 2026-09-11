@@ -139,11 +139,7 @@ class WeightUpdater:
             protocol.finalize(weight_version)
             _mark_cells_errored_on_any_rank(cell_updaters)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(
-                    cell_updaters,
-                    expected_lora_checksums=checksums,
-                    expected_base_weight_checksums_by_cell=protocol.expected_base_weight_checksums_by_cell,
-                )
+                end_weight_update(cell_updaters, expected_lora_checksums=checksums)
                 set_weight_version(cell_updaters, weight_version)
                 maybe_resume_engines(self.args, cell_updaters)
             _mark_cells_errored_on_any_rank(cell_updaters)

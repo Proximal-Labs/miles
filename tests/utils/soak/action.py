@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import TypeVar
 
-from tests.utils.soak.state import SoakActionRequest
+from tests.utils.soak.state import SoakActionRequest, SoakDeploymentTarget, SoakEvent
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -25,6 +25,13 @@ class SoakActionForm(abc.ABC):
     @property
     @abc.abstractmethod
     def name(self) -> str: ...
+
+    @property
+    def harms_cell(self) -> bool:
+        return True
+
+    def is_eligible(self, *, events: list[SoakEvent], target: dict | SoakDeploymentTarget) -> bool:
+        return True
 
     @abc.abstractmethod
     async def execute(self, request: SoakActionRequest) -> dict | None: ...

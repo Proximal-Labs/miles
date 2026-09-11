@@ -1,8 +1,7 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import json
-import shlex
+import asyncio
 import shutil
 from datetime import datetime
 from functools import partial
@@ -15,21 +14,21 @@ from tests.e2e.ft.conftest_ft.execution import (
     get_common_train_args,
     get_ft_args,
     get_train_env_vars_arg,
-    run_training,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.e2e.ft.conftest_ft.training_launcher import TrainingLaunchSpec, execute_session
 from tests.utils.soak.checks.determinism import assert_deterministic_environment
 from tests.utils.soak.checks.ft import assert_rollout_cells_served_after_injection
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy, create_tail_policy
 from tests.utils.soak.core import QUIESCENT_POLLS_REQUIRED
-from tests.utils.soak.entrypoint import API_SERVER_PORT, FaultInjectorHandle, spawn_fault_injector
+from tests.utils.soak.entrypoint import API_SERVER_PORT, create_soak_session
 from tests.utils.soak.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
-from tests.utils.soak.state import event_source
+from tests.utils.soak.state import SoakEvent, event_source
 from tests.utils.soak.storage import validate_dump_storage
 from tests.utils.soak.teardown import teardown_run
-from tests.utils.soak.utils import create_soak_config, evidence_directory, get_api_server_args
+from tests.utils.soak.utils import DEFAULT_TRAIN_SCRIPT, create_soak_config, evidence_directory, get_api_server_args
 from tests.utils.soak.views import compute_injection_times, compute_num_injections
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
@@ -76,7 +75,6 @@ def _build_args(
     args += "--debug-deterministic-collective "
     args += "--sglang-disable-radix-cache "
     args += "--update-weight-transfer-mode p2p --sglang-router-policy round_robin "
-    args += f"--inference-env-vars {shlex.quote(json.dumps(DETERMINISTIC_INFERENCE_ENV_VARS))} "
     args += f"--rollout-health-check-interval {HEALTH_CHECK_INTERVAL_SECONDS} "
     args += "--weight-decay 0 "
     args += get_train_env_vars_arg(
@@ -91,12 +89,12 @@ def _run_side(request: RunSideRequest) -> None:
     config = request.config
     dump_dir = request.dump_dir
     target = request.side == TARGET_SIDE
-    validate_dump_storage(Path(dump_dir))
+    asyncio.run(validate_dump_storage(Path(dump_dir)))
     if Path(dump_dir).exists():
         shutil.rmtree(dump_dir)
     base_url: str = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     evidence_dir = evidence_directory(Path(dump_dir))
-    injector = spawn_fault_injector(
+    injector = create_soak_session(
         evidence_path=evidence_dir / "events.jsonl",
         sources={"training_events": Path(dump_dir) / EVENTS_DIRNAME},
         config=config,
@@ -114,26 +112,30 @@ def _run_side(request: RunSideRequest) -> None:
         ),
         tail_policy=create_tail_policy(num_rollout=NUM_ROLLOUTS, min_tail_rollouts=TERMINAL_FAULT_FREE_ROLLOUTS),
     )
-    try:
-        run_training(
-            train_args=request.train_args,
-            mode=request.mode,
-            dump_dir=dump_dir,
-            config=config,
-            injector=injector,
+    asyncio.run(
+        injector.run(
+            execute_session(
+                spec=TrainingLaunchSpec(
+                    train_args=request.train_args,
+                    mode=request.mode,
+                    config=config,
+                    extra_env_vars={},
+                    train_script=DEFAULT_TRAIN_SCRIPT,
+                ),
+                injector=injector,
+                log_path=evidence_dir / "launcher-initial.log",
+            ),
+            teardown=partial(teardown_run, config=config, event_log=injector.event_log, evidence_dir=evidence_dir),
         )
-    finally:
-        injector.stop_and_join(
-            teardown=partial(teardown_run, config=config, event_log=injector.event_log, evidence_dir=evidence_dir)
-        )
+    )
     assert_tail_complete(injector.event_log.events)
     if target:
         assert_min_soak_injections(
             compute_num_injections(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
             context=f"{TEST_NAME} rollout cells",
         )
-        assert_rollout_cells_served_after_injection(injector)
-        _assert_faults_span_progress_windows(injector, dump_dir=dump_dir)
+        assert_rollout_cells_served_after_injection(injector.event_log.events)
+        _assert_faults_span_progress_windows(injector.event_log.events, dump_dir=dump_dir)
 
 
 def _compute_quiescent_polls_required(config: command_utils.ExecuteTrainConfig) -> int:
@@ -142,10 +144,10 @@ def _compute_quiescent_polls_required(config: command_utils.ExecuteTrainConfig) 
     return QUIESCENT_POLLS_REQUIRED
 
 
-def _assert_faults_span_progress_windows(injector: FaultInjectorHandle, *, dump_dir: str) -> None:
-    source = event_source(injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME)
+def _assert_faults_span_progress_windows(events: list[SoakEvent], *, dump_dir: str) -> None:
+    source = event_source(events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME)
     progress_windows = _compute_fault_progress_windows(
-        injected_at=compute_injection_times(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
+        injected_at=compute_injection_times(events, cell_type=ROLLOUT_CELL_TYPE),
         rollout_completions=read_rollout_completion_times(str(source.parent)),
     )
 

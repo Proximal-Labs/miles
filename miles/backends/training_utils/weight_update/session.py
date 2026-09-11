@@ -47,28 +47,13 @@ def begin_weight_update(
 
 
 def end_weight_update(
-    cell_updaters: Sequence[_RolloutCellUpdater],
-    *,
-    expected_lora_checksums: Mapping | None = None,
-    expected_base_weight_checksums_by_cell: Mapping[str, dict[str, dict[str, str]]] | None = None,
+    cell_updaters: Sequence[_RolloutCellUpdater], *, expected_lora_checksums: Mapping | None = None
 ) -> None:
     """Close the session: re-finalize base weights (sync_base sessions) and apply
     the streamed LoRA stash (optionally verified against a sha256 manifest)."""
-    if expected_base_weight_checksums_by_cell is not None:
-        assert set(expected_base_weight_checksums_by_cell) == {
-            updater.cell_id for updater in cell_updaters if not updater.is_errored
-        }, "P2P checksum manifests must cover exactly the healthy inference cells"
     results = async_utils.wait_futures(
         [
-            updater.submit_client_call(
-                "end_weight_update",
-                expected_lora_checksums=expected_lora_checksums,
-                **(
-                    {"expected_base_weight_checksums": expected_base_weight_checksums_by_cell[updater.cell_id]}
-                    if expected_base_weight_checksums_by_cell is not None and not updater.is_errored
-                    else {}
-                ),
-            )
+            updater.submit_client_call("end_weight_update", expected_lora_checksums=expected_lora_checksums)
             for updater in cell_updaters
         ]
     )

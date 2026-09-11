@@ -2,14 +2,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from tests.utils.soak.batch import expand_fault_batches
-from tests.utils.soak.state import (
-    SoakActionAppliedEvent,
-    SoakActionRequestedEvent,
-    SoakEvent,
-    SoakObservation,
-    cell_is_alive,
-    cell_type_of,
-)
+from tests.utils.soak.state import SoakActionRequestedEvent, SoakEvent, SoakObservation, cell_is_alive, cell_type_of
+from tests.utils.soak.views import project_actions
 
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.workers.naming import parse_cell_id
@@ -33,19 +27,23 @@ def compute_recovery_episodes(
     reconfigurations: list[CellReconfigureEvent] | None = None,
 ) -> list[RecoveryEpisode]:
     events = expand_fault_batches(events)
-    applied = _index_applied_actions(events)
+    actions = project_actions(events)
+    for request_id, action in actions.items():
+        if action.applied is not None and action.applied.timestamp < action.requested.timestamp:
+            raise ValueError(f"Applied action precedes its request: {request_id}")
+
     episodes: list[RecoveryEpisode] = []
     pending: dict[str, RecoveryEpisode] = {}
     for event in events:
         if isinstance(event, SoakActionRequestedEvent):
             request = event.request
-            if request.request_id not in applied or not request.harms_cell or not isinstance(request.target, dict):
+            effect = actions[request.request_id].applied
+            if effect is None or not request.harms_cell or not isinstance(request.target, dict):
                 continue
             name = request.target["metadata"]["name"]
             incarnation = request.target["status"]["workers_hash"]
             if not incarnation:
                 raise ValueError("Recovery evidence requires a nonempty target incarnation")
-            effect = applied[request.request_id]
             if name not in pending:
                 episode = RecoveryEpisode(
                     cell_id=name,
@@ -76,24 +74,6 @@ def compute_recovery_episodes(
                     episode.recovered_at = event.timestamp
                     del pending[name]
     return episodes
-
-
-def _index_applied_actions(events: list[SoakEvent]) -> dict[str, SoakActionAppliedEvent]:
-    requests: dict[str, SoakActionRequestedEvent] = {}
-    applied: dict[str, SoakActionAppliedEvent] = {}
-    for event in events:
-        if isinstance(event, SoakActionRequestedEvent):
-            request_id = event.request.request_id
-            if request_id in requests:
-                raise ValueError(f"Duplicate fault request: {request_id}")
-            requests[request_id] = event
-        elif isinstance(event, SoakActionAppliedEvent):
-            if event.request_id not in requests or event.request_id in applied:
-                raise ValueError(f"Unknown or duplicate applied action: {event.request_id}")
-            if event.timestamp < requests[event.request_id].timestamp:
-                raise ValueError(f"Applied action precedes its request: {event.request_id}")
-            applied[event.request_id] = event
-    return applied
 
 
 def _proves_recovery(

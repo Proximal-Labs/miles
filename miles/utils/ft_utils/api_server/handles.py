@@ -107,19 +107,8 @@ class _CellHandler:
         mode: FailureMode,
         sub_index: int,
         expected_target: FaultTarget | None = None,
-        request_id: str | None = None,
-        receipt_url: str | None = None,
     ) -> None:
-        if request_id is not None:
-            await self._operations.inject_fault(
-                cell_id=cell_id,
-                mode=mode,
-                sub_index=sub_index,
-                expected_target=expected_target,
-                request_id=request_id,
-                **({"receipt_url": receipt_url} if receipt_url is not None else {}),
-            )
-        elif expected_target is None:
+        if expected_target is None:
             await self._operations.inject_fault(cell_id=cell_id, mode=mode, sub_index=sub_index)
         else:
             await self._operations.inject_fault(

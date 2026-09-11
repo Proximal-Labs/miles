@@ -1,4 +1,3 @@
-import asyncio
 import json
 import sys
 from pathlib import Path
@@ -10,7 +9,7 @@ from tests.utils.soak.state import EventLog, SoakCollectionClosedEvent, SoakEven
 _COLLECTION_TIMEOUT_SECONDS = 180.0
 
 
-def collect_events(*, path: Path, events: list[SoakEvent]) -> list[SoakEvent]:
+async def collect_events(*, path: Path, events: list[SoakEvent]) -> list[SoakEvent]:
     payload = json.dumps(
         {
             "path": str(path),
@@ -20,13 +19,11 @@ def collect_events(*, path: Path, events: list[SoakEvent]) -> list[SoakEvent]:
         }
     )
     try:
-        result = asyncio.run(
-            run_command(
-                [sys.executable, "-m", "tests.utils.soak.archive"],
-                timeout_seconds=_COLLECTION_TIMEOUT_SECONDS,
-                stdin_data=payload,
-                check=False,
-            )
+        result = await run_command(
+            [sys.executable, "-m", "tests.utils.soak.archive"],
+            timeout_seconds=_COLLECTION_TIMEOUT_SECONDS,
+            stdin_data=payload,
+            check=False,
         )
     except TimeoutError as error:
         raise TimeoutError(f"Soak evidence collection exceeded {_COLLECTION_TIMEOUT_SECONDS}s: {path}") from error

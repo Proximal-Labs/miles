@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
-from pydantic import TypeAdapter
 from tests.utils.soak.batch import validate_fault_batch
+from tests.utils.soak.fault_forms import ObservedCellFault
 from tests.utils.soak.process_target import ProcessExitReceipt, ProcessStopReceipt
 from tests.utils.soak.state import (
     SoakActionAppliedEvent,
@@ -16,7 +16,6 @@ from tests.utils.soak.state import (
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent, TrainGroupStepEndEvent, WeightUpdateResultEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
-from miles.utils.ft_utils.api_server.fault_receipts import FaultDeadlockReceipt, FaultReceipt, FaultStopReceipt
 from miles.utils.test_utils.fault_hooks import FaultHookRecord, FaultHookRequest
 from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.naming import parse_cell_id
@@ -81,7 +80,7 @@ def assert_hook_effects(events: Sequence[SoakEvent], *, hook_events: Sequence[Fa
         ), "Applied hook also claims cancellation, expiration or dispatch failure"
         if remote:
             recorded_hit = FaultHookRecord.model_validate(event.evidence["hook_hit"])
-            assert recorded_hit.request.model_copy(update={"receipt_url": None}) == hook_request
+            assert recorded_hit.request == hook_request
             assert recorded_hit.status == "fired"
             assert (
                 recorded_hit.weight_version,
@@ -233,8 +232,11 @@ def _assert_remote_victim_effect(*, request: SoakActionRequest, evidence: dict) 
         if key not in {"hook_request", "hook_hit", "hook_trigger", "victim_form", "batch_receipts"}
     }
     if victim_form.startswith("inject_fault:"):
-        effect = TypeAdapter(FaultReceipt | FaultStopReceipt | FaultDeadlockReceipt).validate_python(receipt)
-        assert effect.request_id == request.request_id and effect.target == request.fault_target
+        effect = ObservedCellFault.model_validate(receipt)
+        assert request.fault_target is not None
+        assert effect.request_id == request.request_id and effect.target == request.fault_target.model_dump(
+            mode="json"
+        )
         assert victim_form == f"inject_fault:{effect.mode.value}", "Victim receipt names another fault mode"
     elif victim_form in {"exec_sigkill", "exec_sigstop"}:
         assert request.pod is not None, "Remote process fault lacks its observed pod"

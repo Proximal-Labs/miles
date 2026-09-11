@@ -1,5 +1,4 @@
 import asyncio
-import random
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
@@ -14,22 +13,22 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
 from tests.e2e.deploy.conftest_deploy.hot_restart.guarded_launcher import HotRestartLaunchSpec
 from tests.e2e.deploy.conftest_deploy.hot_restart.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
 from tests.utils.soak.action import SoakActionForm
-from tests.utils.soak.fault_forms import BaseFaultForm
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
 from tests.utils.soak.state import (
     EventLog,
     SoakActionAppliedEvent,
     SoakActionRequest,
-    SoakActionRequestedEvent,
     SoakDeploymentTarget,
+    SoakEvent,
     SoakLauncherExitedEvent,
     SoakObservation,
 )
+from tests.utils.soak.views import project_actions
 
 SESSION_TIMEOUT_SECONDS: float = 6 * 3600
 
 
-class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
+class SoakActionFormHotRestart(SoakActionForm):
     def __init__(
         self,
         *,
@@ -55,31 +54,28 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
     def harms_cell(self) -> bool:
         return False
 
-    def is_within_injection_window(self) -> bool:
-        events = self._event_log.events
-        observation = next((event for event in reversed(events) if isinstance(event, SoakObservation)), None)
-        if observation is None or len(observation.deployments) != 1:
+    def is_eligible(self, *, events: list[SoakEvent], target: dict | SoakDeploymentTarget) -> bool:
+        if not isinstance(target, SoakDeploymentTarget):
             return False
-        target = observation.deployments[0]
         progress = target.finished_rollout_id
         if progress is None or progress >= self._max_allowed_rollout_id or target.saved_iteration is None:
             return False
-        requests = {
-            event.request.request_id: event.request
-            for event in events
-            if isinstance(event, SoakActionRequestedEvent) and event.request.form_name == self.name
+        actions = {
+            request_id: action
+            for request_id, action in project_actions(events).items()
+            if action.requested.request.form_name == self.name
         }
         previous = next(
             (
                 event
                 for event in reversed(events)
-                if isinstance(event, SoakActionAppliedEvent) and event.request_id in requests
+                if isinstance(event, SoakActionAppliedEvent) and event.request_id in actions
             ),
             None,
         )
         if previous is None:
             return True
-        before = requests[previous.request_id].target
+        before = actions[previous.request_id].requested.request.target
         assert isinstance(before, SoakDeploymentTarget)
         after = SoakDeploymentTarget.model_validate(previous.evidence["after"])
         return target.saved_iteration > max(
@@ -115,9 +111,6 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
             if not launcher.done():
                 launcher.cancel()
             await asyncio.gather(launcher, return_exceptions=True)
-
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        raise AssertionError("Hot restart must run through the async soak runner")
 
     async def _launch(self, *, request: SoakActionRequest, spec: Gsm8kLaunchSpec, log_path: Path) -> int:
         result = await launch(
@@ -156,10 +149,9 @@ class SoakActionFormHotRestart(BaseFaultForm, SoakActionForm):
                 workloads=compute_hot_restart_workloads(target.release),
             ):
                 requests = [
-                    event.request.request_id
-                    for event in events
-                    if isinstance(event, SoakActionRequestedEvent)
-                    and isinstance(event.request.target, SoakDeploymentTarget)
+                    request_id
+                    for request_id, action in project_actions(events).items()
+                    if isinstance(action.requested.request.target, SoakDeploymentTarget)
                 ]
                 record = HotRestartRecord(
                     index=requests.index(request.request_id),

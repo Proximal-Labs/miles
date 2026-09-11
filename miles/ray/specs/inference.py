@@ -415,10 +415,4 @@ def compute_inference_engine_env_vars(args: Namespace) -> dict[str, str]:
         from miles.utils import dumper_utils
 
         env_vars.update(dumper_utils.get_sglang_env(args))
-    overrides = args.inference_env_vars
-    if not isinstance(overrides, dict) or any(
-        not isinstance(name, str) or not isinstance(value, str) for name, value in overrides.items()
-    ):
-        raise ValueError("Inference environment overrides must be a mapping of strings to strings")
-    env_vars.update(overrides)
     return env_vars

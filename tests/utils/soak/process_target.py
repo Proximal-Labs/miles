@@ -12,7 +12,6 @@ import typer
 from pydantic import Field
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.fault_witness import wait_process_stopped
 from miles.utils.workers.env_vars import POD_UID_ENV_VAR
 
 
@@ -133,6 +132,21 @@ def _idempotent_resume(fd: int) -> None:
         signal.pidfd_send_signal(fd, signal.SIGCONT)
     except ProcessLookupError:
         pass
+
+
+def wait_process_stopped(*, pid: int, pidfd: int, timeout_seconds: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if select.select([pidfd], [], [], 0)[0]:
+            raise ProcessLookupError("Fault target exited before stop was witnessed")
+        tasks = list((Path("/proc") / str(pid) / "task").glob("*/stat"))
+        states = [path.read_text().rsplit(")", 1)[1].split()[0] for path in tasks]
+        if states and all(state == "T" for state in states):
+            if select.select([pidfd], [], [], 0)[0]:
+                raise ProcessLookupError("Fault target exited during stop observation")
+            return
+        time.sleep(0.01)
+    raise TimeoutError("Fault target did not stop after witness initialization")
 
 
 def _start_ticks(pid: int) -> int:

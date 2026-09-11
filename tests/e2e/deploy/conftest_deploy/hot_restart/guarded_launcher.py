@@ -10,6 +10,7 @@ import typer
 import yaml
 from tests.e2e.deploy.conftest_deploy.hot_restart.deployment_target import validate_deployment_target
 from tests.e2e.deploy.conftest_deploy.hot_restart.guard_manifest import GUARDED_WORKLOAD_KINDS
+from tests.e2e.deploy.conftest_deploy.hot_restart.uninstall_lock import uninstall_lock
 from tests.utils.soak.recipes.gsm8k import launch_gsm8k
 from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec
 from tests.utils.soak.state import SoakDeploymentTarget
@@ -19,7 +20,6 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher import entry
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
-from miles.utils.external_utils.command_utils.helm_backend.orchestrator.uninstall_lock import uninstall_lock
 from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.serving.utils import override_env
 

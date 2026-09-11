@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import shlex
 from pathlib import Path
@@ -21,7 +20,7 @@ class DumpStorageFacts(FrozenStrictBaseModel):
     df_output: str
 
 
-def validate_training_storage(train_args: str) -> None:
+async def validate_training_storage(train_args: str) -> None:
     argv = shlex.split(train_args)
     paths = {
         Path(value)
@@ -29,14 +28,10 @@ def validate_training_storage(train_args: str) -> None:
         if (value := ArgvManipulator.get_effective(argv, flag)) is not None
     }
     for path in sorted(paths):
-        validate_dump_storage(path)
+        await validate_dump_storage(path)
 
 
-def validate_dump_storage(path: Path) -> DumpStorageFacts:
-    return asyncio.run(_validate_dump_storage(path))
-
-
-async def _validate_dump_storage(path: Path) -> DumpStorageFacts:
+async def validate_dump_storage(path: Path) -> DumpStorageFacts:
     checked = path.resolve()
     while not checked.exists():
         checked = checked.parent

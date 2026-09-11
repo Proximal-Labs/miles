@@ -2,6 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
+import asyncio
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -24,9 +25,9 @@ from tests.e2e.ft.conftest_ft.execution import (
     get_ft_args,
     materialize_cyclic_debug_rollout_data,
     prepare,
-    run_training,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+from tests.e2e.ft.conftest_ft.training_launcher import TrainingLaunchSpec, execute_session
 from tests.utils.soak.checks.ft import assert_healing
 from tests.utils.soak.checks.hooks import (
     assert_batch_trainers_recovered,
@@ -38,7 +39,7 @@ from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.cli_options import SeedOption
 from tests.utils.soak.config import create_policy, create_tail_policy
-from tests.utils.soak.entrypoint import API_SERVER_PORT, spawn_fault_injector
+from tests.utils.soak.entrypoint import API_SERVER_PORT, create_soak_session
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
 from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.state import event_source
@@ -84,7 +85,7 @@ def run_ci(
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
-    Starts a background thread that injects faults at random intervals via the
+    Runs an async session that injects faults at random intervals via the
     api server HTTP API. The mini FT controller auto-recovers; the test passes
     if training completes without hanging.
 
@@ -147,7 +148,7 @@ def run_ci(
     if ft_mode.has_real_rollout:
         train_args += "--update-weight-transfer-mode p2p "
     if precise_all_gather or precise_p2p:
-        train_args += "--train-step-timeout 600 --update-weights-timeout 600 "
+        train_args += "--update-weights-timeout 600 "
 
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     evidence_dir = evidence_directory(Path(dump_dir))
@@ -187,7 +188,10 @@ def run_ci(
     if mix_wall_clock:
         wall_clock_forms = create_cell_fault_forms(base_url=base_url, config=config)
         cell_fault_forms = {kind: [*forms, *wall_clock_forms[kind]] for kind, forms in cell_fault_forms.items()}
-    injector = spawn_fault_injector(
+    assert not Path(dump_dir).exists() or not any(
+        Path(dump_dir).iterdir()
+    ), f"Soak dump directory contains existing artifacts: {dump_dir}; choose a new run_id"
+    injector = create_soak_session(
         tail_policy=tail_policy,
         policy=create_policy(
             expected_cells={
@@ -208,20 +212,22 @@ def run_ci(
         cell_fault_forms=cell_fault_forms,
     )
 
-    try:
-        run_training(
-            injector=injector,
-            train_args=train_args,
-            mode=ft_mode,
-            dump_dir=dump_dir,
-            extra_env_vars={},
-            config=config,
-            train_script=get_train_script(fully_async=fully_async),
+    asyncio.run(
+        injector.run(
+            execute_session(
+                spec=TrainingLaunchSpec(
+                    train_args=train_args,
+                    mode=ft_mode,
+                    extra_env_vars={},
+                    config=config,
+                    train_script=get_train_script(fully_async=fully_async),
+                ),
+                injector=injector,
+                log_path=evidence_dir / "launcher-initial.log",
+            ),
+            teardown=partial(teardown_run, config=config, event_log=injector.event_log, evidence_dir=evidence_dir),
         )
-    finally:
-        injector.stop_and_join(
-            teardown=partial(teardown_run, config=config, event_log=injector.event_log, evidence_dir=evidence_dir)
-        )
+    )
 
     assert_tail_complete(injector.event_log.events)
     if ft_mode.has_real_rollout:
@@ -262,7 +268,8 @@ def run_ci(
             )
     assert_healing(
         ft_mode.ft_components,
-        injector=injector,
+        events=injector.event_log.events,
+        forms=injector.cell_fault_forms,
         event_dir=Path(dump_dir) / EVENTS_DIRNAME,
         context=f"{test_name} {mode}",
     )

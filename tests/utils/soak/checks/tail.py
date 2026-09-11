@@ -1,13 +1,6 @@
 from tests.utils.soak.recovery import compute_recovery_episodes
-from tests.utils.soak.state import (
-    SoakActionAppliedEvent,
-    SoakActionRequestedEvent,
-    SoakActionResultEvent,
-    SoakAdmissionClosedEvent,
-    SoakDeploymentTarget,
-    SoakEvent,
-    SoakObservation,
-)
+from tests.utils.soak.state import SoakAdmissionClosedEvent, SoakDeploymentTarget, SoakEvent, SoakObservation
+from tests.utils.soak.views import project_actions
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
@@ -28,15 +21,13 @@ def assert_tail_complete(events: list[SoakEvent], *, trainer_id: str = "actor") 
     unresolved = [episode.request_ids for episode in episodes if episode.recovered_at is None]
     assert not unresolved, f"Soak tail ended before recovery: {unresolved}"
 
-    applied = {event.request_id for event in events if isinstance(event, SoakActionAppliedEvent)}
-    results = {event.request_id: event for event in events if isinstance(event, SoakActionResultEvent)}
-    requests = [event.request for event in events if isinstance(event, SoakActionRequestedEvent)]
-    unknown = [request.request_id for request in requests if request.request_id not in applied]
+    actions = project_actions(events)
+    unknown = [request_id for request_id, action in actions.items() if action.applied is None]
     assert not unknown, f"Soak tail has actions without confirmed effects: {unknown}"
     unfinished = [
-        request.request_id
-        for request in requests
-        if not isinstance(request.target, SoakDeploymentTarget) and request.request_id not in results
+        request_id
+        for request_id, action in actions.items()
+        if not isinstance(action.requested.request.target, SoakDeploymentTarget) and action.result is None
     ]
     assert not unfinished, f"Soak tail has unfinished actions: {unfinished}"
 

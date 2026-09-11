@@ -14,15 +14,14 @@ from tests.utils.soak.state import (
     EventLog,
     SoakActionAppliedEvent,
     SoakActionRequest,
-    SoakActionRequestedEvent,
     SoakActionResultEvent,
     SoakAdmissionClosedEvent,
-    SoakDeploymentTarget,
     SoakEvent,
     SoakObservation,
     target_type_of,
 )
 from tests.utils.soak.training_events import observe_training_events
+from tests.utils.soak.views import project_actions
 
 from miles.utils.audit_utils.event_logger.models import TrainGroupStepEndEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
@@ -63,17 +62,16 @@ class SoakRunner:
 
     async def run(self, stop_event: asyncio.Event) -> None:
         self._event_log.note_schedule(self._scheduler.initial_schedule())
-        try:
-            async with asyncio.timeout(self._timeouts.run_seconds):
-                async with asyncio.TaskGroup() as tasks:
-                    observing = tasks.create_task(self._observe_and_choose(stop_event))
-                    budget = tasks.create_task(self._watch_tail_budget(stop_event))
-                    await stop_event.wait()
-                    observing.cancel()
-                    budget.cancel()
-        finally:
-            self._finalize_cancelled_actions()
-            await self._observe_and_record(timeout_seconds=self._timeouts.final_observation_seconds)
+        async with asyncio.TaskGroup() as tasks:
+            observing = tasks.create_task(self._observe_and_choose(stop_event))
+            budget = tasks.create_task(self._watch_tail_budget(stop_event))
+            await stop_event.wait()
+            observing.cancel()
+            budget.cancel()
+
+    async def finish(self) -> None:
+        self._finalize_cancelled_actions()
+        await self._observe_and_record(timeout_seconds=self._timeouts.final_observation_seconds)
 
     def get_events(self) -> list[SoakEvent]:
         return self._event_log.events
@@ -89,6 +87,7 @@ class SoakRunner:
         async with asyncio.TaskGroup() as actions:
             while not stop_event.is_set():
                 await asyncio.sleep(self._poll_interval_seconds)
+                # Record every poll so the post-run witnesses see the same stream the injector saw.
                 await self._observe_and_record(timeout_seconds=self._timeouts.observation_seconds)
                 if stop_event.is_set():
                     return
@@ -153,28 +152,12 @@ class SoakRunner:
             self._event_log.note_action_result(SoakActionResultEvent(request_id=request.request_id, returned=True))
 
     def _finalize_cancelled_actions(self) -> None:
-        events = self.get_events()
-        finished = {event.request_id for event in events if isinstance(event, SoakActionResultEvent)}
-        for event in events:
-            if isinstance(event, SoakActionRequestedEvent) and event.request.request_id not in finished:
+        for request_id, action in project_actions(self.get_events()).items():
+            if action.result is None:
                 self._event_log.note_action_result(
                     SoakActionResultEvent(
-                        request_id=event.request.request_id,
+                        request_id=request_id,
                         returned=False,
                         error="Cancelled before execution",
                     )
                 )
-
-
-def _has_pending_action(events: list[SoakEvent]) -> bool:
-    pending: dict[str, SoakActionRequest] = {}
-    for event in events:
-        if isinstance(event, SoakActionRequestedEvent):
-            pending[event.request.request_id] = event.request
-        elif isinstance(event, SoakActionResultEvent):
-            pending.pop(event.request_id, None)
-        elif isinstance(event, SoakActionAppliedEvent):
-            request = pending.get(event.request_id)
-            if request is not None and isinstance(request.target, SoakDeploymentTarget):
-                del pending[event.request_id]
-    return bool(pending)

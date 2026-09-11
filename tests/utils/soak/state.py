@@ -1,12 +1,9 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
-import enum
 import hashlib
 import os
 import shutil
-import threading
 import time
-from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, get_args
@@ -30,33 +27,9 @@ def cell_is_alive(cell: dict) -> bool:
     return any(cond["type"] == "Healthy" and cond["status"] == "True" for cond in cell["status"]["conditions"])
 
 
-class ObservedCellState(enum.Enum):
-    SUSPENDED = "Suspended"  # torn down, holding no gpu
-    PENDING = "Pending"  # allocated but gated: no engine serving yet
-    RUNNING_NOT_SERVING = "RunningNotServing"  # engine is up but not registered in the router
-    SERVING = "Serving"  # registered in the router, i.e. actually able to answer requests
-
-
-def compute_observed_cell_state(cell: dict) -> ObservedCellState:
-    phase = cell["status"]["phase"]
-    if phase == "Suspended":
-        return ObservedCellState.SUSPENDED
-    if phase == "Pending":
-        return ObservedCellState.PENDING
-    serving = any(cond["type"] == "Serving" and cond["status"] == "True" for cond in cell["status"]["conditions"])
-    return ObservedCellState.SERVING if serving else ObservedCellState.RUNNING_NOT_SERVING
-
-
 class BaseEvent(FrozenStrictBaseModel):
     # Wall clock, so an event can be lined up against the timestamps the metric events carry.
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class InjectionEvent(BaseEvent):
-    cell_name: str
-    form_name: str
-    succeeded: bool
-    harmed: bool = True
 
 
 class SoakPodTarget(FrozenStrictBaseModel):
@@ -163,22 +136,8 @@ class SoakEvidenceArchivedEvent(BaseEvent):
     sha256_of_file: dict[str, str]
 
 
-class CellInfo(FrozenStrictBaseModel):
-    cell_type: str
-    state: ObservedCellState
-    alive: bool
-
-
-class ObservationsEvent(BaseEvent):
-    # One whole poll, so a cell that has vanished is as recorded as one that answered.
-    cell_infos: dict[str, CellInfo]
-    cells: list[dict] = Field(default_factory=list)
-
-
 SoakEvent = (
-    InjectionEvent
-    | ObservationsEvent
-    | SoakActionRequestedEvent
+    SoakActionRequestedEvent
     | SoakActionResultEvent
     | SoakScheduleEvent
     | SoakObservation
@@ -229,30 +188,29 @@ class EventLog:
 
     def __init__(self) -> None:
         self._events: list[SoakEvent] = []
-        self._lock = threading.Lock()
+        self._collecting = False
         self._path: Path | None = None
 
     def persist_to(self, path: Path) -> None:
-        with self._lock:
-            assert self._path is None and not self._events, "Configure evidence persistence before recording events"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("x"):
-                pass
-            self._path = path
+        assert self._path is None and not self._events, "Configure evidence persistence before recording events"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x"):
+            pass
+        self._path = path
 
     @property
     def events(self) -> list[SoakEvent]:
-        with self._lock:
-            return list(self._events)
+        return list(self._events)
 
-    def finish(self) -> None:
+    async def finish(self) -> None:
         from tests.utils.soak.archive import collect_events
 
         if self._path is None:
             self._append(SoakCollectionClosedEvent())
             return
-        with self._lock:
-            self._events = collect_events(path=self._path, events=self._events)
+        assert not self._collecting, "Soak evidence collection is already running"
+        self._collecting = True
+        self._events = await collect_events(path=self._path, events=self.events)
 
     def _finish_collection(self) -> None:
         if self._path is not None:
@@ -266,17 +224,6 @@ class EventLog:
 
     def note_context(self, event: SoakRunContextEvent) -> None:
         self._append(event)
-
-    def note_injection_attempt(self, *, cell_name: str, form_name: str, succeeded: bool, harmed: bool = True) -> None:
-        self._append(InjectionEvent(cell_name=cell_name, form_name=form_name, succeeded=succeeded, harmed=harmed))
-
-    def observe(self, cells: list[dict]) -> None:
-        self._append(
-            ObservationsEvent(
-                cells=deepcopy(cells),
-                cell_infos=compute_cell_infos(cells),
-            )
-        )
 
     def close_admission(self) -> None:
         self._append(SoakAdmissionClosedEvent())
@@ -303,39 +250,28 @@ class EventLog:
         self._append(observation)
 
     def _append(self, event: SoakEvent) -> bool:
-        with self._lock:
-            assert not self._events or not isinstance(
-                self._events[-1], SoakCollectionClosedEvent
-            ), "Soak evidence is closed"
-            if isinstance(event, (SoakActionRequestedEvent, SoakAdmissionClosedEvent)) and any(
-                isinstance(previous, SoakAdmissionClosedEvent) for previous in self._events
-            ):
-                return False
-            snapshot = type(event).model_validate(event.model_dump(mode="json"))
-            if self._path is not None:
-                stored = _StoredEvent(
-                    sequence=len(self._events),
-                    event_type=type(snapshot).__name__,
-                    event=snapshot.model_dump(mode="json"),
-                )
-                with self._path.open("r+b") as stream:
-                    stream.seek(0, os.SEEK_END)
-                    stream.write((stored.model_dump_json() + "\n").encode())
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            self._events.append(snapshot)
-            return True
-
-
-def compute_cell_infos(cells: list[dict]) -> dict[str, CellInfo]:
-    return {
-        cell["metadata"]["name"]: CellInfo(
-            cell_type=cell_type_of(cell),
-            state=compute_observed_cell_state(cell),
-            alive=cell_is_alive(cell),
-        )
-        for cell in cells
-    }
+        assert not self._collecting, "Cannot append while collecting soak evidence"
+        assert not self._events or not isinstance(
+            self._events[-1], SoakCollectionClosedEvent
+        ), "Soak evidence is closed"
+        if isinstance(event, (SoakActionRequestedEvent, SoakAdmissionClosedEvent)) and any(
+            isinstance(previous, SoakAdmissionClosedEvent) for previous in self._events
+        ):
+            return False
+        snapshot = type(event).model_validate(event.model_dump(mode="json"))
+        if self._path is not None:
+            stored = _StoredEvent(
+                sequence=len(self._events),
+                event_type=type(snapshot).__name__,
+                event=snapshot.model_dump(mode="json"),
+            )
+            with self._path.open("r+b") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.write((stored.model_dump_json() + "\n").encode())
+                stream.flush()
+                os.fsync(stream.fileno())
+        self._events.append(snapshot)
+        return True
 
 
 def cell_type_of(cell: dict) -> str:

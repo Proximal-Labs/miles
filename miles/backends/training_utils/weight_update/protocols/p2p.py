@@ -25,7 +25,6 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
 
-from .p2p_checksums import P2PChecksumShard, checksum_transfer_tensors, merge_transfer_checksums
 from .p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from .p2p_transfer_utils import (
     RemoteTransferPlan,
@@ -67,8 +66,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.remote_weight_infos_by_session_id: dict[str, tuple] = {}
         self.session_id_to_server_args: dict[str, ServerArgs] = {}
         self._rollout_engine_rank_infos: list[_RolloutEngineRankInfo] = []
-        self._checksum_shards: dict[tuple[str, int], P2PChecksumShard] = {}
-        self._engine_gpu_counts: dict[str, int] = {}
 
     def after_base_weights(self) -> None:
         """Wait for all background P2P writes to complete."""
@@ -82,9 +79,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
         """Register shared CPU pinned memory with P2P on the first sync."""
-        self.expected_base_weight_checksums_by_cell = None
-        for shard in self._checksum_shards.values():
-            shard.tensors.clear()
         if self.is_sender and not self._model_registered:
             self._weight_memory_registry = register_cpu_memory(
                 self._cpu_replicas.shared_params_dict, self._transfer_engine
@@ -113,15 +107,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
             last_idx = len(self._rollout_engine_rank_infos) - 1
             for i, meta in enumerate(self._rollout_engine_rank_infos):
                 meta.model_replica.load_weights(ready_hf_tensors)
-                if self.args.save_inference_engine_weight_checksum:
-                    checksums = checksum_transfer_tensors(
-                        self._cpu_replicas.shared_params_dict, names=transfer_ready_params
-                    )
-                    for cell_updater in meta.target_cell_updaters:
-                        shard = self._checksum_shards[(cell_updater.cell_id, meta.rollout_engine_rank)]
-                        assert not shard.tensors.keys() & checksums.keys(), "A P2P update sends a parameter twice"
-                        shard.tensors.update(checksums)
-
                 # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
                 for cell_updater in meta.target_cell_updaters:
@@ -138,27 +123,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         cell_updater.wait_for_pending_writes(timeout=self.args.p2p_transfer_timeout)
 
         converted_named_tensors.clear()
-
-    def finalize(self, weight_version: int) -> None:
-        if not self.args.save_inference_engine_weight_checksum:
-            return
-        group = get_gloo_group()
-        contribution = (list(self._checksum_shards.values()), self._errored_cell_ids())
-        gathered: list[tuple[list[P2PChecksumShard], list[str]] | None] = [None] * dist.get_world_size(group=group)
-        dist.all_gather_object(gathered, contribution, group=group)
-        assert all(part is not None for part in gathered), "Missing P2P checksum rank contribution"
-        errored = {cell_id for part in gathered if part is not None for cell_id in part[1]}
-        self.expected_base_weight_checksums_by_cell = merge_transfer_checksums(
-            [shard for part in gathered if part is not None for shard in part[0]],
-            healthy_engine_ranks={
-                cell_id: rank_count
-                for cell_id, rank_count in self._engine_gpu_counts.items()
-                if cell_id not in errored
-            },
-        )
-
-    def _errored_cell_ids(self) -> list[str]:
-        return [cell_id for cell_id, updater in self.cell_updaters_of_cell_id.items() if updater.is_errored]
 
     def connect(
         self,
@@ -193,8 +157,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for api_client, cell_id in zip(rollout_engines, engine_cell_ids, strict=True)
         }
 
-        self._engine_gpu_counts = dict(zip(engine_cell_ids, engine_gpu_counts, strict=True))
-
         targets = self.transfer_plan.plan_p2p(engine_gpu_counts)
         self.is_sender = bool(targets)
 
@@ -226,19 +188,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
                 engine_cell_ids=engine_cell_ids,
             )
-
-            if self.args.save_inference_engine_weight_checksum:
-                for target in targets:
-                    cell_id = engine_cell_ids[target.rollout_engine_ind]
-                    remote = self.cell_updaters_of_cell_id[cell_id].targets_by_rollout_engine_rank[
-                        target.rollout_engine_rank
-                    ]
-                    self._checksum_shards[(cell_id, target.rollout_engine_rank)] = P2PChecksumShard(
-                        cell_id=cell_id,
-                        rollout_engine_rank=target.rollout_engine_rank,
-                        session_id=remote.session_id,
-                        expected_names=frozenset(remote.weights_info),
-                    )
 
             for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
                 rank_session_ids = [
@@ -277,9 +226,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.rollout_engines = []
         self.is_sender = False
         self._model_param_stager = ModelParamStager()
-        self._checksum_shards = {}
-        self._engine_gpu_counts = {}
-        self.expected_base_weight_checksums_by_cell = None
 
 
 def _assert_one_shard_layout(

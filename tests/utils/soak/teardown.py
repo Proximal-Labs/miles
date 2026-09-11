@@ -16,11 +16,7 @@ from miles.utils.workers.types import ClusterBackend
 logger = logging.getLogger(__name__)
 
 
-def teardown_run(*, config: ExecuteTrainConfig, event_log: EventLog, evidence_dir: Path) -> None:
-    asyncio.run(_teardown_run(config=config, event_log=event_log, evidence_dir=evidence_dir))
-
-
-async def _teardown_run(*, config: ExecuteTrainConfig, event_log: EventLog, evidence_dir: Path) -> None:
+async def teardown_run(*, config: ExecuteTrainConfig, event_log: EventLog, evidence_dir: Path) -> None:
     if config.cluster_backend is ClusterBackend.RAY:
         assert config.ray_submission_id, "Soak cleanup requires an owned Ray submission ID"
         resource = f"ray-job:{config.ray_submission_id}"

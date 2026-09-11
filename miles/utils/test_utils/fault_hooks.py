@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import Field, model_validator
 
-from miles.utils.audit_utils.event_logger.logger import get_event_logger
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector import inject_fault
@@ -34,7 +34,6 @@ class FaultHookRequest(FrozenStrictBaseModel):
     action: Literal["inject", "observe"] = "inject"
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
     delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
-    receipt_url: str | None = None
 
     @model_validator(mode="after")
     def _validate_delay(self) -> "FaultHookRequest":
@@ -183,7 +182,6 @@ class FaultHookRegistry:
                 except Exception:
                     logger.exception("Could not schedule fault hook: %s", record.request.request_id)
                     self._transition(record=record, status="failed")
-                    raise
                 return
             record = self._transition(record=record, status="fired")
 
@@ -203,17 +201,12 @@ class FaultHookRegistry:
         if record.request.action == "observe":
             return
         try:
-            inject_fault(
-                mode=record.request.mode,
-                request_id=record.request.request_id,
-                receipt_url=record.request.receipt_url,
-            )
+            inject_fault(mode=record.request.mode)
             raise RuntimeError("A fault hook unexpectedly returned")
         except Exception:
             logger.exception("Fault hook execution failed: %s", record.request.request_id)
             with self._lock:
                 self._transition(record=record, status="failed")
-            raise
 
     def _check_instance(self, instance_id: str) -> None:
         if instance_id != self.instance_id:
@@ -233,23 +226,28 @@ class FaultHookRegistry:
         return updated
 
     def _record(self, record: FaultHookRecord) -> None:
-        get_event_logger().log(
-            FaultHookEvent,
-            dict(
-                request_id=record.request.request_id,
-                instance_id=record.request.instance_id,
-                hook=record.request.hook,
-                mode=record.request.mode,
-                action=record.request.action,
-                status=record.status,
-                monotonic_time=record.changed_at,
-                reached_at=record.reached_at,
-                due_at=record.due_at,
-                rollout_id=record.rollout_id,
-                attempt=record.attempt,
-                weight_version=record.weight_version,
-                update_id=record.update_id,
-                target_incarnations=record.target_incarnations,
-            ),
-        )
         self._records[record.request.request_id] = record
+        if not is_event_logger_initialized():
+            return
+        try:
+            get_event_logger().log(
+                FaultHookEvent,
+                dict(
+                    request_id=record.request.request_id,
+                    instance_id=record.request.instance_id,
+                    hook=record.request.hook,
+                    mode=record.request.mode,
+                    action=record.request.action,
+                    status=record.status,
+                    monotonic_time=record.changed_at,
+                    reached_at=record.reached_at,
+                    due_at=record.due_at,
+                    rollout_id=record.rollout_id,
+                    attempt=record.attempt,
+                    weight_version=record.weight_version,
+                    update_id=record.update_id,
+                    target_incarnations=record.target_incarnations,
+                ),
+            )
+        except Exception:
+            logger.exception("Could not record fault hook event: %s", record.request.request_id)

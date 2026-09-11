@@ -487,12 +487,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
             )
             parser.add_argument(
-                "--inference-env-vars",
-                type=json.loads,
-                default="{}",
-                help="Extra environment variables for inference engines, overriding launcher defaults.",
-            )
-            parser.add_argument(
                 "--train-memory-margin-bytes",
                 type=int,
                 default=1024**3,
@@ -1164,11 +1158,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="127.0.0.1",
                 help="Host the HTTP api server binds to. The default only serves the local mini "
                 "fault-tolerance controller; set 0.0.0.0 to accept remote controllers.",
-            )
-            parser.add_argument(
-                "--fault-witness-enable",
-                action="store_true",
-                help="Keep served worker containers alive while fault exit witnesses publish their receipts",
             )
             parser.add_argument(
                 "--api-server-port",
@@ -3474,7 +3463,6 @@ def miles_validate_args(args):
         args.indep_dp = True
         args.delay_split_train_data_by_dp = True
         args.save_local_weight_checksum = True
-        args.save_inference_engine_weight_checksum = True
         args.enable_event_analyzer = True
         args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
@@ -3484,7 +3472,7 @@ def miles_validate_args(args):
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
         args.non_persistent_local_ckpt_algo = "atomic"
         logger.info(
-            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, save_inference_engine_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
             args.non_persistent_local_ckpt_algo,
         )
 

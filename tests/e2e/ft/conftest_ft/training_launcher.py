@@ -1,4 +1,3 @@
-import asyncio
 import sys
 from pathlib import Path
 
@@ -6,7 +5,7 @@ import typer
 from tests.e2e.ft.conftest_ft.execution import run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.utils.soak.action import run_command
-from tests.utils.soak.entrypoint import FaultInjectorHandle
+from tests.utils.soak.entrypoint import SoakSession
 from tests.utils.soak.state import SoakLauncherExitedEvent
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
@@ -23,18 +22,18 @@ class TrainingLaunchSpec(FrozenStrictBaseModel):
     train_script: str
 
 
-def execute_session(*, spec: TrainingLaunchSpec, injector: FaultInjectorHandle, log_path: Path) -> None:
+async def execute_session(*, spec: TrainingLaunchSpec, injector: SoakSession, log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.with_suffix(".json").open("x") as stream:
         stream.write(spec.model_dump_json(indent=2))
-    result = asyncio.run(injector.wait_for_training(_launch(spec=spec, injector=injector, log_path=log_path)))
+    result = await _launch(spec=spec, injector=injector, log_path=log_path)
     injector.event_log.note_launcher_exited(
         SoakLauncherExitedEvent(request_id=None, returncode=result, log_path=log_path)
     )
     assert result == 0, f"Training launcher exited {result}; see {log_path}"
 
 
-async def _launch(*, spec: TrainingLaunchSpec, injector: FaultInjectorHandle, log_path: Path) -> int:
+async def _launch(*, spec: TrainingLaunchSpec, injector: SoakSession, log_path: Path) -> int:
     result = await run_command(
         [sys.executable, "-u", "-m", "tests.e2e.ft.conftest_ft.training_launcher"],
         timeout_seconds=injector.timeouts.run_seconds,

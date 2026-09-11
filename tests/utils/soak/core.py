@@ -2,27 +2,20 @@
 
 import logging
 import random
-import threading
 import time
-from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
 
-import requests
 from tests.utils.soak.action import SoakActionForm
 from tests.utils.soak.batch import expand_fault_batches
 from tests.utils.soak.config import SoakCellPolicy, SoakPolicy
-from tests.utils.soak.fault_forms import BaseFaultForm, CellFaultForms, ExecSigkillFaultForm
+from tests.utils.soak.fault_forms import CellFaultForms, ExecSigkillFaultForm
 from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.policy import eligible_cells, pending_actions
 from tests.utils.soak.sender_assignment import choose_sender_batch
 from tests.utils.soak.state import (
-    EventLog,
-    ObservationsEvent,
     SoakActionAppliedEvent,
     SoakActionRequest,
     SoakActionRequestedEvent,
-    SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakDeploymentTarget,
     SoakEvent,
@@ -48,65 +41,6 @@ def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: floa
     return time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
 
 
-def run_fault_injection_loop(
-    *,
-    base_url: str,
-    seed: int,
-    mean_interval_seconds_of_cell_type: dict[str, float],
-    stop_event: threading.Event,
-    event_log: EventLog,
-    cell_fault_forms: CellFaultForms,
-    get_virtual_cells: Callable[[], list[dict]] | None = None,
-    injection_enabled: Callable[[], bool] | None = None,
-    poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
-    quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
-) -> None:
-    rng = random.Random(seed)
-    observer = _SynchronousObserver(
-        base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type), get_virtual_cells=get_virtual_cells
-    )
-    scheduler = SoakActionScheduler(
-        rng=rng,
-        mean_intervals=mean_interval_seconds_of_cell_type,
-        forms=cell_fault_forms,
-        injection_enabled=injection_enabled,
-        quiescent_polls_required=quiescent_polls_required,
-    )
-    event_log.note_schedule(scheduler.initial_schedule())
-
-    while not stop_event.is_set():
-        if stop_event.wait(timeout=poll_interval_seconds):
-            break
-
-        cells = observer.observe()
-        if cells is None:
-            continue
-
-        # Record every poll so the post-run witnesses see the same stream the injector saw.
-        event_log.observe(cells)
-
-        if stop_event.is_set():
-            break
-
-        if (action := scheduler.choose(events=event_log.events, now=time.monotonic())) is not None:
-            _execute_action(action=action, forms=cell_fault_forms, rng=rng, event_log=event_log)
-
-
-@dataclass(frozen=True)
-class _SynchronousObserver:
-    base_url: str
-    cell_types: set[str]
-    get_virtual_cells: Callable[[], list[dict]] | None = None
-
-    def observe(self) -> list[dict] | None:
-        cells = list_cells(base_url=self.base_url, cell_types=self.cell_types)
-        if cells is None:
-            return None
-        if self.get_virtual_cells is not None:
-            cells.extend(self.get_virtual_cells())
-        return cells
-
-
 class SoakActionScheduler:
     def __init__(
         self,
@@ -114,14 +48,12 @@ class SoakActionScheduler:
         rng: random.Random,
         mean_intervals: dict[str, float],
         forms: CellFaultForms,
-        injection_enabled: Callable[[], bool] | None = None,
         quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
         policy: SoakPolicy | None = None,
     ) -> None:
         self._rng = rng
         self._mean_intervals = mean_intervals
         self._forms = forms
-        self._injection_enabled = injection_enabled
         self._quiescent_polls_required = quiescent_polls_required
         self.policy = policy if policy is not None else SoakPolicy()
         if set(self.policy.cell_policies) - set(mean_intervals):
@@ -173,7 +105,7 @@ class SoakActionScheduler:
                 if event.request.next_due_at is not None and event.request.request_id in landed_request_ids:
                     due_of_type[target_type_of(event.request.target)] = event.request.next_due_at
                 quiescent_polls_of_type[target_type_of(event.request.target)] = 0
-            elif isinstance(event, (ObservationsEvent, SoakObservation)):
+            elif isinstance(event, SoakObservation):
                 observation = event
                 if event.cells is not None:
                     polled_of_type: dict[str, list[dict]] = {
@@ -188,7 +120,7 @@ class SoakActionScheduler:
                             quiescent_polls_of_type[cell_type] += 1
                         else:
                             quiescent_polls_of_type[cell_type] = 0
-                if isinstance(event, SoakObservation) and "deployment" in quiescent_polls_of_type:
+                if "deployment" in quiescent_polls_of_type:
                     if event.deployments and not event.errors:
                         max_num_cells_of_type["deployment"] = max(
                             max_num_cells_of_type["deployment"], len(event.deployments)
@@ -207,7 +139,7 @@ class SoakActionScheduler:
         for cell in observation.cells or []:
             if cell_type_of(cell) in cells_of_type:
                 cells_of_type[cell_type_of(cell)].append(cell)
-        if isinstance(observation, SoakObservation) and "deployment" in cells_of_type:
+        if "deployment" in cells_of_type:
             cells_of_type["deployment"].extend(observation.deployments)
         due_types = sorted(kind for kind, due_at in due_of_type.items() if now >= due_at)
         if not due_types:
@@ -251,7 +183,7 @@ class SoakActionScheduler:
             if action.hook_trigger is not None
         }
         targets = cells_of_type[cell_type]
-        if cell_type != "deployment" and isinstance(observation, SoakObservation):
+        if cell_type != "deployment":
             targets = eligible_cells(
                 cells=targets,
                 events=events,
@@ -270,8 +202,6 @@ class SoakActionScheduler:
             policy = self.policy.cell_policies.get(cell_type, SoakCellPolicy())
             if policy.min_survivors < 1 or policy.expected_cells is None:
                 raise ValueError("All-sender-target hooks require surviving targets and an explicit fleet size")
-            if not isinstance(observation, SoakObservation):
-                return None
             targets = eligible_cells(
                 cells=targets,
                 events=events,
@@ -281,14 +211,12 @@ class SoakActionScheduler:
             if len(targets) != policy.expected_cells or len(targets) < 2:
                 return None
         target = self._rng.choice(targets)
-        if self._injection_enabled is not None and not self._injection_enabled():
+        if not form.is_eligible(events=events, target=target):
             return None
         hook_trigger = None
         target_form = form
         if isinstance(form, HookFaultForm) and form.victim_form is not None:
             target_form = form.victim_form
-            if not isinstance(observation, SoakObservation):
-                return None
             reserved_victims = {
                 (event.request.target["metadata"]["name"], event.request.target["status"].get("workers_hash"))
                 for event in expand_fault_batches(events)
@@ -345,17 +273,17 @@ def _build_observed_request(
     target: dict | SoakDeploymentTarget,
     form: SoakActionForm,
     harms_cell: bool,
-    observation: SoakObservation | ObservationsEvent,
+    observation: SoakObservation,
     rng: random.Random,
 ) -> SoakActionRequest | None:
     fault_target = None
     candidates = None
-    if isinstance(observation, SoakObservation) and form.name.startswith(("inject_fault:", "hook:")):
+    if form.name.startswith(("inject_fault:", "hook:")):
         assert isinstance(target, dict), "Fault injection requires a cell target"
         fault_target = observation.fault_targets.get(target["metadata"]["name"])
         if fault_target is None or fault_target.workers_hash != target["status"].get("workers_hash"):
             return None
-    if isinstance(observation, SoakObservation) and form.name in {"delete_pod", "exec_sigkill", "exec_sigstop"}:
+    if form.name in {"delete_pod", "exec_sigkill", "exec_sigstop"}:
         assert isinstance(target, dict), "Pod faults require a cell target"
         candidates = observation.pods_of_cell.get(target["metadata"]["name"], [])
         if isinstance(form, ExecSigkillFaultForm):
@@ -378,30 +306,6 @@ def _build_observed_request(
     )
 
 
-def _execute_action(
-    *, action: SoakActionRequest, forms: CellFaultForms, rng: random.Random, event_log: EventLog
-) -> None:
-    assert isinstance(action.target, dict), "The synchronous bridge only supports cell targets"
-    matching = [form for form in forms[cell_type_of(action.target)] if form.name == action.form_name]
-    assert len(matching) == 1, f"Expected one form named {action.form_name}, found {len(matching)}"
-    form = matching[0]
-    cell_name = action.target["metadata"]["name"]
-    request = action
-    if not event_log.note_action_requested(request):
-        return
-    try:
-        form.inject(action.target, rng)
-    except Exception as error:
-        event_log.note_action_result(
-            SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
-        )
-        logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
-        return
-
-    event_log.note_action_result(SoakActionResultEvent(request_id=request.request_id, returned=True))
-    logger.info("Injected fault %s into %s", form.name, cell_name)
-
-
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
     if not kind_cells or len(kind_cells) < expected_num_cells:
         return False
@@ -409,18 +313,8 @@ def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bo
 
 
 def _draw_form(
-    forms: list[BaseFaultForm], *, events: list[SoakEvent], cell_type: str, rng: random.Random
-) -> BaseFaultForm:
+    forms: list[SoakActionForm], *, events: list[SoakEvent], cell_type: str, rng: random.Random
+) -> SoakActionForm:
     worked = compute_successful_form_names(events, cell_type=cell_type)
     unproven = [form for form in forms if form.name not in worked]
     return rng.choice(unproven or forms)
-
-
-def list_cells(*, base_url: str, cell_types: set[str]) -> list[dict] | None:
-    try:
-        resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
-        resp.raise_for_status()
-        return [c for c in resp.json()["items"] if cell_type_of(c) in cell_types]
-    except Exception:
-        logger.info("Failed to list cells from api server", exc_info=True)
-        return None

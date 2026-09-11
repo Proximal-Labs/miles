@@ -110,7 +110,7 @@ class HookFaultForm(InjectFaultForm):
                     if response.status_code < 500:
                         response.raise_for_status()
                         record = FaultHookRecord.model_validate(response.json())
-                        if record.request.model_copy(update={"receipt_url": None}) != hook_request:
+                        if record.request != hook_request:
                             raise ValueError("Armed fault hook does not match the requested injection")
                         if record.status in {"cancelled", "expired", "failed"}:
                             raise RuntimeError(f"Fault hook cannot execute: {record.status}")
@@ -135,7 +135,7 @@ class HookFaultForm(InjectFaultForm):
                         "hook_trigger": target,
                         "victim_form": self._victim_form.name,
                     }
-                receipt = await self._read_receipt(
+                receipt = await self._read_effect(
                     client=client, request=request, timeout_seconds=hook_request.lifetime_seconds + 30.0
                 )
                 return {**receipt, "hook_request": hook_request.model_dump(mode="json")}
@@ -157,9 +157,6 @@ class HookFaultForm(InjectFaultForm):
                         request.request_id,
                         exc_info=True,
                     )
-
-    def inject(self, cell: dict, rng: random.Random) -> None:
-        raise NotImplementedError("Hook injection requires an observed asynchronous request")
 
     async def _execute_victims(self, request: SoakActionRequest) -> dict:
         assert self._victim_form is not None
@@ -229,7 +226,7 @@ class HookFaultForm(InjectFaultForm):
                     if response.status_code != 404 and response.status_code < 500:
                         response.raise_for_status()
                         record = FaultHookRecord.model_validate(response.json())
-                        if record.request.model_copy(update={"receipt_url": None}) != request:
+                        if record.request != request:
                             raise ValueError("Remote fault trigger belongs to another hook request")
                         if record.status == "fired":
                             if (

@@ -23,7 +23,7 @@ def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) 
     resolved = config if config is not None else command_utils.default_config()
     if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
         return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
-    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 --fault-witness-enable "
+    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
 
 
 DEFAULT_TRAIN_SCRIPT: str = "train.py"
