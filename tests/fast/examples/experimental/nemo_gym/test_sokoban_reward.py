@@ -109,11 +109,11 @@ def test_request_isolates_final_answer_without_mutating_training_sample() -> Non
 
 
 @pytest.mark.parametrize("status", [Status.TRUNCATED, "truncated"])
-def test_truncation_cannot_earn_reward_even_with_a_closed_tag(status: Any) -> None:
+def test_truncated_sample_with_complete_final_answer_is_verifiable(status: Any) -> None:
     item = sample()
     item.status = status
-    with pytest.raises(sr.InvalidSokobanAnswer, match="truncated"):
-        sr.build_verify_request(item)
+    body = sr.build_verify_request(item)
+    assert body["response"]["output"][0]["content"][0]["text"] == "<answer>R</answer>"
 
 
 @pytest.mark.parametrize("status", ["pending", "aborted", None, False])
@@ -174,7 +174,7 @@ async def test_actual_http_payload_and_training_fields_are_preserved() -> None:
     for key in ("response", "tokens", "loss_mask", "label", "status"):
         assert getattr(item, key) == before[key]
     assert item.metadata["sokoban_grading_status"] == "verified"
-    assert item.metadata["sokoban_grader_version"] == "final-answer-v1"
+    assert item.metadata["sokoban_grader_version"] == "final-answer-v2-format-penalty"
 
 
 async def test_invalid_answer_replaces_stale_grade_without_network() -> None:
@@ -185,14 +185,14 @@ async def test_invalid_answer_replaces_stale_grade_without_network() -> None:
         raise AssertionError("Invalid model output must not reach the verifier")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        assert await sr._score(client, "http://gym", item) == 0.0
-    assert item.metadata["sokoban_reward"] == 0.0
+        assert await sr._score(client, "http://gym", item) == -0.5
+    assert item.metadata["sokoban_reward"] == -0.5
     assert item.metadata["sokoban_extracted_answer"] == ""
     assert item.metadata["sokoban_grading_status"] == "missing_or_ambiguous_reasoning_end"
 
 
 @pytest.mark.parametrize("failure", ["http", "timeout", "json", "schema", "serialization", "metadata"])
-async def test_infrastructure_and_contract_failures_do_not_become_zero(failure: str) -> None:
+async def test_infrastructure_and_contract_failures_do_not_become_rewards(failure: str) -> None:
     item = sample()
     if failure == "serialization":
         item.metadata["not_json"] = {1, 2}
@@ -231,7 +231,7 @@ async def test_batched_hook_preserves_order_and_skips_invalid_completions(monkey
     monkeypatch.setattr(sr.httpx, "AsyncClient", client_factory)
     monkeypatch.setenv("NEMO_GYM_SOKOBAN_URL", "http://gym")
     items = [sample(), sample("Plan.</think><answer>U</answer>"), sample("No final answer")]
-    assert await sr.reward_func(None, items) == [1.0, 0.0, 0.0]
+    assert await sr.reward_func(None, items) == [1.0, 0.0, -0.5]
     assert requests == ["<answer>R</answer>", "<answer>U</answer>"]
     assert await sr.reward_func(None, sample()) == 1.0
 
@@ -239,3 +239,36 @@ async def test_batched_hook_preserves_order_and_skips_invalid_completions(monkey
 async def test_empty_batch_does_not_require_service_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NEMO_GYM_SOKOBAN_URL", raising=False)
     assert await sr.reward_func(None, []) == []
+
+
+@pytest.mark.parametrize("status", [Status.COMPLETED, Status.TRUNCATED])
+@pytest.mark.parametrize(
+    ("response", "expected_reward"),
+    [
+        ("Plan.</think><answer>R</answer>", 1.0),
+        ("Correct plan <answer>R</answer>.</think><answer>U</answer>", 0.0),
+        ("Still reasoning <answer>R</answer>", -0.5),
+        ("Plan.</think><answer>R", -0.5),
+        ("Plan.</think><answer>Go right</answer>", -0.5),
+    ],
+)
+async def test_reward_depends_on_final_format_and_solution(
+    status: Status, response: str, expected_reward: float
+) -> None:
+    item = sample(response)
+    item.status = status
+    before = deepcopy(vars(item))
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        text = json.loads(request.content)["response"]["output"][0]["content"][0]["text"]
+        moves = text.removeprefix("<answer>").removesuffix("</answer>")
+        return httpx.Response(200, json=grade(moves, float(moves == "R")))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sr._score(client, "http://gym", item) == expected_reward
+    assert len(requests) == int(expected_reward >= 0.0)
+    assert item.metadata["sokoban_reward"] == expected_reward
+    for key in ("response", "tokens", "loss_mask", "label", "status"):
+        assert getattr(item, key) == before[key]

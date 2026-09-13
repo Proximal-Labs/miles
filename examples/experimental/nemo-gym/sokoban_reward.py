@@ -71,9 +71,7 @@ def build_verify_request(sample: _SokobanSample) -> dict[str, Any]:
         raise ValueError("Sokoban grading requires a reference answer")
 
     status = sample.status.value if isinstance(sample.status, Enum) else sample.status
-    if status == "truncated":
-        raise InvalidSokobanAnswer("truncated")
-    if status != "completed":
+    if status not in ("completed", "truncated"):
         raise ValueError(f"Unexpected Sokoban sample status: {status!r}")
 
     moves = extract_final_answer(sample.response)
@@ -131,7 +129,7 @@ def _record_grade(sample: _SokobanSample, *, reward: float, answer: str, status:
         sokoban_extracted_answer=answer,
         sokoban_reward=reward,
         sokoban_grading_status=status,
-        sokoban_grader_version="final-answer-v1",
+        sokoban_grader_version="final-answer-v2-format-penalty",
     )
 
 
@@ -139,8 +137,8 @@ async def _score(client: httpx.AsyncClient, url: str, sample: _SokobanSample) ->
     try:
         payload = build_verify_request(sample)
     except InvalidSokobanAnswer as error:
-        _record_grade(sample, reward=0.0, answer="", status=str(error))
-        return 0.0
+        _record_grade(sample, reward=-0.5, answer="", status=str(error))
+        return -0.5
 
     submitted = payload["response"]["output"][0]["content"][0]["text"]
     moves = submitted.removeprefix("<answer>").removesuffix("</answer>")

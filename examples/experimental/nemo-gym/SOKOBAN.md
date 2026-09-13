@@ -37,12 +37,23 @@ block. Sending reasoning as `output_text` lets upstream answer extraction consum
 tags mentioned in the reasoning; the permissive Sokoban scorer can then replay
 movement letters from that prose.
 
-Truncated completions and invalid final answers receive zero without contacting
-the verifier. `sokoban_grading_status` records the rejection reason, and
-`sokoban_grader_version` identifies this policy as `final-answer-v1`.
+The adapter assigns three rewards:
+
+- **1.0**: a valid final answer solves the board;
+- **0.0**: a valid final answer does not solve the board;
+- **-0.5**: no unambiguous, correctly formatted final answer is available.
+
+Missing or malformed final answers receive the penalty without contacting the
+verifier. This includes reasoning that reaches the token limit before producing
+a final answer. A truncated response with a complete valid final answer is still
+verified normally. The full response remains available for training.
+`sokoban_grading_status` records the rejection reason, and
+`sokoban_grader_version` identifies this policy as `final-answer-v2-format-penalty`.
+Mean raw reward includes format penalties and is not the solve rate; compute
+solve rate as the fraction of samples whose reward is 1.0.
 Malformed task metadata, unexpected sample states, HTTP failures, invalid
 verifier responses, and disagreement between the submitted and extracted moves
-raise errors instead of becoming zero-reward training examples. Valid replies
+raise errors instead of becoming penalized training examples. Valid replies
 must have matching numeric binary `score` and `reward` values.
 
 In the Miles worker environment, put this example directory on `PYTHONPATH`
@@ -53,7 +64,8 @@ The localhost URL assumes the verifier and rollout worker share a node.
 
 Before training, send known solutions and broken paths through the HTTP endpoint
 and the reward hook, using completed samples with an explicit reasoning boundary
-and final answer. Expect rewards 1 and 0, respectively. Include a correct final
+and final answer. Expect rewards 1 and 0, respectively, and -0.5 for missing or
+malformed final answers in both completed and truncated samples. Include a correct final
 answer following an unclosed answer tag in reasoning, and an incorrect final
 answer following a correct reasoning-only plan. Run the offline regression suite
 with `pytest tests/fast/examples/experimental/nemo_gym/test_sokoban_reward.py`.
