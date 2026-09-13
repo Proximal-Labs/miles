@@ -1833,6 +1833,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "train/rollout logprob consistency of the LoRA path itself with --debug-disable-optimizer.",
             )
             parser.add_argument(
+                "--lora-B-init-scale",
+                type=float,
+                default=1.0,
+                help="Multiply the initialised LoRA B matrices by this factor (diagnostics with a non-zero "
+                "--lora-B-init-method; 1.0 = no change).",
+            )
+            parser.add_argument(
                 "--no-log-lora-norms",
                 dest="log_lora_norms",
                 action="store_false",

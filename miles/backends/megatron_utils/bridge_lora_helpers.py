@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
+
+import torch
 from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
@@ -179,6 +181,17 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     def apply_lora_hook(model_chunks):
         transformed = lora(model_chunks, training=True)
         lora.set_params_to_save(transformed)
+        scale = float(getattr(args, "lora_B_init_scale", 1.0) or 1.0)
+        if scale != 1.0:
+            # Diagnostics knob (with --lora-B-init-method != zero): shrink the freshly initialised
+            # LoRA-B so a non-zero adapter of realistic magnitude is present from step 0.
+            from .lora_utils import _is_adapter_param_name
+
+            with torch.no_grad():
+                for chunk in transformed:
+                    for name, param in chunk.named_parameters():
+                        if _is_adapter_param_name(name) and ("linear_out" in name or "lora_B" in name):
+                            param.mul_(scale)
         return transformed
 
     provider.register_pre_wrap_hook(apply_lora_hook)
