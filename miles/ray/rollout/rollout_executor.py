@@ -3,6 +3,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -16,6 +17,7 @@ from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
+from miles.ray.specs.rollout import compute_rollout_checkpoint_dir
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -50,6 +52,10 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
+
+_DATA_SOURCE_DIRNAME = "data_source"
+_GENERATE_ROLLOUT_DIRNAME = "generate_rollout"
+_EVAL_GENERATE_ROLLOUT_DIRNAME = "eval_generate_rollout"
 
 
 class RolloutExecutor:
@@ -306,21 +312,47 @@ class RolloutExecutor:
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     def save(self, rollout_id: int) -> None:
-        self.data_source.save(rollout_id)
+        if (save_dir := self.args.save) is None:
+            return
+
+        directory = compute_rollout_checkpoint_dir(save_dir, rollout_id=rollout_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        self.data_source.save(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.save(rollout_id)
+                self.generate_rollout.save(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.save(rollout_id)
+                eval_fn.save(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id: int | None = None) -> None:
-        self.data_source.load(rollout_id)
+    def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
+        directory = self._resolve_checkpoint_dir(rollout_id=rollout_id)
+        if directory is None:
+            assert not require_complete, (
+                f"the trainer restored rollout {rollout_id}, but there is no rollout-side state to restore under "
+                f"--load {self.args.load}; a run saved before the rollout-side state moved into one directory per "
+                f"rollout cannot resume that state"
+            )
+            return
+
+        self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.load(rollout_id)
+                self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.load(rollout_id)
+                eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+
+    def _resolve_checkpoint_dir(self, *, rollout_id: int | None) -> Path | None:
+        load_dir = self.args.load
+        if load_dir is None or rollout_id is None or rollout_id < 0:
+            return None
+
+        target = compute_rollout_checkpoint_dir(load_dir, rollout_id=rollout_id)
+        if target.is_dir():
+            return target
+
+        logger.warning(f"No rollout state at {target}; the rollout side starts fresh")
+        return None
 
     # -------------------------- misc APIs -----------------------------
 

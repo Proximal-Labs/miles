@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from pathlib import Path
 
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.ray.rollout.conftest import make_args
@@ -9,6 +10,7 @@ from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.ray.specs.rollout import (
     ROLLOUT_EXECUTOR_POOL_ID,
     ROLLOUT_EXECUTOR_WORKER_CLASS,
+    compute_rollout_checkpoint_dir,
     rollout_executor_cell_id,
     rollout_executor_worker_name,
     spec_rollout_executor,
@@ -120,3 +122,9 @@ class TestRolloutExecutorSpec:
         assert entry["command"][entry["command"].index("--pool-id") + 1] == ROLLOUT_EXECUTOR_POOL_ID
         assert spec.worker_class == ROLLOUT_EXECUTOR_WORKER_CLASS
         assert "resources" not in entry
+
+
+class TestRolloutCheckpointDir:
+    def test_every_rollout_gets_its_own_directory(self, tmp_path: Path) -> None:
+        """The rollout id names the directory, so two checkpoints never share one."""
+        assert compute_rollout_checkpoint_dir(tmp_path, rollout_id=3) == tmp_path / "rollout" / "3"

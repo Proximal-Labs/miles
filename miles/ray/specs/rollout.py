@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
     compute_inference_controller_provider,
@@ -50,3 +52,7 @@ def rollout_executor_worker_name() -> str:
 
 def rollout_executor_cell_id() -> str:
     return compute_cell_id(pool_id=ROLLOUT_EXECUTOR_POOL_ID, cell_index=0)
+
+
+def compute_rollout_checkpoint_dir(directory: str | Path, *, rollout_id: int) -> Path:
+    return Path(directory) / "rollout" / str(rollout_id)
