@@ -12,6 +12,7 @@ import torch.distributed as dist
 
 from miles.utils.distributed_utils import get_gloo_group
 
+
 def write_checkpoint_dir(
     path: str | Path,
     write_shards: Callable[[Path], None],
