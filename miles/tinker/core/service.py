@@ -377,9 +377,9 @@ class TinkerService:
         checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
-        if (failure := await self.backend.save_slot(record.slot, checkpoint_dir)) is not None:
-            return failure
-        if (failure := self._stamp_checkpoint_meta(checkpoint_dir, record)) is not None:
+        if (
+            failure := await self.backend.save_slot(record.slot, checkpoint_dir, metadata=self._checkpoint_metadata(record))
+        ) is not None:
             return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
@@ -424,10 +424,10 @@ class TinkerService:
             # engines may already hold this name's bytes; saved versions are immutable
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
         if (
-            failure := await self.backend.export_slot(record.slot, record.lora_rank, record.lora_alpha, path)
+            failure := await self.backend.export_slot(
+                record.slot, record.lora_rank, record.lora_alpha, path, metadata=self._checkpoint_metadata(record)
+            )
         ) is not None:
-            return failure
-        if (failure := self._stamp_checkpoint_meta(path, record)) is not None:
             return failure
         record.published_sampler_versions.add(version)
         return version, path
@@ -456,9 +456,8 @@ class TinkerService:
                     f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
                 )
 
-    def _stamp_checkpoint_meta(self, checkpoint_dir: str, record: ModelRecord) -> dict | None:
-        """Mark completed tensor shards as a gateway checkpoint with persistent ownership and shape."""
-        meta = {
+    def _checkpoint_metadata(self, record: ModelRecord) -> dict:
+        return {
             # the digest proves ownership without persisting the bearer credential itself
             "tenant_digest": _tenant_digest(record.tenant),
             "base_model": record.base_model,
@@ -468,13 +467,6 @@ class TinkerService:
             "train_mlp": self.config.trains_mlp,
             "train_unembed": self.config.trains_unembed,
         }
-        try:
-            Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-            (Path(checkpoint_dir) / "META.json.tmp").write_text(json.dumps(meta, indent=2))
-            os.replace(Path(checkpoint_dir) / "META.json.tmp", Path(checkpoint_dir) / "META.json")
-        except OSError as error:
-            return {"error": str(error)}
-        return None
 
     def _checkpoint_meta(self, checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
         meta_file = Path(checkpoint_dir) / "META.json"
