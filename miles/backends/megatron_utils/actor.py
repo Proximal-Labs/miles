@@ -454,7 +454,7 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data)
+            return lora_executor.run_forward_backward(self.args, batch_id, self.model, rollout_data)
 
     @with_logs
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
@@ -471,7 +471,7 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data, forward_only=True)
+            return lora_executor.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
 
     @with_logs
     def load_slot(

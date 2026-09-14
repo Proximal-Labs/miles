@@ -22,7 +22,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch
 
 
-def run_loss_pass(
+def run_forward_backward(
     args: Namespace,
     batch_id: int,
     model: Sequence[DDP],
