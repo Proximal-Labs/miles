@@ -9,7 +9,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint_io import run_local_io_collective, write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
@@ -448,12 +448,9 @@ def save_lora_checkpoint(
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             }
 
-        def write_native():
-            torch.save(adapter_state, tmp_dir / f"adapter_megatron_rank{global_rank}.pt")
-            if training_state is not None:
-                torch.save(training_state, tmp_dir / f"training_state_rank{global_rank}.pt")
-
-        run_local_io_collective(write_native)
+        torch.save(adapter_state, tmp_dir / f"adapter_megatron_rank{global_rank}.pt")
+        if training_state is not None:
+            torch.save(training_state, tmp_dir / f"training_state_rank{global_rank}.pt")
         write_lora_weights(model, args, tmp_dir)
 
     write_checkpoint_dir(save_dir, write_shards)
