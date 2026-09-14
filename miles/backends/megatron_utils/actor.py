@@ -492,12 +492,12 @@ class MegatronTrainRayActor(TrainRayActor):
         return None
 
     @with_logs
-    def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> dict | None:
+    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> dict | None:
         """Write the slot's adapter as an engine-loadable dir."""
         assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
         self._heartbeat.bump()
         try:
-            self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)
+            self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata)
         except CheckpointIOError as error:
             return {"error": str(error)}
         return None

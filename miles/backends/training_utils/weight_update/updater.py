@@ -187,7 +187,7 @@ class WeightUpdater:
         )
 
     @torch.no_grad()
-    def export_adapter(self, adapter, out_dir: str) -> None:
+    def export_adapter(self, adapter, out_dir: str, metadata: dict | None = None) -> None:
         """Export an engine-loadable adapter directory collectively; rank 0 writes."""
         should_save_adapter = dist.get_rank() == 0
         assert (
@@ -208,4 +208,4 @@ class WeightUpdater:
 
             run_local_io_collective(write_adapter)
 
-        write_checkpoint_dir(out_dir, write_shards)
+        write_checkpoint_dir(out_dir, write_shards, metadata=metadata)
