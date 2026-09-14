@@ -202,7 +202,7 @@ def setup_model_and_optimizer(
 
         # per-tenant SlotOptimizers are built at load_slot; there is no pool optimizer
         validate_multi_lora_optimizer_args(args)
-        optimizer = None
+        return model, None, None
     else:
         optimizer = get_megatron_optimizer(
             config=config,
