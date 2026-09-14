@@ -15,8 +15,13 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.checkpoint_io import CheckpointIOError
+from miles.backends.training_utils.weight_publisher import WeightPublisher
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
@@ -59,7 +64,6 @@ from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
-from .lora.utils import is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .named_weights import named_params_and_buffers
 from .parallel import verify_megatron_parallel_state
@@ -253,9 +257,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        from .lora.utils import build_lora_sync_config
-        from .update_weight.hf_weight_iterator import get_hf_weight_iterator
-
         is_lora = lora_rollout_enabled(args)
         uses_colocate_protocol = self.args.colocate
         if is_lora and not uses_colocate_protocol:
@@ -266,9 +267,6 @@ class MegatronTrainRayActor(TrainRayActor):
         model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
         quantization_config = getattr(self.hf_config, "quantization_config", None)
         if args.multi_lora:
-            from miles.backends.training_utils.weight_publisher import WeightPublisher
-            from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-
             iterator = get_hf_weight_iterator(
                 args,
                 self.model,
@@ -278,8 +276,6 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
         else:
-            from miles.backends.training_utils.weight_update.updater import WeightUpdater
-
             self.weight_updater = WeightUpdater(
                 args,
                 self.model,
