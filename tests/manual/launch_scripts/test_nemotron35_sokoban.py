@@ -44,4 +44,5 @@ def test_async_sokoban_launch(monkeypatch, tmp_path):
         REPO_ROOT
         / "tests/snapshots/launch_scripts/py/examples/experimental/nemo-gym/run_nemotron35_sokoban.py/execute.txt"
     )
-    assert_matches_snapshot(snapshot, format_recording(recording, sandbox=tmp_path), "async_sokoban::execute")
+    recorded = "\n".join(line.rstrip() for line in format_recording(recording, sandbox=tmp_path).splitlines()) + "\n"
+    assert_matches_snapshot(snapshot, recorded, "async_sokoban::execute")
