@@ -13,7 +13,7 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
-from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -199,7 +199,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
         if args.multi_lora:
             # per-tenant optimizers: created by load_slot, destroyed by unload_slot
-            self.slot_optimizers: dict[int, lora_executor.SlotOptimizer] = {}
+            self.slot_optimizers: dict[int, lora_model.SlotOptimizer] = {}
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -440,13 +440,13 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.forward_backward(self.args, batch_id, self.model, rollout_data)
+            return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
 
     @with_logs
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
         assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
         self._heartbeat.bump()
-        return lora_executor.optim_step(self.args, self.slot_optimizers, adam_params_by_slot)
+        return lora_model.optim_step(self.args, self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
     def forward_only_logprobs(self, batch_id: int, rollout_data_ref: Box) -> Box | None:
@@ -464,12 +464,12 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     def load_slot(self, slot: int, rank: int, alpha: float) -> None:
         assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
-        self.slot_optimizers[slot] = lora_executor.load_slot(self.args, self.model, slot, rank, alpha)
+        self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
 
     @with_logs
     def unload_slot(self, slot: int) -> None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
-        lora_executor.unload_slot(self.model, self.slot_optimizers.pop(slot))
+        lora_model.unload_slot(self.model, self.slot_optimizers.pop(slot))
 
     @with_logs
     @event_logger_context(
