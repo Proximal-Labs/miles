@@ -306,7 +306,8 @@ class RolloutExecutor:
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id: int) -> None:
+    # async but never awaits: the RPC layer runs sync methods on a thread, and an await-free coroutine is atomic against the rollout coroutines on this loop
+    async def save(self, rollout_id: int) -> None:
         if (save_dir := self.args.save) is None:
             return
 
@@ -320,7 +321,8 @@ class RolloutExecutor:
                 if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                     eval_fn.save(dir_temp / _EVAL_GENERATE_ROLLOUT_DIRNAME)
 
-    def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
+    # async but never awaits, for the same reason as save
+    async def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
         directory = self._resolve_checkpoint_dir(rollout_id=rollout_id)
         if directory is None:
             assert not require_complete, (
