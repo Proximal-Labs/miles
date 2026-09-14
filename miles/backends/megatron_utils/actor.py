@@ -210,10 +210,6 @@ class MegatronTrainRayActor(TrainRayActor):
             # per-tenant optimizers: created by load_slot, destroyed by unload_slot
             self.slot_optimizers: dict[int, lora_executor.SlotOptimizer] = {}
 
-        if args.multi_lora:
-            # per-tenant optimizers: created by load_slot, destroyed by unload_slot
-            self.slot_optimizers: dict[int, lora_executor.SlotOptimizer] = {}
-
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
             from miles_plugins.models.cp_utils import detect_and_setup_hybrid_cp
