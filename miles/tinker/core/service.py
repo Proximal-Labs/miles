@@ -94,6 +94,7 @@ class TinkerService:
         self.free_slots.remove(slot)
 
         model_id = f"model-{uuid.uuid4().hex[:12]}"
+        future = self.futures.create(model_id, tenant)
         record = ModelRecord(
             model_id=model_id,
             tenant=tenant,
@@ -101,11 +102,11 @@ class TinkerService:
             base_model=base_model,
             lora_rank=rank,
             lora_alpha=alpha,
+            create_request_id=future.request_id,
         )
         self.models[model_id] = record
         self.planner.add_stream(ModelStream(model_id, tenant, slot))
-        future = self.futures.create(model_id, tenant)
-        task = asyncio.create_task(self._run_create_model(future.request_id, record))
+        task = asyncio.create_task(self._run_create_model(record))
         self._create_tasks.add(task)
         task.add_done_callback(self._observe_background_task)
         session["models_by_seq"][model_seq_id] = (future.request_id, model_id)
@@ -135,14 +136,16 @@ class TinkerService:
                 self._background_error = error
             self._wake.set()
 
-    async def _run_create_model(self, request_id: str, record: ModelRecord) -> None:
+    async def _run_create_model(self, record: ModelRecord) -> None:
         async with self._backend_lock:
+            if self.models.get(record.model_id) is not record:
+                return
             failure = await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
+            record.slot_initialized = True
             if failure is not None:
-                self.futures.fail(request_id, failure["error"], "server")
                 await self._evict_model(record.model_id, failure["error"], "server")
                 return
-        self.futures.resolve(request_id, {"op": "create_model", "model_id": record.model_id})
+            self.futures.resolve(record.create_request_id, {"op": "create_model", "model_id": record.model_id})
 
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
@@ -647,15 +650,16 @@ class TinkerService:
             self._eviction_reasons.pop(next(iter(self._eviction_reasons)))
         stream = self.planner.stream(model_id)
         self.planner.remove_stream(model_id)
-        for request_id in stream.request_id_by_seq.values():
+        for request_id in [record.create_request_id, *stream.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
         if self.backend.trainer_dead():
             return
-        failure = await self.backend.unload_slot(record.slot)
-        if failure is not None:
-            logger.error("slot %s remains unavailable after unload failed: %s", record.slot, failure["error"])
-            return
+        if record.slot_initialized:
+            failure = await self.backend.unload_slot(record.slot)
+            if failure is not None:
+                logger.error("slot %s remains unavailable after unload failed: %s", record.slot, failure["error"])
+                return
         self.free_slots.add(record.slot)
 
 
