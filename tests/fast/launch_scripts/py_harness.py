@@ -193,7 +193,8 @@ def format_recording(recording: Recording, sandbox: Path) -> str:
     lines = []
     for index, command in enumerate(recording.commands):
         lines.append(f"### {index}")
-        lines.append(re.sub(r" (?=--)", "\n  ", sanitize(command, sandbox=sandbox)))
+        formatted = re.sub(r" (?=--)", "\n  ", sanitize(command, sandbox=sandbox))
+        lines.extend(line.rstrip() for line in formatted.split("\n"))
         lines.append("")
     for index, content in enumerate(recording.pseudo_files, start=1):
         lines.append(f"### pseudo file {index}")
