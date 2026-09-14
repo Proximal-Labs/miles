@@ -36,9 +36,7 @@ def run_local_io_collective(step: Callable[[], None]) -> None:
         raise CheckpointIOError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
-def write_checkpoint_dir(
-    path: str | Path, write_shards: Callable[[Path], None], metadata: dict | None = None
-) -> None:
+def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None], metadata: dict | None = None) -> None:
     """Fill a fresh tmp dir through ``write_shards``, then move it to ``path``:
     a directory at its final path is always complete, and on overwrite the old
     version survives (as ``_old_<name>``) until the replacement is in place.
