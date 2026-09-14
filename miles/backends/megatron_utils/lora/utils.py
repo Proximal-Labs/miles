@@ -86,6 +86,7 @@ _HF_MODULE_NAMES = {
     "gate_proj",
     "up_proj",
     "down_proj",
+    "lm_head",
     "in_proj_qkvz",
     "in_proj_ba",
 }
