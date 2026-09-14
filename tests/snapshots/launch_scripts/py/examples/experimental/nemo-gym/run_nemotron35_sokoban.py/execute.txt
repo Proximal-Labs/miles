@@ -1,5 +1,5 @@
 ### 0
-pkill -9 sglang; sleep 3; pkill -9 miles; sleep 3; pkill -9 miles; pkill -9 redis; true; 
+pkill -9 sglang; sleep 3; pkill -9 miles; sleep 3; pkill -9 miles; pkill -9 redis; true;
 
 ### 1
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
