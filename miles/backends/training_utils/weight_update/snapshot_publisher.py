@@ -5,7 +5,7 @@ import safetensors.torch
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint_io import run_local_io_collective, write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.multi_lora import AdapterSpec
 
@@ -26,7 +26,6 @@ class WeightPublisher:
         """Write adapter files inside a caller-owned checkpoint directory transaction."""
         path = Path(path)
         is_writer = dist.get_rank() == 0
-        # Tensor/collective failures must escape to the trainer cell's failure handling.
         tensors = {
             name: tensor.detach().contiguous().cpu()
             for name, tensor in self._iterator.materialize_adapter(adapter, materialize=is_writer).items()
@@ -36,10 +35,7 @@ class WeightPublisher:
         if adapter is not None:
             config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
 
-        def write_files():
-            if is_writer:
-                path.mkdir(parents=True, exist_ok=True)
-                (path / "adapter_config.json").write_text(json.dumps(config))
-                (path / "adapter_model.safetensors").write_bytes(adapter_bytes)
-
-        run_local_io_collective(write_files)
+        if is_writer:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "adapter_config.json").write_text(json.dumps(config))
+            (path / "adapter_model.safetensors").write_bytes(adapter_bytes)

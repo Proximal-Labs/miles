@@ -213,32 +213,6 @@ async def test_sample_failure_preserves_the_snapshot_and_training_stream(service
     assert (await await_settled(service, "tenant", fb)).state == DONE
 
 
-async def test_failed_export_burns_the_version_number(service):
-    """A failed export must leave its version unpublished and never reuse its number."""
-    model_id = await created_model(service)
-    service.backend.fail_on["export_slot"] = {"error": "disk full"}
-    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
-    future = await await_settled(service, "tenant", failed)
-    assert (future.state, future.error_category) == (FAILED, "server")
-
-    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
-    future = await await_settled(service, "tenant", retried)
-    assert future.result["path"] == f"tinker://{model_id}/sampler_weights/2"
-
-    with pytest.raises(UserInputError):
-        service.submit_sample(
-            "tenant",
-            {
-                "model_path": f"tinker://{model_id}/sampler_weights/1",
-                "num_samples": 1,
-                "prompt_tokens": [1],
-                "sampling_params": {"max_tokens": 2},
-                "prompt_logprobs": False,
-                "topk_prompt_logprobs": 0,
-            },
-        )
-
-
 async def test_lease_expiry_reclaims_the_tenant(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
@@ -592,22 +566,6 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
     await service._sweep_once()  # the sweep itself survived
 
 
-async def test_a_failed_load_state_retires_the_model(service):
-    model_id = await created_model(service)
-    saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
-    )
-    path = (await await_settled(service, "tenant", saved)).result["path"]
-
-    service.backend.fail_on["load_slot"] = {"error": "shard corrupt"}
-    loaded = service.submit(
-        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
-    )
-    future = await await_settled(service, "tenant", loaded)
-    assert (future.state, future.error_category) == (FAILED, "server")
-    assert model_id not in service.models, "a load that failed partway may have left mixed state"
-
-
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -698,15 +656,30 @@ async def test_a_recycled_slot_belongs_to_a_fresh_stream(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
-@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep"])
+@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service
 
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
+    error = (
+        OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
+    )
     try:
         model_id = await created_model(gateway)
-        if source == "create":
+        if source == "export":
+            gateway.backend.fail_on["export_slot"] = error
+            gateway.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+        elif source == "load":
+            saved = gateway.submit(
+                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+            )
+            path = (await await_settled(gateway, "tenant", saved)).result["path"]
+            gateway.backend.fail_on["load_slot"] = error
+            gateway.submit(
+                "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+            )
+        elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
             gateway.create_model("tenant", model_payload(gateway))
         elif source == "sweep":
@@ -725,7 +698,7 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             else:
                 gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
             gateway.submit("tenant", "optim_step", _optim_payload(model_id, 1))
-        with pytest.raises(RuntimeError, match="fatal execution failure"):
+        with pytest.raises(type(error), match=str(error)):
             await asyncio.wait_for(run_task, timeout=2)
     finally:
         if not run_task.done():
