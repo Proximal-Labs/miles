@@ -4,7 +4,7 @@ An internal datum has tokens = model_input + target_tokens[-1:] and explicit tar
 Its target_len counts every label position, including prompt positions; loss inputs align to it.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -19,6 +19,9 @@ class CommandOp(str, Enum):
     def is_batch(self) -> bool:
         """Batch ops pack into BatchUnits; every other op is a barrier."""
         return self in (CommandOp.FORWARD_BACKWARD, CommandOp.FORWARD_ONLY)
+
+    def changes_training_state(self) -> bool:
+        return self in (CommandOp.FORWARD_BACKWARD, CommandOp.OPTIM_STEP, CommandOp.LOAD_STATE)
 
 
 # wire loss_fn_inputs key -> internal datum key
@@ -69,6 +72,7 @@ class Command:
     payload: dict
     request_id: str
     arrival: int  # global submit order for selecting the planner's seed
+    validation_error: str | None = None
 
 
 @dataclass
@@ -79,6 +83,7 @@ class ModelRecord:
     base_model: str
     lora_rank: int
     lora_alpha: float
+    create_request_id: str
+    slot_initialized: bool = False
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
-    published_sampler_versions: set[str] = field(default_factory=set)

@@ -4,7 +4,7 @@ from contextlib import suppress
 
 import uvicorn
 
-from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_megatron
+from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 async def serve(args):
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
+    assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
     configure_logger(args, source=MainProcessIdentity())
 
     init_http_client(args)
@@ -38,24 +39,23 @@ async def serve(args):
         role="actor",
         with_ref=False,
         with_opd_teacher=False,
-        inference_controller=inference_controller,
+        inference_controller=None,
         rollout_executor=None,
     )
     await trainer.init()
 
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
-    # args.target_modules holds HF names (q_proj, ...); classify on the megatron names
-    target_modules = set(convert_target_modules_to_megatron(args.target_modules or ()))
+    target_modules = set(convert_target_modules_to_hf(args.target_modules))
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=checkpoint_root,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
-        trains_attn=bool(target_modules & {"linear_qkv", "linear_proj"}),
-        trains_mlp=bool(target_modules & {"linear_fc1", "linear_fc2"}),
-        trains_unembed="output_layer" in target_modules,
+        trains_attn=bool(target_modules & {"q_proj", "k_proj", "v_proj", "o_proj"}),
+        trains_mlp=bool(target_modules & {"gate_proj", "up_proj", "down_proj"}),
+        trains_unembed="lm_head" in target_modules,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node

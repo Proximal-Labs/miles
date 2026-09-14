@@ -9,7 +9,7 @@ from miles.tinker.runtime import (
     _build_train_data,
     _pad_to_dp_multiple,
     _prompt_logprobs,
-    _raise_slot_errors,
+    _slot_failure,
     _to_sequence,
     _topk_prompt_logprobs,
 )
@@ -182,13 +182,12 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
     assert len(outputs) == 1, "padding outputs are dropped"
 
 
-def test_an_actor_error_verdict_becomes_an_exception():
-    with pytest.raises(RuntimeError, match="bad shard"):
-        _raise_slot_errors([None, {"error": "ValueError: bad shard"}])
+def test_an_actor_error_verdict_survives_runtime_translation():
+    failure = {"error": "bad shard"}
+    assert _slot_failure([None, failure]) is failure
 
 
 def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     """A truncated sequence fed to RL as a completed sample corrupts training data silently."""
     response = {"meta_info": {"output_token_logprobs": [(-0.1, 11)], "finish_reason": {"type": "abort"}}}
-    with pytest.raises(RuntimeError, match="abort"):
-        _to_sequence(response)
+    assert "abort" in _to_sequence(response)["error"]

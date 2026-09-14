@@ -15,9 +15,13 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
-from miles.backends.training_utils.checkpoint_io import NonGlobalFatalError, run_with_failure_collective
-from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError
+from miles.backends.training_utils.weight_publisher import WeightPublisher
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
@@ -60,7 +64,6 @@ from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
-from .lora.utils import is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .named_weights import named_params_and_buffers
 from .parallel import verify_megatron_parallel_state
@@ -254,11 +257,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        from miles.backends.training_utils.weight_update.updater import WeightUpdater
-
-        from .lora.utils import build_lora_sync_config
-        from .update_weight.hf_weight_iterator import get_hf_weight_iterator
-
         is_lora = lora_rollout_enabled(args)
         uses_colocate_protocol = self.args.colocate
         if is_lora and not uses_colocate_protocol:
@@ -266,17 +264,29 @@ class MegatronTrainRayActor(TrainRayActor):
                 "LoRA weight sync over distributed engines requires "
                 f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
             )
-        self.weight_updater = WeightUpdater(
-            self.args,
-            self.model,
-            weights_getter=self._get_actor_weights,
-            model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
-            iterator_factory=get_hf_weight_iterator,
-            parallel_state=get_parallel_state(),
-            is_lora=is_lora,
-            lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
-        )
+        model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
+        quantization_config = getattr(self.hf_config, "quantization_config", None)
+        if args.multi_lora:
+            iterator = get_hf_weight_iterator(
+                args,
+                self.model,
+                required_placement=WeightUpdatePlacement(gather_pp=True),
+                model_name=model_name,
+                quantization_config=quantization_config,
+            )
+            self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
+        else:
+            self.weight_updater = WeightUpdater(
+                args,
+                self.model,
+                weights_getter=self._get_actor_weights,
+                model_name=model_name,
+                quantization_config=quantization_config,
+                iterator_factory=get_hf_weight_iterator,
+                parallel_state=get_parallel_state(),
+                is_lora=is_lora,
+                lora_sync_config=build_lora_sync_config(args) if is_lora else None,
+            )
 
         # empty cache after initialization
         clear_memory()
@@ -453,11 +463,6 @@ class MegatronTrainRayActor(TrainRayActor):
         return lora_executor.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
-    def zero_grads(self, slot: int) -> None:
-        assert self.args.multi_lora, "zero_grads is a multi-LoRA slot command"
-        lora_executor.zero_grads(self.slot_optimizers[slot])
-
-    @with_logs
     def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
@@ -477,27 +482,29 @@ class MegatronTrainRayActor(TrainRayActor):
         if ckpt_path is not None:
             try:
                 lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
-            except NonGlobalFatalError as error:
+            except CheckpointIOError as error:
                 return {"error": str(error)}
         return None
 
     @with_logs
-    def save_slot(self, slot: int, path: str) -> dict | None:
+    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
         assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
         try:
-            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path)
-        except NonGlobalFatalError as error:
+            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
+        except CheckpointIOError as error:
             return {"error": str(error)}
         return None
 
     @with_logs
-    def export_slot(self, slot: int, rank: int, alpha: float, path: str) -> dict | None:
+    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> dict | None:
         """Write the slot's adapter as an engine-loadable dir."""
         assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
         self._heartbeat.bump()
         try:
-            self.weight_updater.export_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path)
-        except NonGlobalFatalError as error:
+            self.weight_publisher.publish_adapter(
+                AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
+            )
+        except CheckpointIOError as error:
             return {"error": str(error)}
         return None
 
@@ -505,10 +512,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def unload_slot(self, slot: int) -> dict | None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
         slot_optimizer = self.slot_optimizers.pop(slot)
-        try:
-            run_with_failure_collective(lambda: lora_executor.unload_slot(self.model, slot_optimizer))
-        except NonGlobalFatalError as error:
-            return {"error": str(error)}
+        lora_executor.unload_slot(self.model, slot_optimizer)
         return None
 
     @with_logs
@@ -816,55 +820,6 @@ class MegatronTrainRayActor(TrainRayActor):
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
 
-    def _ensure_engines_connected(
-        self, rollout_engines, snapshot_cell_id_to_hashes, engine_gpu_counts, engine_gpu_offsets
-    ) -> None:
-        if not self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes):
-            return
-        self.weight_updater.connect_rollout_engines(
-            rollout_engines,
-            engine_gpu_counts=engine_gpu_counts,
-            engine_gpu_offsets=engine_gpu_offsets,
-        )
-        self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-        dist.barrier(group=get_gloo_group())
-
-    @with_logs
-    def push_slot(
-        self,
-        info: "UpdatableEngines",
-        slot: int,
-        lora_name: str,
-        rank: int,
-        alpha: float,
-        lora_path: str | None = None,
-    ) -> None:
-        assert self.args.multi_lora, "push_slot is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        self._ensure_engines_connected(
-            info.rollout_engines, info.snapshot_cell_id_to_hashes, info.engine_gpu_counts, info.engine_gpu_offsets
-        )
-        self.weight_updater.push_adapter(lora_name, AdapterSpec(slot=slot, rank=rank, alpha=alpha), lora_path)
-
-    @with_logs
-    def unload_adapter(self, info: "UpdatableEngines", lora_name: str) -> None:
-        assert self.args.multi_lora, "unload_adapter is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        # rank 0's RPC failure must fail every rank together, not strand a barrier
-        failure = [None]
-        if dist.get_rank() == 0:
-            try:
-                results = async_utils.wait_futures(
-                    [async_utils.submit(client.unload_lora_adapter(lora_name)) for client in info.rollout_engines]
-                )
-                # an engine can answer HTTP 200 with {"success": false, "error_message": ...}
-                check_weight_sync_results(results, is_lora=True)
-            except Exception as error:  # noqa: BLE001
-                failure[0] = f"{type(error).__name__}: {error}"
-        dist.broadcast_object_list(failure, src=0, group=get_gloo_group())
-        if failure[0] is not None:
-            raise RuntimeError(f"unload_adapter({lora_name!r}) failed: {failure[0]}")
-
     @with_logs
     @timer
     def update_weights(self, info: "UpdatableEngines") -> int | None:
@@ -882,9 +837,15 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             reload_process_groups()
 
-        self._ensure_engines_connected(
-            rollout_engines, snapshot_cell_id_to_hashes, engine_gpu_counts, engine_gpu_offsets
-        )
+        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
+        if needs_reconnect:
+            self.weight_updater.connect_rollout_engines(
+                rollout_engines,
+                engine_gpu_counts=engine_gpu_counts,
+                engine_gpu_offsets=engine_gpu_offsets,
+            )
+            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
+            dist.barrier(group=get_gloo_group())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:

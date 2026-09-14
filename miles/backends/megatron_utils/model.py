@@ -79,9 +79,6 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
     Returns:
         OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
     """
-    if args.entry == "serve":
-        # skip in tinker serving mode
-        return None
     # Iteration-based training.
     args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
     if args.lr_decay_iters is None:
@@ -205,7 +202,7 @@ def setup_model_and_optimizer(
 
         # per-tenant SlotOptimizers are built at load_slot; there is no pool optimizer
         validate_multi_lora_optimizer_args(args)
-        optimizer = None
+        return model, None, None
     else:
         optimizer = get_megatron_optimizer(
             config=config,
@@ -339,7 +336,7 @@ def forward_only(
             attention_mask=None,
             labels=None,
             packed_seq_params=packed_seq_params,
-            loss_mask=batch["full_loss_masks"],
+            loss_mask=batch["input_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
             fp32_output=fp32_output,
@@ -476,7 +473,7 @@ def run_forward_backward_pass(
                 attention_mask=None,
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
-                loss_mask=batch["full_loss_masks"],
+                loss_mask=batch["input_loss_masks"],
             )
         else:
             forward_kwargs = {
@@ -485,7 +482,9 @@ def run_forward_backward_pass(
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
-                "loss_mask": batch["full_loss_masks"],
+                # Aligned with input_ids. With labels=None, Megatron derives the MTP labels
+                # from input_ids and shifts this mask itself; without MTP it never reads it.
+                "loss_mask": batch["input_loss_masks"],
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 

@@ -1,5 +1,7 @@
 """Checkpoint directories: written collectively, complete at their final path."""
 
+import json
+import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -9,30 +11,38 @@ import torch.distributed as dist
 
 from miles.utils.distributed_utils import get_gloo_group
 
-
-class NonGlobalFatalError(RuntimeError):
-    """Every rank raised this together, so it is fatal at most to its slot, never to the trainer."""
+logger = logging.getLogger(__name__)
 
 
-def run_with_failure_collective(step: Callable[[], None]) -> None:
-    """Run the step on every rank; any rank's failure raises NonGlobalFatalError on all of them."""
+class CheckpointIOError(RuntimeError):
+    """A coordinated failure of a local filesystem operation."""
+
+
+def run_local_io_collective(step: Callable[[], None]) -> None:
+    """Run local filesystem IO, then agree on its outcome; step must not contain collectives."""
     error = None
     try:
         step()
-    except Exception as exc:  # noqa: BLE001
+    except OSError as exc:
         error = f"{type(exc).__name__}: {exc}"
     if not dist.is_initialized():
         if error is not None:
-            raise NonGlobalFatalError(error)
+            raise CheckpointIOError(error)
         return
     errors: list[str | None] = [None] * dist.get_world_size()
     dist.all_gather_object(errors, error, group=get_gloo_group())
     failed = [e for e in errors if e is not None]
     if failed:
-        raise NonGlobalFatalError(f"failed on {len(failed)} rank(s): {failed[0]}")
+        raise CheckpointIOError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
-def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None]) -> None:
+def write_checkpoint_dir(
+    path: str | Path,
+    write_shards: Callable[[Path], None],
+    metadata: dict | None = None,
+    *,
+    overwrite: bool = True,
+) -> None:
     """Fill a fresh tmp dir through ``write_shards``, then move it to ``path``:
     a directory at its final path is always complete, and on overwrite the old
     version survives (as ``_old_<name>``) until the replacement is in place.
@@ -49,6 +59,10 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
     def publish_dir():
         if _rank() != 0:
             return
+        if not overwrite and final_dir.exists():
+            raise FileExistsError(f"checkpoint {final_dir} already exists")
+        if metadata is not None:
+            (tmp_dir / "META.json").write_text(json.dumps(metadata, indent=2))
         if final_dir.exists():
             old_dir = final_dir.parent / f"_old_{final_dir.name}"
             if old_dir.exists():
@@ -59,13 +73,16 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
             except OSError:
                 os.replace(old_dir, final_dir)
                 raise
-            shutil.rmtree(old_dir)
+            try:
+                shutil.rmtree(old_dir)
+            except OSError as error:
+                logger.warning("Checkpoint %s committed; could not remove %s: %s", final_dir, old_dir, error)
         else:
             os.replace(tmp_dir, final_dir)
 
-    run_with_failure_collective(make_tmp_dir)
-    run_with_failure_collective(lambda: write_shards(tmp_dir))
-    run_with_failure_collective(publish_dir)
+    run_local_io_collective(make_tmp_dir)
+    write_shards(tmp_dir)
+    run_local_io_collective(publish_dir)
 
 
 def _rank() -> int:

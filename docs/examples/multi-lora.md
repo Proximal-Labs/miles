@@ -45,3 +45,35 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 # passing means the adapters stayed isolated end to end
 python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models/Qwen3-30B-A3B --mode multi --clients 4
 ```
+
+## Failure handling
+
+A terminal failure of `forward_backward`, `optim_step`, or `load_state` ends
+that model's training stream, including commands already queued behind it.
+This includes content validation failures with a valid model and sequence.
+Create a new model and restore a saved checkpoint to continue; completed
+futures and published checkpoints keep their results.
+
+Known request-local failures of `forward`, saving, or sampling leave the
+training stream available. Saving sampler weights commits an immutable directory;
+it does not call the inference engines. Sampling loads that snapshot from disk
+on demand, including after cache eviction. An engine load failure fails the
+sampling request; it leaves the snapshot and training state intact. Unknown
+trainer execution failures invalidate the shared trainer cell and stop the server.
+
+This gateway provides failure isolation, not automatic training recovery.
+Checkpoints persist; futures, deduplication, and unsaved accumulation do not
+survive a server restart.
+
+## Sampler snapshots
+
+Training and inference must use the same base checkpoint. Tinker engines load
+that frozen base at startup and serve without trainer weight updates; dummy
+loading and `update_weights: true` are rejected. Ordinary full-model and
+single-LoRA training continue to use the existing weight updater.
+
+`--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
+and every inference engine. A sampler save exports the current adapter weights,
+then commits its tensors, adapter config, and `META.json` together by renaming
+the completed directory. Existing versions cannot be overwritten. Saving between
+`forward_backward` and `optim_step` neither applies nor discards pending gradients.
