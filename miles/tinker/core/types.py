@@ -4,7 +4,7 @@ An internal datum has tokens = model_input + target_tokens[-1:] and explicit tar
 Its target_len counts every label position, including prompt positions; loss inputs align to it.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 

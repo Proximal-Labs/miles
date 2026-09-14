@@ -1,8 +1,5 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
 import pytest
 import torch
 
@@ -71,9 +68,7 @@ class TestGenerateRequest:
             "topk_prompt_logprobs": 0,
             **payload_extra,
         }
-        return MilesBackend(None, "http://router")._generate_request(
-            payload, lora_name="m@1"
-        )
+        return MilesBackend(None, "http://router")._generate_request(payload, lora_name="m@1")
 
     def test_max_tokens_is_required(self):
         with pytest.raises(UserInputError, match="max_tokens"):
@@ -196,4 +191,3 @@ def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     """A truncated sequence fed to RL as a completed sample corrupts training data silently."""
     response = {"meta_info": {"output_token_logprobs": [(-0.1, 11)], "finish_reason": {"type": "abort"}}}
     assert "abort" in _to_sequence(response)["error"]
-

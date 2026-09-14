@@ -279,7 +279,9 @@ class TestPrefillNumServersPath:
     def test_prefill_num_servers_counts_engines_not_gpus(self, multi_lora):
         """prefill_num_servers is a server count, so its GPU span scales with the engine width."""
         cfg = resolve_sglang_config(
-            _make_args(rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2, multi_lora=multi_lora)
+            _make_args(
+                rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2, multi_lora=multi_lora
+            )
         )
         groups = cfg.models[0].server_groups
         assert [(group.worker_type, group.num_gpus) for group in groups] == [("prefill", 6), ("decode", 10)]

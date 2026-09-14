@@ -425,8 +425,6 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
-
-
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 

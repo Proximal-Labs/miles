@@ -505,7 +505,9 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
         self._heartbeat.bump()
         try:
-            self.weight_publisher.publish_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata)
+            self.weight_publisher.publish_adapter(
+                AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
+            )
         except CheckpointIOError as error:
             return {"error": str(error)}
         return None
@@ -821,9 +823,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.colocate or self._asleep or self._active_model_tag != "actor":
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
-
-
-
 
     @with_logs
     @timer
