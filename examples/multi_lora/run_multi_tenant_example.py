@@ -44,10 +44,7 @@ async def run_client(index: int, args) -> dict:
     tag = f"client-{index}"
     # tml- prefix required by the SDK; the gateway reads the key as the tenant id
     service = tinker.ServiceClient(base_url=args.base_url, api_key=f"tml-smoke-{tag}")
-    # the gateway's adapter layout has no unembedding LoRA; the default would be rejected
-    training = await service.create_lora_training_client_async(
-        base_model=args.base_model, rank=args.lora_rank, train_unembed=False
-    )
+    training = await service.create_lora_training_client_async(base_model=args.base_model, rank=args.lora_rank)
     tokenizer = training.get_tokenizer()
 
     datums = build_datums(tokenizer, marker)
