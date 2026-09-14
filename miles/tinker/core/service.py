@@ -523,7 +523,10 @@ class TinkerService:
         model_path = payload.get("model_path")
         sampling_session = None
         if payload.get("sampling_session_id"):
-            sampling_session = self.sampling_sessions[payload["sampling_session_id"]]
+            sampling_session_id = payload["sampling_session_id"]
+            sampling_session = self.sampling_sessions.get(sampling_session_id)
+            if sampling_session is None:
+                raise UserInputError(f"unknown sampling session {sampling_session_id!r}; create a sampling session first")
             if sampling_session["tenant"] != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or sampling_session["model_path"]
