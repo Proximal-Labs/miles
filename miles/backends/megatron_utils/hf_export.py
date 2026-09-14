@@ -18,7 +18,7 @@ import safetensors.torch
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.utils import is_lora_model, save_lora_checkpoint
+from miles.backends.megatron_utils.lora.utils import is_lora_model, write_lora_weights
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
@@ -157,8 +157,7 @@ def save_hf_model(
                         f"bridge likely has no mapping for this model architecture."
                     )
         if is_lora_model(model):
-            # adapter-only HF PEFT checkpoint next to the merged model
-            save_lora_checkpoint(model, args, str(tmp_dir / "adapter"))
+            write_lora_weights(model, args, tmp_dir / "adapter")
         if torch.distributed.get_rank() == 0:
             # kept for readers that validate pre-existing dirs (is_complete_hf_export)
             (tmp_dir / HF_EXPORT_COMPLETE_MARKER).touch()
