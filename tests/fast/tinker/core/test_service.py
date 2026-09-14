@@ -131,16 +131,18 @@ async def test_save_then_load_roundtrip_paths(service):
     assert weights_only["ckpt_path"].endswith(f"{model_id}/weights/ckpt")
 
 
-async def test_sampler_save_bumps_the_version_and_pushes(service):
+async def test_sampler_save_publishes_successive_versions(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
         request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": seq_id})
         future = await await_settled(service, "tenant", request_id)
         assert future.result["path"] == f"tinker://{model_id}/sampler_weights/{seq_id}"
-    assert [push["lora_name"] for push in service.backend.named("push_slot")] == [f"{model_id}@1", f"{model_id}@2"]
+    assert [export["path"] for export in service.backend.named("export_slot")] == [
+        service._checkpoint_dir(model_id, "sampler_weights", str(version)) for version in (1, 2)
+    ]
 
 
-async def test_sampling_resolves_against_the_pushed_version(service):
+async def test_sampling_resolves_against_the_saved_version(service):
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     sampler_path = (await await_settled(service, "tenant", save)).result["path"]
@@ -163,14 +165,12 @@ async def test_sampling_resolves_against_the_pushed_version(service):
 
 
 async def test_sampler_requests_carry_the_published_checkpoint_path(service):
-    """Push and sample requests must carry the export path for engine backfill."""
     model_id = await created_model(service)
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", request_id)).result["path"]
 
     disk_dir = service._checkpoint_dir(model_id, "sampler_weights", "1")
     assert service.backend.named("export_slot")[0]["path"] == disk_dir
-    assert service.backend.named("push_slot")[0]["lora_path"] == disk_dir
 
     sample_id, _ = service.submit_sample(
         "tenant",
@@ -187,14 +187,13 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     assert service.backend.named("sample")[0]["lora_path"] == disk_dir
 
 
-async def test_warm_push_failure_still_publishes_the_version(service):
-    """A failed warm push must not invalidate an exported sampler version."""
+async def test_sample_failure_preserves_the_snapshot_and_training_stream(service):
     model_id = await created_model(service)
-    service.backend.fail_on["push_slot"] = {"error": "engine down"}
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     future = await await_settled(service, "tenant", request_id)
     assert future.result["path"] == f"tinker://{model_id}/sampler_weights/1"
 
+    service.backend.fail_on["sample"] = {"error": "engine down"}
     sample_id, _ = service.submit_sample(
         "tenant",
         {
@@ -207,7 +206,11 @@ async def test_warm_push_failure_still_publishes_the_version(service):
         },
     )
     future = await await_settled(service, "tenant", sample_id)
-    assert future.result["sequences"]
+    assert future.state == FAILED
+    assert future.error == "engine down"
+    assert service._resolve_sampler("tenant", f"tinker://{model_id}/sampler_weights/1")[0] == f"{model_id}@1"
+    fb = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    assert (await await_settled(service, "tenant", fb)).state == DONE
 
 
 async def test_failed_export_burns_the_version_number(service):
@@ -473,21 +476,25 @@ async def test_unsupported_lora_configs_are_rejected(service):
     assert model_id in service.models
 
 
-async def test_sampler_paths_resolve_after_the_lease_died(service):
+@pytest.mark.parametrize("expire_lease", [False, True])
+async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_lease):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", save)).result["path"]
 
-    service.sessions[session_id]["last_heartbeat"] = -1e9
-    await service._sweep_once()
-    assert model_id not in service.models
-
-    service.create_session("tenant")
+    if expire_lease:
+        service.sessions[session_id]["last_heartbeat"] = -1e9
+        await service._sweep_once()
+        assert model_id not in service.models
+        service.create_session("tenant")
     lora_name, lora_path = service._resolve_sampler("tenant", path)
     assert lora_name == f"{model_id}@1" and lora_path.endswith("/sampler_weights/1")
     with pytest.raises((UserInputError, OwnershipError)):
         service._resolve_sampler("thief", path)
+    service.config.base_model = "other"
+    with pytest.raises(UserInputError, match="base_model"):
+        service._resolve_sampler("tenant", path)
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):

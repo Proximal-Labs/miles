@@ -91,9 +91,6 @@ class FakeBackend:
             (Path(path) / "META.json").write_text(json.dumps(metadata))
         return failure
 
-    async def push_slot(self, slot, lora_name, rank, alpha, lora_path=None):
-        return self._record("push_slot", slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
-
     async def sample(self, payload, lora_name, lora_path=None):
         failure = self._record("sample", payload=payload, lora_name=lora_name, lora_path=lora_path)
         if failure is not None:

@@ -306,8 +306,10 @@ saving weights for sampling publishes an immutable adapter version.
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
 It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
-Sampler saves persist an immutable snapshot before warming the engine cache.
-If cache warmup fails, sampling can refill that version from disk.
+Sampler saves commit an immutable adapter directory on shared storage, without
+contacting inference engines. Engines load the same frozen base at startup and
+load adapter snapshots from disk on demand. A failed engine load fails sampling
+without invalidating the saved snapshot or the training stream.
 
 Futures, model leases, and sequence deduplication are in memory and are lost on
 gateway restart. Saved checkpoints retain their ownership and adapter metadata
