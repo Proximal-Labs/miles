@@ -88,4 +88,3 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         slot_optimizer = self.slot_optimizers.pop(slot)
         lora_model.unload_slot(self.model, slot_optimizer)
         return None
-

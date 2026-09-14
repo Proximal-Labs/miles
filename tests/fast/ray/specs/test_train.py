@@ -194,7 +194,6 @@ class TestConstructorArguments:
         assert critic_spec.worker_class == train_specs._TRAINER_ACTOR_CLASSES[backend]
 
 
-
 class TestConcurrencyGroups:
     def test_the_heartbeat_rpc_is_always_isolated(self):
         """A heartbeat queued behind a train step reads as a dead cell."""

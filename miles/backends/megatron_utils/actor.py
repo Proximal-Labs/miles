@@ -290,7 +290,6 @@ class MegatronTrainRayActor(TrainRayActor):
             lora_sync_config=build_lora_sync_config(args) if is_lora else None,
         )
 
-
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
             self.args.clear_quantized_weight_workspaces_on_offload
