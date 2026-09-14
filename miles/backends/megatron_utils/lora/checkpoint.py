@@ -38,11 +38,11 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
     return tree
 
 
-def save_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str) -> None:
+def save_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, metadata: dict | None = None) -> None:
     weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
     sharded = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=False)}
     _canonicalize_slot_keys(sharded, slot_optimizer.slot)
-    write_checkpoint_dir(path, lambda tmp_dir: dist_checkpointing.save(sharded, str(tmp_dir)))
+    write_checkpoint_dir(path, lambda tmp_dir: dist_checkpointing.save(sharded, str(tmp_dir)), metadata=metadata)
 
 
 def load_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:

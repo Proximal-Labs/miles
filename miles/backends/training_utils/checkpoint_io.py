@@ -1,5 +1,7 @@
 """Checkpoint directories: written collectively, complete at their final path."""
 
+import json
+import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -8,6 +10,8 @@ from pathlib import Path
 import torch.distributed as dist
 
 from miles.utils.distributed_utils import get_gloo_group
+
+logger = logging.getLogger(__name__)
 
 
 class CheckpointIOError(RuntimeError):
@@ -32,7 +36,9 @@ def run_local_io_collective(step: Callable[[], None]) -> None:
         raise CheckpointIOError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
-def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None]) -> None:
+def write_checkpoint_dir(
+    path: str | Path, write_shards: Callable[[Path], None], metadata: dict | None = None
+) -> None:
     """Fill a fresh tmp dir through ``write_shards``, then move it to ``path``:
     a directory at its final path is always complete, and on overwrite the old
     version survives (as ``_old_<name>``) until the replacement is in place.
@@ -49,6 +55,8 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
     def publish_dir():
         if _rank() != 0:
             return
+        if metadata is not None:
+            (tmp_dir / "META.json").write_text(json.dumps(metadata, indent=2))
         if final_dir.exists():
             old_dir = final_dir.parent / f"_old_{final_dir.name}"
             if old_dir.exists():
@@ -59,7 +67,10 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None])
             except OSError:
                 os.replace(old_dir, final_dir)
                 raise
-            shutil.rmtree(old_dir)
+            try:
+                shutil.rmtree(old_dir)
+            except OSError as error:
+                logger.warning("Checkpoint %s committed; could not remove %s: %s", final_dir, old_dir, error)
         else:
             os.replace(tmp_dir, final_dir)
 

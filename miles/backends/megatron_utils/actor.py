@@ -476,10 +476,10 @@ class MegatronTrainRayActor(TrainRayActor):
         return None
 
     @with_logs
-    def save_slot(self, slot: int, path: str) -> dict | None:
+    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
         assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
         try:
-            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path)
+            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
         except CheckpointIOError as error:
             return {"error": str(error)}
         return None
