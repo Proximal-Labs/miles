@@ -125,6 +125,7 @@ class SlotOptimizer:
             config,
             ProcessGroupCollection.use_mpu_process_groups(),
             init_state_fn_list=[_adam_init_state_fn] * len(base_optimizers),
+            model_chunks=list(model),
         )
         # params are scattered whole across DP ranks; per-child norm/clip reductions must span the world
         for child in self._inner.chained_optimizers:
