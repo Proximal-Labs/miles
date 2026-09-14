@@ -45,7 +45,7 @@ def resolve_model_spec(args: Namespace):
     registry = getattr(module, "model_registry", None)
     if registry is None:
         raise ValueError(f"{module.__name__} exposes no model_registry(); cannot build a ModelSpec")
-    return registry(args.titan_model_flavor, attn_backend="flex")
+    return registry(args.titan_model_flavor, attn_backend=os.environ.get("MILES_TITAN_ATTN_BACKEND", "flex"))
 
 
 def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps: int, dump_subdir: str):
@@ -105,6 +105,9 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     config.checkpoint = TiedCheckpointManager.Config()
     config.activation_checkpoint = FullAC.Config() if getattr(args, "gradient_checkpointing", False) else None
     config.debug.seed = args.seed
+    if os.environ.get("MILES_TITAN_COMPILE", "0") == "1":
+        config.compile.enable = True
+        config.compile.components = ["model"]
 
     config.checkpoint.enable = True
     config.checkpoint.initial_load_model_only = True
