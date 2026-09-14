@@ -8,7 +8,7 @@ from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 from miles.backends.training_utils.data import get_rollout_data
-from miles.backends.training_utils.weight_publisher import WeightPublisher
+from miles.backends.training_utils.weight_update.publisher import WeightPublisher
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.multi_lora import AdapterSpec
 from miles.utils.ray_utils import Box
