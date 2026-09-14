@@ -662,7 +662,9 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
 
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
-    error = OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
+    error = (
+        OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
+    )
     try:
         model_id = await created_model(gateway)
         if source == "export":
@@ -674,7 +676,9 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             )
             path = (await await_settled(gateway, "tenant", saved)).result["path"]
             gateway.backend.fail_on["load_slot"] = error
-            gateway.submit("tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True})
+            gateway.submit(
+                "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+            )
         elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
             gateway.create_model("tenant", model_payload(gateway))
