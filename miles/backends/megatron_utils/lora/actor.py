@@ -1,13 +1,13 @@
 from contextlib import ExitStack
 
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
+from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
+from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 from miles.backends.training_utils.data import get_rollout_data
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.structured_log import with_logs
-from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
-from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 
 
 class MultiLoRATrainRayActor(MegatronTrainRayActor):
