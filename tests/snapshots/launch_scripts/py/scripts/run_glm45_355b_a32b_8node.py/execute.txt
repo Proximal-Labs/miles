@@ -1,6 +1,6 @@
 ### 0
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
 
 ### 1
 export PYTHONUNBUFFERED=1 && ray start
@@ -59,7 +59,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-permute-fusion
   --moe-aux-loss-coeff 0
   --hf-checkpoint /root/models/GLM-4.5-355B-A32B
-  --ref-load /root/models/GLM-4.5-355B-A32B_torch_dist
+  --ref-load /root/models/GLM-4.5-355B-A32B_torch_dist 
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -75,7 +75,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
   --num-steps-per-rollout 4
   --balance-data
-  --rollout-stop-token-ids 151329 151336 151338
+  --rollout-stop-token-ids 151329 151336 151338 
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
@@ -84,7 +84,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --adam-beta2 0.98
   --optimizer-cpu-offload
   --overlap-cpu-optimizer-d2h-h2d
-  --use-precision-aware-optimizer
+  --use-precision-aware-optimizer 
   --advantage-estimator gspo
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
@@ -92,12 +92,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --entropy-coef 0.00
   --eps-clip 1e-4
   --eps-clip-high 2e-4
-  --use-tis
+  --use-tis 
   --use-wandb
   --wandb-project miles-run_glm45_355b_a32b_8node
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix
+  --disable-wandb-random-suffix 
   --tensor-model-parallel-size 8
   --sequence-parallel
   --pipeline-model-parallel-size 4
@@ -108,12 +108,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 16384
+  --max-tokens-per-gpu 16384 
   --eval-interval 20
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 8
   --eval-max-response-len 32768
-  --eval-top-p 1
+  --eval-top-p 1 
   --rollout-num-gpus-per-engine 32
   --sglang-mem-fraction-static 0.7
   --sglang-enable-dp-attention
@@ -125,7 +125,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-speculative-num-steps 1
   --sglang-speculative-eagle-topk 1
   --sglang-speculative-num-draft-tokens 2
-  --sglang-enable-draft-weights-cpu-backup
+  --sglang-enable-draft-weights-cpu-backup 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -136,4 +136,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 8
   --actor-num-gpus-per-node 8
   --num-gpus-per-node 8
-  --colocate
+  --colocate   

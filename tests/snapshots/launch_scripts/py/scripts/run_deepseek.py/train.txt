@@ -18,11 +18,11 @@ hf download
 ### 4
 python <REPO_ROOT>/tools/fp8_cast_bf16.py
   --input-fp8-hf-path /root/models/DeepSeek-V3
-  --output-bf16-hf-path /root/models/DeepSeek-V3-bf16/
+  --output-bf16-hf-path /root/models/DeepSeek-V3-bf16/ 
 
 ### 5
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
 
 ### 6
 export PYTHONUNBUFFERED=1 && ray start
@@ -88,7 +88,7 @@ export PYTHONUNBUFFERED=1 && ray start
   --pipeline-model-parallel-size 8
   --expert-model-parallel-size 4
   --decoder-first-pipeline-num-layers 7
-  --decoder-last-pipeline-num-layers 6
+  --decoder-last-pipeline-num-layers 6 
 
 ### 8
 [multi_node num_nodes=None] mkdir -p /root/local_data/DeepSeek-V3_torch_dist && rsync -a
@@ -154,7 +154,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
   --save-interval 20
-  --save-retain-interval 20
+  --save-retain-interval 20 
   --label-key label
   --apply-chat-template
   --rollout-shuffle
@@ -169,24 +169,24 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
-  --rollout-max-response-len 32768
+  --rollout-max-response-len 32768 
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98
+  --adam-beta2 0.98 
   --advantage-estimator grpo
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28
+  --eps-clip-high 0.28 
   --use-wandb
   --wandb-project miles-run_deepseek
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix
+  --disable-wandb-random-suffix 
   --tensor-model-parallel-size 1
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -197,12 +197,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 2048
+  --max-tokens-per-gpu 2048 
   --eval-interval 20
   --eval-top-p 1
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 8
-  --eval-max-response-len 32768
+  --eval-max-response-len 32768 
   --rollout-num-gpus-per-engine 4
   --sglang-mem-fraction-static 0.7
   --sglang-tp-size 4
@@ -216,7 +216,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-server-concurrency 1024
   --sglang-max-running-requests 256
   --sglang-chunked-prefill-size 1024
-  --sglang-cuda-graph-max-bs 256
+  --sglang-cuda-graph-max-bs 256 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -227,4 +227,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --num-gpus-per-node 4
   --colocate
   --use-fault-tolerance
-  --dump-details /root/shared_data/260101-000000-000/dump_details
+  --dump-details /root/shared_data/260101-000000-000/dump_details   

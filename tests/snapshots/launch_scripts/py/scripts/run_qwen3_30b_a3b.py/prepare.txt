@@ -47,4 +47,4 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --moe-permute-fusion
   --moe-aux-loss-coeff 0
   --hf-checkpoint /root/models/Qwen3-30B-A3B
-  --save /root/models/Qwen3-30B-A3B_torch_dist
+  --save /root/models/Qwen3-30B-A3B_torch_dist 

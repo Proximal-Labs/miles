@@ -61,7 +61,7 @@ hf download
   --moe-permute-fusion
   --moe-aux-loss-coeff 0
   --hf-checkpoint /root/models/GLM-4.5
-  --save /root/models/GLM-4.5_torch_dist
+  --save /root/models/GLM-4.5_torch_dist 
 
 ### 6
 [multi_node num_nodes=None] mkdir -p /root/local_data/GLM-4.5_torch_dist && rsync -a
@@ -73,7 +73,7 @@ hf download
 
 ### 8
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
 
 ### 9
 export PYTHONUNBUFFERED=1 && ray start
@@ -128,7 +128,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
   --save-interval 10
-  --save-retain-interval 10
+  --save-retain-interval 10 
   --label-key label
   --apply-chat-template
   --rollout-shuffle
@@ -142,13 +142,13 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-stop-token-ids 151329 151336 151338
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
-  --rollout-max-response-len 8192
+  --rollout-max-response-len 8192 
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98
+  --adam-beta2 0.98 
   --advantage-estimator grpo
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
@@ -156,12 +156,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --entropy-coef 0.00
   --eps-clip 1e-4
   --eps-clip-high 2e-4
-  --use-tis
+  --use-tis 
   --use-wandb
   --wandb-project miles-run_glm45_355b_a32b
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix
+  --disable-wandb-random-suffix 
   --tensor-model-parallel-size 4
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -172,17 +172,17 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 16384
+  --max-tokens-per-gpu 16384 
   --eval-interval 20
   --eval-top-p 1
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 8
-  --eval-max-response-len 8192
+  --eval-max-response-len 8192 
   --rollout-num-gpus-per-engine 4
   --sglang-mem-fraction-static 0.7
   --sglang-tp-size 4
   --sglang-chunked-prefill-size 8192
-  --sglang-attention-backend trtllm_mha
+  --sglang-attention-backend trtllm_mha 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -196,4 +196,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --use-fault-tolerance
   --dump-details /root/shared_data/260101-000000-000/dump_details
   --router-health-success-threshold 1
-  --router-health-check-interval-secs 15
+  --router-health-check-interval-secs 15   

@@ -11,4 +11,4 @@ hf download
 ### 2
 python <REPO_ROOT>/tools/fp8_cast_bf16.py
   --input-fp8-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer
-  --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16/
+  --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16/ 

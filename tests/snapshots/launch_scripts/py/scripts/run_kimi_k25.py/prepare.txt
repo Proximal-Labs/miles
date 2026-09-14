@@ -13,4 +13,4 @@ hf download
 ### 3
 python <REPO_ROOT>/tools/convert_kimi_int4_to_bf16.py
   --model-dir /root/models/Kimi-K2.5
-  --output-dir /root/models/Kimi-K2.5-bf16
+  --output-dir /root/models/Kimi-K2.5-bf16 

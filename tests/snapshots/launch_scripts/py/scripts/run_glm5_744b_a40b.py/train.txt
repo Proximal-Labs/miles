@@ -1,6 +1,6 @@
 ### 0
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
 
 ### 1
 export PYTHONUNBUFFERED=1 && ray start
@@ -59,7 +59,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --ref-load /root/models/GLM-5_torch_dist
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
-  --save-interval 20
+  --save-interval 20 
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -71,25 +71,25 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --n-samples-per-prompt 8
   --rollout-max-response-len 100
   --rollout-temperature 1
-  --global-batch-size 64
+  --global-batch-size 64 
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98
+  --adam-beta2 0.98 
   --advantage-estimator grpo
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --kl-coef 0.00
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28
+  --eps-clip-high 0.28 
   --use-wandb
   --wandb-project miles-run_glm5_744b_a40b
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix
+  --disable-wandb-random-suffix 
   --tensor-model-parallel-size 4
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -102,7 +102,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --use-dynamic-batch-size
   --max-tokens-per-gpu 16384
   --data-pad-size-multiplier 4096
-  --log-probs-chunk-size 1024
+  --log-probs-chunk-size 1024  
   --rollout-num-gpus-per-engine 8
   --sglang-mem-fraction-static 0.70
   --sglang-enable-dp-attention
@@ -118,7 +118,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-cuda-graph-max-bs 256
   --sglang-max-running-requests 512
   --sglang-chunked-prefill-size 16384
-  --sglang-watchdog-timeout 3600
+  --sglang-watchdog-timeout 3600 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -132,4 +132,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --colocate
   --rematerialize-param-from-master-weight
   --moe-enable-deepep
-  --moe-token-dispatcher-type flex
+  --moe-token-dispatcher-type flex   
