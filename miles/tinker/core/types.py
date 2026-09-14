@@ -87,4 +87,3 @@ class ModelRecord:
     slot_initialized: bool = False
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
-    published_sampler_versions: set[str] = field(default_factory=set)

@@ -6,7 +6,6 @@ import uuid
 import httpx
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.ray.weight_update import update_weight_window
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
@@ -45,9 +44,8 @@ def _build_train_data(slot_datums: list) -> dict:
 
 
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, dp_size: int = 1, *, inference_controller) -> None:
+    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
         self.trainer = trainer
-        self.inference_controller = inference_controller
         self.router_url = router_url
         self.dp_size = dp_size
 
@@ -115,21 +113,6 @@ class MilesBackend:
         return _slot_failure(
             await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
         )
-
-    async def push_slot(
-        self, slot: int, lora_name: str, rank: int, alpha: float, lora_path: str | None = None
-    ) -> dict | None:
-        async with update_weight_window(self.inference_controller) as info:
-            failure = _slot_failure(
-                await self.trainer.push_slot(
-                    info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path
-                )
-            )
-            if failure is None:
-                await self.inference_controller.mark_weights_ready(
-                    snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
-                )
-            return failure
 
     # -------- sampling --------
 
