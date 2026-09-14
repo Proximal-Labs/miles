@@ -190,4 +190,7 @@ def _compute_server_args(
         for key in unused_keys:
             kwargs.pop(key)
 
+    if is_multi_lora_enabled(args):
+        assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
+
     return kwargs

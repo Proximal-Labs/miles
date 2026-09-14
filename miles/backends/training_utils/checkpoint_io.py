@@ -36,7 +36,13 @@ def run_local_io_collective(step: Callable[[], None]) -> None:
         raise CheckpointIOError(f"failed on {len(failed)} rank(s): {failed[0]}")
 
 
-def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None], metadata: dict | None = None) -> None:
+def write_checkpoint_dir(
+    path: str | Path,
+    write_shards: Callable[[Path], None],
+    metadata: dict | None = None,
+    *,
+    overwrite: bool = True,
+) -> None:
     """Fill a fresh tmp dir through ``write_shards``, then move it to ``path``:
     a directory at its final path is always complete, and on overwrite the old
     version survives (as ``_old_<name>``) until the replacement is in place.
@@ -53,6 +59,8 @@ def write_checkpoint_dir(path: str | Path, write_shards: Callable[[Path], None],
     def publish_dir():
         if _rank() != 0:
             return
+        if not overwrite and final_dir.exists():
+            raise FileExistsError(f"checkpoint {final_dir} already exists")
         if metadata is not None:
             (tmp_dir / "META.json").write_text(json.dumps(metadata, indent=2))
         if final_dir.exists():
