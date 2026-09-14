@@ -249,8 +249,14 @@ class TinkerService:
             )
 
     def retrieve_future(self, tenant: str, request_id: str) -> Future | None:
-        """None -> the HTTP layer answers 410 and the SDK resubmits."""
         return self.futures.get(request_id, tenant)
+
+    def _retained_request_id(self, request_id: str, model_id: str, tenant: str) -> str:
+        if self.futures.get(request_id, tenant) is not None:
+            return request_id
+        replacement = self.futures.create(model_id, tenant)
+        self.futures.fail(replacement.request_id, "result expired after retention", "user")
+        return replacement.request_id
 
     # -------- dispatch loop --------
 
@@ -485,13 +491,6 @@ class TinkerService:
         path = os.path.realpath(f"{root}/{model_id}/{kind}/{name}")
         assert path.startswith(root + os.sep), f"checkpoint path {path!r} escapes {root!r}"
         return path
-
-    def _retained_request_id(self, request_id: str, model_id: str, tenant: str) -> str:
-        if self.futures.get(request_id, tenant) is not None:
-            return request_id
-        replacement = self.futures.create(model_id, tenant)
-        self.futures.fail(replacement.request_id, "result expired after retention", "user")
-        return replacement.request_id
 
     # -------- sampling plane (future-based but never queues) --------
 
