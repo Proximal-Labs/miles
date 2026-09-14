@@ -45,6 +45,7 @@ _CANONICAL_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1_gate",
     "up_proj": "linear_fc1_up",
     "down_proj": "linear_fc2",
+    "lm_head": "output_layer",
     "in_proj_qkvz": "in_proj",
     "in_proj_ba": "in_proj",
 }
