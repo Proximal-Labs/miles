@@ -151,6 +151,7 @@ class RolloutExecutor:
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         start_time = time.time()
         self.rollout_id = rollout_id
+        event_analyzer.run_sample_ownership_analysis(args=self.args)
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
             self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
