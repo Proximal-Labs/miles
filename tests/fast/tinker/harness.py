@@ -1,6 +1,8 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
+import json
+from pathlib import Path
 
 from miles.tinker.core.future import DONE, PENDING, Future
 from miles.tinker.core.service import TinkerService
@@ -76,11 +78,18 @@ class FakeBackend:
             return {slot: failure for slot in adam_params_by_slot}
         return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
 
-    async def save_slot(self, slot, path):
-        return self._record("save_slot", slot=slot, path=path)
+    async def save_slot(self, slot, path, metadata=None):
+        return self._write_checkpoint("save_slot", path, metadata, slot=slot)
 
-    async def export_slot(self, slot, rank, alpha, path):
-        return self._record("export_slot", slot=slot, rank=rank, alpha=alpha, path=path)
+    async def export_slot(self, slot, rank, alpha, path, metadata=None):
+        return self._write_checkpoint("export_slot", path, metadata, slot=slot, rank=rank, alpha=alpha)
+
+    def _write_checkpoint(self, name, path, metadata, **kwargs):
+        failure = self._record(name, path=path, metadata=metadata, **kwargs)
+        if failure is None and metadata is not None:
+            Path(path).mkdir(parents=True, exist_ok=True)
+            (Path(path) / "META.json").write_text(json.dumps(metadata))
+        return failure
 
     async def push_slot(self, slot, lora_name, rank, alpha, lora_path=None):
         return self._record("push_slot", slot=slot, lora_name=lora_name, rank=rank, alpha=alpha, lora_path=lora_path)
