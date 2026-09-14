@@ -76,7 +76,10 @@ class TinkerService:
         session = self._session_for(tenant, payload["session_id"])
         model_seq_id = _validate_seq_id(payload["model_seq_id"], "model_seq_id")
         if (previous := session["models_by_seq"].get(model_seq_id)) is not None:
-            return previous
+            request_id, model_id = previous
+            request_id = self._retained_request_id(request_id, model_id, tenant)
+            session["models_by_seq"][model_seq_id] = (request_id, model_id)
+            return request_id, model_id
         base_model = payload["base_model"]
         if base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
@@ -173,14 +176,9 @@ class TinkerService:
 
         # retries must not accumulate gradients twice
         if seq_id in stream.request_id_by_seq:
-            request_id = stream.request_id_by_seq[seq_id]
-            if self.futures.get(request_id, tenant) is not None:
-                return request_id
-            # expired results must fail terminally without re-executing the command
-            replacement = self.futures.create(model_id, tenant)
-            self.futures.fail(replacement.request_id, "result expired after retention", "user")
-            stream.request_id_by_seq[seq_id] = replacement.request_id
-            return replacement.request_id
+            request_id = self._retained_request_id(stream.request_id_by_seq[seq_id], model_id, tenant)
+            stream.request_id_by_seq[seq_id] = request_id
+            return request_id
 
         future = self.futures.create(model_id, tenant)
         stream.request_id_by_seq[seq_id] = future.request_id
@@ -488,6 +486,13 @@ class TinkerService:
         assert path.startswith(root + os.sep), f"checkpoint path {path!r} escapes {root!r}"
         return path
 
+    def _retained_request_id(self, request_id: str, model_id: str, tenant: str) -> str:
+        if self.futures.get(request_id, tenant) is not None:
+            return request_id
+        replacement = self.futures.create(model_id, tenant)
+        self.futures.fail(replacement.request_id, "result expired after retention", "user")
+        return replacement.request_id
+
     # -------- sampling plane (future-based but never queues) --------
 
     def create_sampling_session(self, tenant: str, payload: dict) -> str:
@@ -524,7 +529,10 @@ class TinkerService:
             model_path = model_path or sampling_session["model_path"]
             seq_id = _validate_seq_id(payload["seq_id"], "seq_id")
             if (previous := sampling_session["samples_by_seq"].get(seq_id)) is not None:
-                return previous
+                request_id, sequence_ids = previous
+                request_id = self._retained_request_id(request_id, model_path or "base", tenant)
+                sampling_session["samples_by_seq"][seq_id] = (request_id, sequence_ids)
+                return request_id, sequence_ids
         if payload.get("num_samples", 1) > self.config.max_samples_per_request:
             raise UserInputError(
                 f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
