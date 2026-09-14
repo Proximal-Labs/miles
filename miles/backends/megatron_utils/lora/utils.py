@@ -11,8 +11,8 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint_io import run_local_io_collective, write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.publisher import WeightPublisher
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.publisher import WeightPublisher
 from miles.utils.hf_config import load_hf_config
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
