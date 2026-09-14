@@ -13,14 +13,9 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
-from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
-from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
-from miles.backends.training_utils.checkpoint_io import CheckpointIOError
-from miles.backends.training_utils.weight_publisher import WeightPublisher
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -34,7 +29,6 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.multi_lora import AdapterSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -205,10 +199,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 args, role, checkpointing_context=checkpointing_context
             )
 
-        if args.multi_lora:
-            # per-tenant optimizers: created by load_slot, destroyed by unload_slot
-            self.slot_optimizers: dict[int, lora_executor.SlotOptimizer] = {}
-
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
             from miles_plugins.models.cp_utils import detect_and_setup_hybrid_cp
@@ -258,36 +248,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        is_lora = lora_rollout_enabled(args)
-        uses_colocate_protocol = self.args.colocate
-        if is_lora and not uses_colocate_protocol:
-            assert args.megatron_to_hf_mode == "bridge", (
-                "LoRA weight sync over distributed engines requires "
-                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
-            )
-        model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
-        quantization_config = getattr(self.hf_config, "quantization_config", None)
-        if args.multi_lora:
-            iterator = get_hf_weight_iterator(
-                args,
-                self.model,
-                required_placement=WeightUpdatePlacement(gather_pp=True),
-                model_name=model_name,
-                quantization_config=quantization_config,
-            )
-            self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
-        else:
-            self.weight_updater = WeightUpdater(
-                args,
-                self.model,
-                weights_getter=self._get_actor_weights,
-                model_name=model_name,
-                quantization_config=quantization_config,
-                iterator_factory=get_hf_weight_iterator,
-                parallel_state=get_parallel_state(),
-                is_lora=is_lora,
-                lora_sync_config=build_lora_sync_config(args) if is_lora else None,
-            )
+        self._init_training_state()
 
         # empty cache after initialization
         clear_memory()
@@ -305,6 +266,29 @@ class MegatronTrainRayActor(TrainRayActor):
         self.prof.on_init_end()
 
         return start_rollout_id
+
+    def _init_training_state(self) -> None:
+        args = self.args
+        is_lora = lora_rollout_enabled(args)
+        uses_colocate_protocol = self.args.colocate
+        if is_lora and not uses_colocate_protocol:
+            assert args.megatron_to_hf_mode == "bridge", (
+                "LoRA weight sync over distributed engines requires "
+                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
+            )
+        model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
+        quantization_config = getattr(self.hf_config, "quantization_config", None)
+        self.weight_updater = WeightUpdater(
+            args,
+            self.model,
+            weights_getter=self._get_actor_weights,
+            model_name=model_name,
+            quantization_config=quantization_config,
+            iterator_factory=get_hf_weight_iterator,
+            parallel_state=get_parallel_state(),
+            is_lora=is_lora,
+            lora_sync_config=build_lora_sync_config(args) if is_lora else None,
+        )
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
@@ -447,74 +431,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 store_prefix=store_prefix,
                 fp32_output=False,
             )
-
-    @with_logs
-    def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
-        assert self.args.multi_lora, "forward_backward is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
-            stack.enter_context(store_get_result)
-            return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data)
-
-    @with_logs
-    def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
-        assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        return lora_executor.optim_step(self.slot_optimizers, adam_params_by_slot)
-
-    @with_logs
-    def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
-        """Same loss pass as forward_backward, without the backward: the Tinker
-        forward() contract returns the requested loss per datum."""
-        assert self.args.multi_lora, "forward_only is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
-            stack.enter_context(store_get_result)
-            return lora_executor.run_loss_pass(self.args, batch_id, self.model, rollout_data, forward_only=True)
-
-    @with_logs
-    def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> dict | None:
-        assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
-        self.slot_optimizers[slot] = lora_executor.load_slot(self.args, self.model, slot, rank, alpha)
-        if ckpt_path is not None:
-            try:
-                lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
-            except CheckpointIOError as error:
-                return {"error": str(error)}
-        return None
-
-    @with_logs
-    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
-        try:
-            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
-        except CheckpointIOError as error:
-            return {"error": str(error)}
-        return None
-
-    @with_logs
-    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> dict | None:
-        """Write the slot's adapter as an engine-loadable dir."""
-        assert self.args.multi_lora, "export_slot is a multi-LoRA slot command"
-        self._heartbeat.bump()
-        try:
-            self.weight_publisher.publish_adapter(
-                AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
-            )
-        except CheckpointIOError as error:
-            return {"error": str(error)}
-        return None
-
-    @with_logs
-    def unload_slot(self, slot: int) -> dict | None:
-        assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
-        slot_optimizer = self.slot_optimizers.pop(slot)
-        lora_executor.unload_slot(self.model, slot_optimizer)
-        return None
 
     @with_logs
     @event_logger_context(
