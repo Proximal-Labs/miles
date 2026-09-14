@@ -1,8 +1,4 @@
-"""Accumulate gradients across commands and step only the requested LoRA slots.
-
-Backward loss passes accumulate; optim_step consumes each selected accumulation window.
-Forward-only passes leave accumulated gradients intact.
-"""
+"""Multi-LoRA slot operations extending the shared Megatron model execution."""
 
 from argparse import Namespace
 from collections.abc import Sequence
@@ -22,7 +18,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch
 
 
-def run_loss_pass(
+def run_forward_backward(
     args: Namespace,
     batch_id: int,
     model: Sequence[DDP],
