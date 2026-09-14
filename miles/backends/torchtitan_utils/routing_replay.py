@@ -110,8 +110,13 @@ def install(model_parts: list[nn.Module]) -> int:
         router._miles_replay_topk = routing_replay_manager.get_topk_fn(
             lambda scores, k: torch.topk(scores, k, dim=-1, sorted=False)[1], return_probs=False
         )
-        router.forward = types.MethodType(_token_router_forward, router)
+        router.forward = types.MethodType(torch._dynamo.disable(_token_router_forward), router)
         routing_replay_manager.register_to_module(router, "routing_replay", stream_idx=layer_idx)
+
+    for part in model_parts:
+        for block in getattr(part, "layers", {}).values():
+            if getattr(block, "_compiled_call_impl", None) is not None:
+                block.compile(fullgraph=False)
 
     indices = sorted(idx for idx, _ in routers)
     logger.info(
