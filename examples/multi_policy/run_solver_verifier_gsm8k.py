@@ -151,7 +151,7 @@ def build_train_args(
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
     ci_args = (
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         f"--save-debug-event-data {events_dir} "
         f"--save-debug-rollout-data {compute_rollout_data_path_template(args)} "
     )

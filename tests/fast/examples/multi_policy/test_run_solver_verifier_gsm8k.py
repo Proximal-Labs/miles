@@ -85,6 +85,7 @@ class TestBuildTrainArgs:
             "--sglang-mem-fraction-static": "0.65",
             "--sglang-enable-metrics": None,
             "--ci-test": None,
+            "--no-enable-sample-ownership-checker": None,
             "--save-debug-event-data": str(compute_events_dir(args)),
             "--save-debug-rollout-data": compute_rollout_data_path_template(args),
             "--attention-dropout": "0.0",

@@ -2405,8 +2405,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--enable-sample-ownership-checker",
-                action="store_true",
-                help="Verify exactly one outcome for every consumed sample and every mature issued sample.",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Verify exactly one outcome for every consumed sample and every mature issued sample; "
+                "CI enables this unless it is explicitly disabled.",
             )
             parser.add_argument(
                 "--enable-witness",
@@ -3324,6 +3326,8 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
 
 
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
+    if args.enable_sample_ownership_checker is None:
+        args.enable_sample_ownership_checker = args.ci_test
     if not args.enable_sample_ownership_checker:
         return
 

@@ -423,6 +423,24 @@ class TestSampleOwnershipCheckArguments:
         """The command-line flag asks for checking."""
         assert self._parse(["--enable-sample-ownership-checker"]).enable_sample_ownership_checker is True
 
+    def test_the_checker_can_be_disabled_explicitly(self) -> None:
+        """An explicit opt-out overrides the CI default."""
+        assert self._parse(["--no-enable-sample-ownership-checker"]).enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize(
+        "ci_test,requested,enabled",
+        [(False, None, False), (False, False, False), (False, True, True), (True, None, True), (True, False, False)],
+    )
+    def test_ci_enables_the_checker_unless_it_is_requested_explicitly(
+        self, ci_test: bool, requested: bool | None, enabled: bool
+    ) -> None:
+        """CI enables checking only where the tri-state flag was left unset."""
+        args = self._checker_args(ci_test=ci_test, enable_sample_ownership_checker=requested)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is enabled
+
     @staticmethod
     def _checker_args(**overrides) -> SimpleNamespace:
         values = dict(
