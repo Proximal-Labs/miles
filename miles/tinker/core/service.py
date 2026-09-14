@@ -405,11 +405,21 @@ class TinkerService:
         return {"op": "load_state"}
 
     async def _save_weights_for_sampler(self, record: ModelRecord, payload: dict) -> dict:
-        snapshot = await self._save_sampler_snapshot(record, payload.get("sampler_path"))
-        if isinstance(snapshot, dict):
-            return snapshot
-        version, path = snapshot
-        await self._warm_sampler_cache(record, version, path)
+        version = payload.get("sampler_path")
+        if version is None:
+            version = str(record.next_sampler_version)
+            record.next_sampler_version += 1
+        else:
+            _validate_checkpoint_segment(version)
+        path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
+        if os.path.exists(path):
+            raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
+        if (
+            failure := await self.backend.export_slot(
+                record.slot, record.lora_rank, record.lora_alpha, path, metadata=self._checkpoint_metadata(record)
+            )
+        ) is not None:
+            return failure
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
@@ -418,32 +428,6 @@ class TinkerService:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
         return result
-
-    async def _save_sampler_snapshot(self, record: ModelRecord, version: str | None) -> tuple[str, str] | dict:
-        if version is None:
-            version = str(record.next_sampler_version)
-            record.next_sampler_version += 1
-        else:
-            _validate_checkpoint_segment(version)
-        path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
-        if os.path.exists(os.path.join(path, "META.json")):
-            # engines may already hold this name's bytes; saved versions are immutable
-            raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
-        if (
-            failure := await self.backend.export_slot(
-                record.slot, record.lora_rank, record.lora_alpha, path, metadata=self._checkpoint_metadata(record)
-            )
-        ) is not None:
-            return failure
-        record.published_sampler_versions.add(version)
-        return version, path
-
-    async def _warm_sampler_cache(self, record: ModelRecord, version: str, path: str) -> None:
-        failure = await self.backend.push_slot(
-            record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha, lora_path=path
-        )
-        if failure is not None:
-            logger.warning("sampler snapshot %s will backfill from disk: %s", version, failure["error"])
 
     def _reject_checkpoint_mismatch(self, meta: dict, record: ModelRecord, shown_path: str) -> None:
         """The tensors only keep their meaning under the config that wrote them (alpha scales them,
@@ -584,15 +568,12 @@ class TinkerService:
         if kind != "sampler_weights":
             raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
         checkpoint_dir = self._checkpoint_dir(model_id, "sampler_weights", name)
-        record = self.models.get(model_id)
-        if record is not None:
-            if record.tenant != tenant:
-                raise OwnershipError(f"model {model_id} does not belong to this tenant")
-            if name not in record.published_sampler_versions:
-                raise UserInputError(f"unknown sampler version {name} for {model_id}")
-        else:
-            # the training lease is gone; the checkpoint on disk is the record
-            self._checkpoint_meta(checkpoint_dir, tenant, model_path)
+        meta = self._checkpoint_meta(checkpoint_dir, tenant, model_path)
+        if meta["base_model"] != self.config.base_model:
+            raise UserInputError(
+                f"checkpoint {model_path!r} uses base_model={meta['base_model']!r}; "
+                f"this server serves {self.config.base_model!r}"
+            )
         return f"{model_id}@{name}", checkpoint_dir
 
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
