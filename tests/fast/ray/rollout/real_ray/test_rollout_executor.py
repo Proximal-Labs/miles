@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -340,8 +341,8 @@ class _RecordingEventLoggerCheckpoint:
     def restore(self, args) -> None:
         self.restored.append(args)
 
-    def snapshot(self, args, rollout_id) -> None:
-        self.snapshots.append((args, rollout_id))
+    def snapshot(self, args: Namespace, directory: Path) -> None:
+        self.snapshots.append((args, directory))
 
 
 @pytest.mark.asyncio
@@ -366,8 +367,8 @@ class TestCheckpointing:
         executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
         executor.data_source = MagicMock()
 
-        executor.save(rollout_id=7)
-        executor.load(rollout_id=7)
+        await executor.save(rollout_id=7)
+        await executor.load(rollout_id=7)
 
         assert calls == [
             ("train", "save"),
@@ -396,7 +397,7 @@ class TestCheckpointing:
         executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
         executor.data_source = MagicMock()
 
-        executor.save(rollout_id=5)
+        await executor.save(rollout_id=5)
 
         executor.data_source.save.assert_called_once()
         assert ("train", "save") in calls
@@ -421,8 +422,8 @@ class TestCheckpointing:
         executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
         executor.data_source = MagicMock()
 
-        executor.save(rollout_id=3)
-        executor.load(rollout_id=3)
+        await executor.save(rollout_id=3)
+        await executor.load(rollout_id=3)
 
         executor.data_source.save.assert_called_once()
         executor.data_source.load.assert_called_once()
@@ -447,8 +448,8 @@ class TestCheckpointing:
         executor.eval_generate_rollout = lambda *a, **kw: None
         executor.data_source = MagicMock()
 
-        executor.save(rollout_id=1)
-        executor.load(rollout_id=1)
+        await executor.save(rollout_id=1)
+        await executor.load(rollout_id=1)
 
         executor.data_source.load.assert_called_once()
 
@@ -472,9 +473,9 @@ class TestCheckpointing:
         executor.eval_generate_rollout = None
         executor.data_source = MagicMock()
 
-        executor.save(rollout_id=9)
+        await executor.save(rollout_id=9)
 
-        assert recorder.snapshots == [(args, 9)]
+        assert [one for one, _ in recorder.snapshots] == [args]
 
 
 @pytest.mark.asyncio
@@ -908,8 +909,8 @@ class TestCheckpointWithoutARolloutFunction:
         )
         executor.data_source = MagicMock()
 
-        executor.save(3)
-        executor.load(3)
+        await executor.save(3)
+        await executor.load(3)
 
         assert executor.generate_rollout is None
         executor.data_source.save.assert_called_once()
@@ -930,7 +931,7 @@ class TestCheckpointWithoutARolloutFunction:
         executor.args.load = None
         executor.data_source = MagicMock()
 
-        executor.load(0)
+        await executor.load(0)
 
         executor.data_source.load.assert_not_called()
 
@@ -952,10 +953,10 @@ class TestCheckpointWithoutARolloutFunction:
         executor = await _make_executor(args)
         executor.data_source = MagicMock()
 
-        executor.save(6)
+        await executor.save(6)
 
         executor.data_source.save.assert_called_once()
-        assert recorder.snapshots == [(args, 6)]
+        assert [one for one, _ in recorder.snapshots] == [args]
 
     async def test_an_absent_train_rollout_function_is_not_replaced_by_the_eval_one(
         self,
@@ -976,8 +977,8 @@ class TestCheckpointWithoutARolloutFunction:
         executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
         executor.data_source = MagicMock()
 
-        executor.save(rollout_id=2)
-        executor.load(rollout_id=2)
+        await executor.save(rollout_id=2)
+        await executor.load(rollout_id=2)
 
         assert calls == [("eval", "save"), ("eval", "load")]
         executor.data_source.save.assert_called_once()
@@ -1003,8 +1004,8 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         executor.generate_rollout = MagicMock()
         executor.eval_generate_rollout = MagicMock()
 
-        executor.save(7)
-        executor.load(7)
+        await executor.save(7)
+        await executor.load(7)
 
         executor.generate_rollout.save.assert_called_once()
         executor.generate_rollout.load.assert_called_once()
@@ -1019,8 +1020,8 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         executor.generate_rollout = shared
         executor.eval_generate_rollout = shared
 
-        executor.save(7)
-        executor.load(7)
+        await executor.save(7)
+        await executor.load(7)
 
         shared.save.assert_called_once()
         shared.load.assert_called_once()
@@ -1035,8 +1036,8 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         executor.generate_rollout = _AlwaysEqualRolloutFn("train", calls)
         executor.eval_generate_rollout = _AlwaysEqualRolloutFn("eval", calls)
 
-        executor.save(4)
-        executor.load(4)
+        await executor.save(4)
+        await executor.load(4)
 
         assert calls == [
             ("train", "save"),
@@ -1056,7 +1057,7 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
         executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
 
-        executor.load(0)
+        await executor.load(0)
 
         assert calls == []
 
@@ -1071,8 +1072,8 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
         executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
 
-        executor.save(2)
-        executor.load(2)
+        await executor.save(2)
+        await executor.load(2)
 
         assert calls == []
         executor.data_source.save.assert_called_once()
