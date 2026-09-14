@@ -5,11 +5,10 @@ import ray
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.data import get_rollout_data
+from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.structured_log import with_logs
-from miles.backends.training_utils.data import get_data_iterator
-from miles.backends.training_utils.parallel import get_parallel_state
 
 
 class MultiLoRATrainRayActor(MegatronTrainRayActor):
