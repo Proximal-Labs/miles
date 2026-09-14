@@ -4,7 +4,7 @@ An internal datum has tokens = model_input + target_tokens[-1:] and explicit tar
 Its target_len counts every label position, including prompt positions; loss inputs align to it.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -87,4 +87,3 @@ class ModelRecord:
     slot_initialized: bool = False
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
-    published_sampler_versions: set[str] = field(default_factory=set)
