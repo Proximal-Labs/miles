@@ -14,7 +14,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
-from miles.backends.megatron_utils.lora import executor as lora_executor
+from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
@@ -206,7 +206,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
         if args.multi_lora:
             # per-tenant optimizers: created by load_slot, destroyed by unload_slot
-            self.slot_optimizers: dict[int, lora_executor.SlotOptimizer] = {}
+            self.slot_optimizers: dict[int, lora_model.SlotOptimizer] = {}
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -454,13 +454,13 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.run_forward_backward(self.args, batch_id, self.model, rollout_data)
+            return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
 
     @with_logs
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
         assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
         self._heartbeat.bump()
-        return lora_executor.optim_step(self.slot_optimizers, adam_params_by_slot)
+        return lora_model.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
     def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
@@ -471,14 +471,14 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
+            return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
 
     @with_logs
     def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
     ) -> dict | None:
         assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
-        self.slot_optimizers[slot] = lora_executor.load_slot(self.args, self.model, slot, rank, alpha)
+        self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
         if ckpt_path is not None:
             try:
                 lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
@@ -512,7 +512,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def unload_slot(self, slot: int) -> dict | None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
         slot_optimizer = self.slot_optimizers.pop(slot)
-        lora_executor.unload_slot(self.model, slot_optimizer)
+        lora_model.unload_slot(self.model, slot_optimizer)
         return None
 
     @with_logs
