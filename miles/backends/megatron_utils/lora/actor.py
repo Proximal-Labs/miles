@@ -4,7 +4,6 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint_io import CheckpointIOError
 from miles.backends.training_utils.data import get_rollout_data
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.structured_log import with_logs
@@ -40,22 +39,14 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
     @with_logs
     def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> dict | None:
+    ) -> None:
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
         if ckpt_path is not None:
-            try:
-                lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
-            except CheckpointIOError as error:
-                return {"error": str(error)}
-        return None
+            lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
 
     @with_logs
-    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        try:
-            lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
-        except CheckpointIOError as error:
-            return {"error": str(error)}
-        return None
+    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> None:
+        lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:
