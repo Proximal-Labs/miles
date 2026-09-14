@@ -378,7 +378,9 @@ class TinkerService:
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
         if (
-            failure := await self.backend.save_slot(record.slot, checkpoint_dir, metadata=self._checkpoint_metadata(record))
+            failure := await self.backend.save_slot(
+                record.slot, checkpoint_dir, metadata=self._checkpoint_metadata(record)
+            )
         ) is not None:
             return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
