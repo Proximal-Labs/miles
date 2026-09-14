@@ -1,6 +1,6 @@
 ### 0
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 1
 export PYTHONUNBUFFERED=1 && ray start
@@ -773,7 +773,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --ref-load /root/models/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
   --save /root/shared_data/checkpoints
   --save-interval 20
-  --megatron-to-hf-mode bridge 
+  --megatron-to-hf-mode bridge
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -786,7 +786,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-max-response-len 1024
   --rollout-temperature 1
   --global-batch-size 128
-  --balance-data 
+  --balance-data
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
@@ -795,19 +795,19 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --adam-beta2 0.98
   --optimizer-cpu-offload
   --overlap-cpu-optimizer-d2h-h2d
-  --use-precision-aware-optimizer 
+  --use-precision-aware-optimizer
   --advantage-estimator grpo
   --use-kl-loss
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28 
+  --eps-clip-high 0.28
   --use-wandb
   --wandb-project miles-run_nemotron_3_super_120b_a12b
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --tensor-model-parallel-size 4
   --sequence-parallel
   --pipeline-model-parallel-size 2
@@ -819,10 +819,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-num-layers 1
   --use-dynamic-batch-size
   --max-tokens-per-gpu 1024
-  --log-probs-chunk-size 128 
+  --log-probs-chunk-size 128
   --rollout-num-gpus-per-engine 8
   --sglang-mem-fraction-static 0.7
-  --use-rollout-routing-replay 
+  --use-rollout-routing-replay
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -832,4 +832,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 2
   --actor-num-gpus-per-node 8
   --num-gpus-per-node 8
-  --rollout-num-gpus 16   
+  --rollout-num-gpus 16

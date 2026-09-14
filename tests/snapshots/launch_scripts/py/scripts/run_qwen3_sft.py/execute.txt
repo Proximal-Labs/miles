@@ -1,6 +1,6 @@
 ### 0
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 1
 export PYTHONUNBUFFERED=1 && ray start
@@ -36,7 +36,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --ref-load /root/models/Qwen3-4B-Base_torch_dist
   --load /root/shared_data/checkpoints
   --save /root/shared_data/checkpoints
-  --save-interval 1000 
+  --save-interval 1000
   --rollout-function-path miles.rollout.sft_rollout.generate_rollout
   --prompt-data /root/datasets/openhermes2_5.parquet
   --input-key messages
@@ -47,7 +47,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --loss-type sft_loss
   --calculate-per-token-loss
   --disable-compute-advantages-and-returns
-  --debug-train-only 
+  --debug-train-only
   --optimizer adam
   --lr 1e-5
   --lr-decay-style cosine
@@ -55,12 +55,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --lr-warmup-fraction 0.1
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.95 
+  --adam-beta2 0.95
   --use-wandb
   --wandb-project miles-run_qwen3_sft
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --tensor-model-parallel-size 1
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -71,7 +71,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 9216 
+  --max-tokens-per-gpu 9216
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -79,4 +79,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --attention-backend flash
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
-  --num-gpus-per-node 8   
+  --num-gpus-per-node 8

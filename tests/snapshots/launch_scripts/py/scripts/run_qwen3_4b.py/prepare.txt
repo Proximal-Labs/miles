@@ -34,4 +34,4 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --kv-channels 128
   --qk-layernorm
   --hf-checkpoint /root/models/Qwen3-4B
-  --save /root/models/Qwen3-4B_torch_dist 
+  --save /root/models/Qwen3-4B_torch_dist

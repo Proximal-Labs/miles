@@ -23,7 +23,7 @@ bash -c export PYTHONUNBUFFERED=1 && ray job submit
   --ref-load /root/models/Qwen3-8B_torch_dist
   --save-interval 20
   --load /root/Qwen3-8B_miles
-  --save /root/Qwen3-8B_miles 
+  --save /root/Qwen3-8B_miles
   --prompt-data /root/datasets/formal_math_single_round/minimal_demo/flc_train.jsonl
   --input-key prompt
   --apply-chat-template
@@ -37,24 +37,24 @@ bash -c export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-temperature 1
   --global-batch-size 256
   --balance-data
-  --num-rollout 3000 
+  --num-rollout 3000
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98 
+  --adam-beta2 0.98
   --advantage-estimator grpo
   --use-kl-loss
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28 
+  --eps-clip-high 0.28
   --use-wandb
   --wandb-project miles-formal-math-run-minimal
   --wandb-group demo
-  --wandb-key 'frozen-wandb-api-key' 
+  --wandb-key 'frozen-wandb-api-key'
   --tensor-model-parallel-size 2
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -65,14 +65,14 @@ bash -c export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 6144 
+  --max-tokens-per-gpu 6144
   --eval-interval 20
   --n-samples-per-eval-prompt 1
   --eval-max-response-len 16384
   --eval-top-p 1
-  --eval-prompt-data minif2f /root/datasets/formal_math_single_round/minimal_demo/minif2f_test.jsonl 
+  --eval-prompt-data minif2f /root/datasets/formal_math_single_round/minimal_demo/minif2f_test.jsonl
   --rollout-num-gpus-per-engine 8
-  --sglang-mem-fraction-static 0.7 
+  --sglang-mem-fraction-static 0.7
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -81,4 +81,4 @@ bash -c export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
   --colocate
-  --log-passrate  
+  --log-passrate

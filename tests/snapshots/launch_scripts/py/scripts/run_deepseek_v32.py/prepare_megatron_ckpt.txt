@@ -55,4 +55,4 @@
   --expert-model-parallel-size 16
   --pipeline-model-parallel-size 6
   --decoder-last-pipeline-num-layers 13
-  --expert-tensor-parallel-size 1 
+  --expert-tensor-parallel-size 1

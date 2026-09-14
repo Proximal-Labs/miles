@@ -12,7 +12,7 @@ hf download
 
 ### 3
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 4
 export PYTHONUNBUFFERED=1 && ray start
@@ -63,7 +63,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --megatron-to-hf-mode bridge
   --save /root/shared_data/260101-000000-000/checkpoints
   --save-interval 50
-  --no-save-optim 
+  --no-save-optim
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -76,7 +76,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-max-response-len 8192
   --rollout-temperature 1
   --global-batch-size 128
-  --balance-data 
+  --balance-data
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
@@ -85,18 +85,18 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --adam-beta2 0.98
   --optimizer-cpu-offload
   --overlap-cpu-optimizer-d2h-h2d
-  --use-precision-aware-optimizer 
+  --use-precision-aware-optimizer
   --advantage-estimator grpo
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28 
+  --eps-clip-high 0.28
   --use-wandb
   --wandb-project miles-run_nemotron_3_ultra_550b_a55b
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1
   --context-parallel-size 1
@@ -107,12 +107,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-num-layers 1
   --use-dynamic-batch-size
   --max-tokens-per-gpu 1024
-  --log-probs-chunk-size 128  
+  --log-probs-chunk-size 128
   --rollout-num-gpus-per-engine 8
   --sglang-ep-size 8
   --sglang-dp-size 2
   --sglang-enable-dp-attention
-  --sglang-mem-fraction-static 0.6 
+  --sglang-mem-fraction-static 0.6
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -122,4 +122,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
   --rollout-num-gpus 8
-  --dump-details /root/shared_data/260101-000000-000/dump_details   
+  --dump-details /root/shared_data/260101-000000-000/dump_details

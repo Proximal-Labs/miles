@@ -12,7 +12,7 @@ hf download
 
 ### 3
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 4
 export PYTHONUNBUFFERED=1 && ray start
@@ -60,7 +60,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --megatron-to-hf-mode bridge
   --load /root/shared_data/260101-000000-000/checkpoints
   --save /root/shared_data/260101-000000-000/checkpoints
-  --save-interval 2 
+  --save-interval 2
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -73,25 +73,25 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --n-samples-per-prompt 8
   --rollout-max-response-len 256
   --rollout-temperature 1
-  --global-batch-size 256 
+  --global-batch-size 256
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98 
+  --adam-beta2 0.98
   --advantage-estimator grpo
   --use-kl-loss
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28 
+  --eps-clip-high 0.28
   --use-wandb
   --wandb-project miles-run_gemma_4_26b_a4b
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --tensor-model-parallel-size 4
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -102,7 +102,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 1024  
+  --max-tokens-per-gpu 1024
   --rollout-num-gpus-per-engine 4
   --sglang-mem-fraction-static 0.55
   --sglang-attention-backend triton
@@ -113,7 +113,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-disable-radix-cache
   --no-offload-train
   --no-offload-rollout
-  --use-rollout-routing-replay 
+  --use-rollout-routing-replay
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -125,4 +125,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --colocate
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
-  --num-gpus-per-node 8   
+  --num-gpus-per-node 8

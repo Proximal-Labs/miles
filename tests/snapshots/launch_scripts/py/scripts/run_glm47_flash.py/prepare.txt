@@ -60,4 +60,4 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --no-rope-fusion
   --mtp-num-layers 1
   --hf-checkpoint /root/models/GLM-4.7-Flash
-  --save /root/models/GLM-4.7-Flash_torch_dist 
+  --save /root/models/GLM-4.7-Flash_torch_dist

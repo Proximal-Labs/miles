@@ -28,7 +28,7 @@ hf download
 ### 6
 python <REPO_ROOT>/tools/fp8_cast_bf16.py
   --input-fp8-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer
-  --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16/ 
+  --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16/
 
 ### 7
 PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
@@ -95,11 +95,11 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --context-parallel-size 1
   --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1
-  --expert-model-parallel-size 1 
+  --expert-model-parallel-size 1
 
 ### 8
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 9
 export PYTHONUNBUFFERED=1 && ray start
@@ -176,7 +176,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --load /root/models/260101-000000-000/checkpoints
   --save /root/models/260101-000000-000/checkpoints
   --save-interval 20
-  --save-retain-interval 20 
+  --save-retain-interval 20
   --label-key label
   --apply-chat-template
   --rollout-shuffle
@@ -190,7 +190,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --rollout-max-response-len 4096
-  --apply-chat-template-kwargs '{"thinking_mode":"thinking"}' 
+  --apply-chat-template-kwargs '{"thinking_mode":"thinking"}'
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
@@ -199,18 +199,18 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --adam-beta2 0.98
   --optimizer-cpu-offload
   --use-precision-aware-optimizer
-  --overlap-cpu-optimizer-d2h-h2d 
+  --overlap-cpu-optimizer-d2h-h2d
   --advantage-estimator grpo
   --kl-loss-coef 0.00
   --kl-loss-type low_var_kl
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28 
+  --eps-clip-high 0.28
   --use-wandb
   --wandb-project miles-run_deepseek_v4
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1
   --context-parallel-size 1
@@ -220,12 +220,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 4096 
+  --max-tokens-per-gpu 4096
   --eval-interval 20
   --eval-top-p 0.7
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 8
-  --eval-max-response-len 4096 
+  --eval-max-response-len 4096
   --rollout-num-gpus-per-engine 4
   --sglang-fp8-gemm-backend auto
   --sglang-moe-runner-backend auto
@@ -234,7 +234,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-ep-size 4
   --router-health-success-threshold 1
   --router-health-check-interval-secs 15
-  --router-health-failure-threshold 40 
+  --router-health-failure-threshold 40
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --attention-softmax-in-fp32
@@ -260,7 +260,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --bf16
   --fp8-format e4m3
   --fp8-recipe blockwise
-  --te-precision-config-file base64:<frozen-pseudo-file-1>   
+  --te-precision-config-file base64:<frozen-pseudo-file-1>
 
 ### pseudo file 1
 configs:

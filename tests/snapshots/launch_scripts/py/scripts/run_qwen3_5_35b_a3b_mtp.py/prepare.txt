@@ -53,4 +53,4 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --moe-shared-expert-gate
   --mtp-num-layers 1
   --hf-checkpoint /root/models/Qwen3.5-35B-A3B
-  --save /root/models/Qwen3.5-35B-A3B_torch_dist 
+  --save /root/models/Qwen3.5-35B-A3B_torch_dist

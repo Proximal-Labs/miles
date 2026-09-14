@@ -62,4 +62,4 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --moe-router-dtype fp32
   --moe-permute-fusion
   --hf-checkpoint /root/models/JoyAI-LLM-Flash
-  --save /root/models/JoyAI-LLM-Flash_torch_dist 
+  --save /root/models/JoyAI-LLM-Flash_torch_dist

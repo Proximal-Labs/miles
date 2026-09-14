@@ -12,7 +12,7 @@ hf download
 
 ### 3
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 4
 export PYTHONUNBUFFERED=1 && ray start
@@ -64,14 +64,14 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-shared-expert-gate
   --mtp-num-layers 1
   --hf-checkpoint /root/models/Qwen3.5-35B-A3B
-  --megatron-to-hf-mode bridge 
+  --megatron-to-hf-mode bridge
   --lora-rank 16
   --lora-alpha 32
   --lora-dropout 0.0
   --target-modules "language_model.decoder.layers.*.self_attention.linear_qkv,language_model.decoder.layers.*.self_attention.linear_proj,language_model.decoder.layers.*.mlp.experts.linear_fc1,language_model.decoder.layers.*.mlp.experts.linear_fc2,language_model.decoder.layers.*.mlp.shared_experts.linear_fc1,language_model.decoder.layers.*.mlp.shared_experts.linear_fc2,language_model.decoder.layers.*.self_attention.in_proj,language_model.decoder.layers.*.self_attention.out_proj"
   --experts-shared-outer-loras
   --no-gradient-accumulation-fusion
-  --lora-base-cpu-backup 
+  --lora-base-cpu-backup
   --label-key label
   --apply-chat-template
   --rollout-shuffle
@@ -83,22 +83,22 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-temperature 1.0
   --global-batch-size 64
   --prompt-data /root/datasets/gsm8k/train.parquet
-  --input-key messages 
+  --input-key messages
   --optimizer adam
   --lr 1e-5
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98 
+  --adam-beta2 0.98
   --advantage-estimator grpo
   --entropy-coef 0.00
   --eps-clip 0.2
-  --eps-clip-high 0.28 
+  --eps-clip-high 0.28
   --use-wandb
   --wandb-project miles-run_qwen3_5_35b_a3b_lora
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --tensor-model-parallel-size 2
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -110,18 +110,18 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-num-layers 1
   --qkv-format bshd
   --micro-batch-size 1
-  --max-tokens-per-gpu 4096 
+  --max-tokens-per-gpu 4096
   --rollout-num-gpus-per-engine 8
   --sglang-mem-fraction-static 0.4
   --sglang-dtype bfloat16
   --sglang-decode-log-interval 1000
   --sglang-max-lora-rank 16
-  --sglang-lora-backend triton 
+  --sglang-lora-backend triton
   --save-interval 1
-  --save /personal/checkpoints/260101-000000-000 
+  --save /personal/checkpoints/260101-000000-000
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --update-weight-buffer-size 536870912
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
-  --colocate   
+  --colocate

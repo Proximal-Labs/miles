@@ -1,6 +1,6 @@
 ### 0
 pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
 
 ### 1
 export PYTHONUNBUFFERED=1 && ray start
@@ -37,7 +37,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --save-interval 20
   --load /root/models/Qwen3-4B_torch_dist
   --ref-load /root/models/Qwen3-4B_torch_dist
-  --save-retain-interval 20 
+  --save-retain-interval 20
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -50,35 +50,35 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-max-response-len 8192
   --rollout-temperature 1
   --global-batch-size 256
-  --balance-data 
+  --balance-data
   --optimizer adam
   --lr 1e-6
   --lr-decay-style constant
   --weight-decay 0.1
   --adam-beta1 0.9
-  --adam-beta2 0.98 
+  --adam-beta2 0.98
   --advantage-estimator grpo
   --entropy-coef 0.00
   --eps-clip 0.2
   --eps-clip-high 0.28
   --use-kl-loss
   --kl-loss-coef 0.00
-  --kl-loss-type low_var_kl 
+  --kl-loss-type low_var_kl
   --use-wandb
   --wandb-project miles-run_qwen3_4b
   --wandb-group 260101-000000-000
   --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
+  --disable-wandb-random-suffix
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 9216 
+  --max-tokens-per-gpu 9216
   --eval-interval 20
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 16
   --eval-max-response-len 16384
-  --eval-top-p 1  
+  --eval-top-p 1
   --rollout-num-gpus-per-engine 1
   --sglang-chunked-prefill-size 4096
-  --sglang-mem-fraction-static 0.7 
+  --sglang-mem-fraction-static 0.7
   --tensor-model-parallel-size 2
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -94,10 +94,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --accumulate-allreduce-grads-in-fp32
   --attention-softmax-in-fp32
   --attention-backend flash
-  --train-memory-margin-bytes 3221225472 
+  --train-memory-margin-bytes 3221225472
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
   --num-gpus-per-node 8
   --colocate
   --use-fault-tolerance
-  --dump-details /root/shared_data/260101-000000-000/dump_details    
+  --dump-details /root/shared_data/260101-000000-000/dump_details
