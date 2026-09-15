@@ -212,9 +212,15 @@ async def test_sample_failure_preserves_the_snapshot_and_training_stream(service
     future = await await_settled(service, "tenant", sample_id)
     assert future.state == FAILED
     assert future.error == "engine down"
-    assert resolve_sampler_checkpoint(
-        service.config.checkpoint_root, "tenant", f"tinker://{model_id}/sampler_weights/1", service.config.base_model
-    )[0] == f"{model_id}@1"
+    assert (
+        resolve_sampler_checkpoint(
+            service.config.checkpoint_root,
+            "tenant",
+            f"tinker://{model_id}/sampler_weights/1",
+            service.config.base_model,
+        )[0]
+        == f"{model_id}@1"
+    )
     fb = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
     assert (await await_settled(service, "tenant", fb)).state == DONE
 
@@ -468,7 +474,9 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
         await service._sweep_once()
         assert model_id not in service.models
         service.create_session("tenant")
-    lora_name, lora_path = resolve_sampler_checkpoint(service.config.checkpoint_root, "tenant", path, service.config.base_model)
+    lora_name, lora_path = resolve_sampler_checkpoint(
+        service.config.checkpoint_root, "tenant", path, service.config.base_model
+    )
     assert lora_name == f"{model_id}@1" and lora_path.endswith("/sampler_weights/1")
     with pytest.raises((UserInputError, OwnershipError)):
         resolve_sampler_checkpoint(service.config.checkpoint_root, "thief", path, service.config.base_model)
