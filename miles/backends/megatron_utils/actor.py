@@ -392,10 +392,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @property
     def _enable_weight_backup(self) -> bool:
-        """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
+        """Keep host weights for model switching and weight sync while offloaded."""
         if self._weight_sync_reads_tms_backup:
             return False
-        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
+        return (
+            self.with_ref
+            or self.with_opd_teacher
+            or self.args.keep_old_actor
+            or self.args.colocate
+            or self.args.offload_train
+        )
 
     def _switch_model(self, target_tag: str) -> None:
         if not self._enable_weight_backup:
@@ -794,7 +800,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self._weight_sync_reads_tms_backup:
             return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
         # use cpu backup only when weight is not live on gpu
-        if self.args.colocate or self._active_model_tag != "actor":
+        if self.args.colocate or self._asleep or self._active_model_tag != "actor":
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
 
@@ -817,13 +823,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
         needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
         if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
+            # Connection setup also allocates CUDA tensors (e.g. NCCL object
+            # collectives). Do not reuse unmapped, offloaded allocator blocks.
+            with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+                self.weight_updater.connect_rollout_engines(
+                    rollout_engines,
+                    engine_gpu_counts=engine_gpu_counts,
+                    engine_gpu_offsets=engine_gpu_offsets,
+                )
+                self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
+                dist.barrier(group=get_gloo_group())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:

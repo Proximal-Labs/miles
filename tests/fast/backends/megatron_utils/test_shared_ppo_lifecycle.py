@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
+from miles.utils.tensor_backper import MainCastContext, TensorBackuper
 
 
 @pytest.fixture(scope="module")
@@ -694,6 +695,94 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     return worker
 
 
+@pytest.mark.parametrize("asleep", [False, True])
+def test_disaggregated_weight_sync_reads_host_backup_only_when_asleep(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, asleep: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.colocate = False
+    worker._asleep = asleep
+    worker._active_model_tag = "actor"
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: False))
+    host_weights = {"weight": object()}
+    device_weights = {"weight": object()}
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.get.return_value = host_weights
+    worker._named_actor_weights = Mock(return_value=device_weights.items())
+
+    assert worker._get_actor_weights() == (host_weights if asleep else device_weights)
+    assert worker.weights_backuper.get.call_count == int(asleep)
+    assert worker._named_actor_weights.call_count == int(not asleep)
+
+
+@pytest.mark.parametrize("offload_train", [False, True])
+def test_offloading_keeps_weight_backup_without_reference_model(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.colocate = False
+    worker.args.offload_train = offload_train
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: False))
+
+    assert worker._enable_weight_backup is offload_train
+
+
+@pytest.mark.parametrize("active_tag", ["actor", "ref", "teacher", "old_actor"])
+def test_switch_model_restores_the_already_active_tag(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str
+) -> None:
+    """The active tag's live storage may have been discarded by an offload
+    cycle since the last switch (--offload-train disables the param buffers'
+    memory-saver backup), so a same-tag switch must still restore."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = active_tag
+    worker.weights_backuper = Mock(backup_tags={active_tag})
+
+    worker._switch_model(active_tag)
+
+    worker.weights_backuper.restore.assert_called_once_with(active_tag)
+    assert worker._active_model_tag == active_tag
+
+
+@pytest.mark.parametrize(
+    ("active_tag", "target_tag"),
+    [(None, "actor"), ("ref", "actor"), ("teacher", "actor"), ("old_actor", "actor"), ("actor", "ref")],
+)
+def test_switch_model_restores_on_every_switch(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str | None, target_tag: str
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = active_tag
+    worker.weights_backuper = Mock(backup_tags={target_tag})
+
+    worker._switch_model(target_tag)
+    worker._switch_model(target_tag)
+
+    # No same-tag skip: the repeated switch restores again, because an offload
+    # cycle between the two calls may have dropped the live storage.
+    assert worker.weights_backuper.restore.call_count == 2
+    worker.weights_backuper.restore.assert_called_with(target_tag)
+    assert worker._active_model_tag == target_tag
+
+
+def test_switch_model_rejects_unknown_tag_even_when_marked_active(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "missing"
+    worker.weights_backuper = Mock(backup_tags={"actor"})
+
+    with pytest.raises(ValueError, match="Cannot switch to unknown model tag: missing"):
+        worker._switch_model("missing")
+
+    worker.weights_backuper.restore.assert_not_called()
+
+
 def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
@@ -703,6 +792,50 @@ def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu
         engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
         snapshot_cell_id_to_hashes=snapshot,
     )
+
+
+@pytest.mark.parametrize("offload_train", [False, True])
+@pytest.mark.parametrize("connect_fails", [False, True])
+def test_connection_uses_safe_allocations_when_offloading(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool, connect_fails: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.offload_train = offload_train
+    worker._asleep = offload_train
+    inside_safe_region = False
+
+    @contextmanager
+    def safe_region() -> Iterator[None]:
+        nonlocal inside_safe_region
+        assert not inside_safe_region
+        inside_safe_region = True
+        try:
+            yield
+        finally:
+            inside_safe_region = False
+
+    def check_connection(*_args: Any, **_kwargs: Any) -> None:
+        assert inside_safe_region == offload_train
+        if connect_fails:
+            raise RuntimeError("connection failed")
+
+    saver = Mock()
+    saver.disable.side_effect = safe_region
+    monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
+    monkeypatch.setattr(actor_module, "reload_process_groups", Mock())
+    monkeypatch.setattr(actor_module, "destroy_process_groups", Mock())
+    worker.weight_updater.connect_rollout_engines = check_connection
+    engines = _updatable_engines([], {"cell-0": "hash-a"}, gpu_count=8)
+
+    if connect_fails:
+        with pytest.raises(RuntimeError, match="connection failed"):
+            worker.update_weights(engines)
+    else:
+        worker.update_weights(engines)
+
+    assert not inside_safe_region
+    assert saver.disable.call_count == ((1 if connect_fails else 2) if offload_train else 0)
+    assert worker.weight_updater.update_weights_calls == int(not connect_fails)
 
 
 def test_update_weights_reconnects_once_per_rollout_snapshot(
@@ -766,3 +899,55 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
 
     assert len(updater.connect_calls) == 2
+
+
+def test_switch_model_restores_discarded_values_with_the_normal_backuper(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--offload-train disables the param buffers' memory-saver backup: sleep()
+    discards their contents and wake_up() reallocates the storage without
+    values. The same-tag switch after wake must copy the host backup back into
+    the live tensors -- value-level, not merely 'restore was called'."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    live = {"w": torch.arange(4, dtype=torch.float32)}
+    backuper = TensorBackuper.create(lambda: iter(live.items()))
+    # The host backup a training step took; unpinned so the test runs on CPU CI.
+    backuper._backups["actor"] = {"w": live["w"].clone()}
+
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = backuper
+
+    live["w"].zero_()  # the storage an offload cycle discarded and reallocated
+    worker._switch_model("actor")
+
+    assert torch.equal(live["w"], torch.arange(4, dtype=torch.float32))
+
+
+def test_switch_model_rebuilds_the_active_actor_for_main_cast(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--rematerialize-param-from-master-weight: restore('actor') replays the
+    master-weight cast, rebuilding the params update_weights paused -- the
+    per-cycle call must never be skipped for the already-active tag."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    cast_main_to_params = Mock()
+    backuper = TensorBackuper.create(
+        lambda: iter(()),
+        MainCastContext(
+            cast_main_to_params=cast_main_to_params,
+            model_chunks=[],
+            extras_getter=lambda: iter(()),
+            rematerializable_ids=set(),
+            check=False,
+        ),
+    )
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = backuper
+
+    worker._switch_model("actor")
+
+    cast_main_to_params.assert_called_once_with()
