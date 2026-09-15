@@ -2,7 +2,7 @@
 
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
-- `run_gateway.py`: prepare Qwen3-30B-A3B and launch the gateway.
+- `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway.
 - `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
 
 ## Layout
