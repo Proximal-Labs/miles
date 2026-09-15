@@ -16,6 +16,7 @@ from tests.fast.tinker.harness import (
 
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.utils import resolve_checkpoint_dir
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -138,7 +139,7 @@ async def test_sampler_save_publishes_successive_versions(service):
         future = await await_settled(service, "tenant", request_id)
         assert future.result["path"] == f"tinker://{model_id}/sampler_weights/{seq_id}"
     assert [export["path"] for export in service.backend.named("export_slot")] == [
-        service._checkpoint_dir(model_id, "sampler_weights", str(version)) for version in (1, 2)
+        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", str(version)) for version in (1, 2)
     ]
 
 
@@ -169,7 +170,7 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", request_id)).result["path"]
 
-    disk_dir = service._checkpoint_dir(model_id, "sampler_weights", "1")
+    disk_dir = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
     assert service.backend.named("export_slot")[0]["path"] == disk_dir
 
     sample_id, _ = service.submit_sample(
@@ -605,7 +606,7 @@ async def test_checkpoint_meta_stores_a_digest_not_the_credential(service):
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
     )
     await await_settled(service, "tenant", saved)
-    meta_path = os.path.join(service._checkpoint_dir(model_id, "weights", "ck"), "META.json")
+    meta_path = os.path.join(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json")
     meta = json.loads(open(meta_path).read())
     assert "tenant" not in meta and meta["tenant_digest"] != "tenant", "the bearer credential must not be persisted"
     info = service.weights_info("tenant", f"tinker://{model_id}/weights/ck")
@@ -621,7 +622,7 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
-    meta_path = os.path.join(service._checkpoint_dir(model_id, "weights", "ck"), "META.json")
+    meta_path = os.path.join(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json")
     meta = json.loads(open(meta_path).read())
     meta["lora_alpha"] = meta["lora_alpha"] + 1  # the same tensors would be scaled differently
     open(meta_path, "w").write(json.dumps(meta))

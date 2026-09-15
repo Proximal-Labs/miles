@@ -3,15 +3,11 @@
 The trainer lock serializes trainer calls across dispatch, model creation, and lease expiry."""
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
-import re
 import time
 import uuid
 from contextlib import suppress
-from pathlib import Path
 
 from miles.tinker.core.future import Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
@@ -25,6 +21,16 @@ from miles.tinker.core.types import (
     ModelRecord,
     OwnershipError,
     UserInputError,
+)
+
+from miles.tinker.core.utils import (
+    build_checkpoint_metadata,
+    parse_tinker_path,
+    read_checkpoint_metadata,
+    resolve_checkpoint_dir,
+    resolve_sampler_checkpoint,
+    validate_checkpoint_compatibility,
+    validate_checkpoint_segment,
 )
 
 logger = logging.getLogger(__name__)
@@ -377,27 +383,28 @@ class TinkerService:
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
         name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
-        _validate_checkpoint_segment(name)
-        checkpoint_dir = self._checkpoint_dir(record.model_id, "weights", name)
+        validate_checkpoint_segment(name)
+        checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "weights", name)
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
         if (
             failure := await self.backend.save_slot(
-                record.slot, checkpoint_dir, metadata=self._checkpoint_metadata(record)
+                record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
             )
         ) is not None:
             return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
-        source_id, kind, name = _parse_tinker_path(payload["path"])
-        meta = self._checkpoint_meta(self._checkpoint_dir(source_id, kind, name), record.tenant, payload["path"])
-        self._reject_checkpoint_mismatch(meta, record, payload["path"])
+        source_id, kind, name = parse_tinker_path(payload["path"])
+        checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name)
+        meta = read_checkpoint_metadata(checkpoint_dir, record.tenant, payload["path"])
+        validate_checkpoint_compatibility(meta, record, self.config, payload["path"])
         failure = await self.backend.load_slot(
             record.slot,
             record.lora_rank,
             record.lora_alpha,
-            ckpt_path=self._checkpoint_dir(source_id, kind, name),
+            ckpt_path=checkpoint_dir,
             load_optimizer=payload["optimizer"],
         )
         if failure is not None:
@@ -410,13 +417,13 @@ class TinkerService:
             version = str(record.next_sampler_version)
             record.next_sampler_version += 1
         else:
-            _validate_checkpoint_segment(version)
-        path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
+            validate_checkpoint_segment(version)
+        path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "sampler_weights", version)
         if os.path.exists(path):
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
         if (
             failure := await self.backend.export_slot(
-                record.slot, record.lora_rank, record.lora_alpha, path, metadata=self._checkpoint_metadata(record)
+                record.slot, record.lora_rank, record.lora_alpha, path, metadata=build_checkpoint_metadata(record, self.config)
             )
         ) is not None:
             return failure
@@ -428,53 +435,6 @@ class TinkerService:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
         return result
-
-    def _reject_checkpoint_mismatch(self, meta: dict, record: ModelRecord, shown_path: str) -> None:
-        """The tensors only keep their meaning under the config that wrote them (alpha scales them,
-        the target layout names them); a restore under different settings would be silent corruption."""
-        expected = {
-            "base_model": record.base_model,
-            "lora_rank": record.lora_rank,
-            "lora_alpha": record.lora_alpha,
-            "train_attn": self.config.trains_attn,
-            "train_mlp": self.config.trains_mlp,
-            "train_unembed": self.config.trains_unembed,
-        }
-        for key, value in expected.items():
-            if meta[key] != value:
-                raise UserInputError(
-                    f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
-                )
-
-    def _checkpoint_metadata(self, record: ModelRecord) -> dict:
-        return {
-            # the digest proves ownership without persisting the bearer credential itself
-            "tenant_digest": _tenant_digest(record.tenant),
-            "base_model": record.base_model,
-            "lora_rank": record.lora_rank,
-            "lora_alpha": record.lora_alpha,
-            "train_attn": self.config.trains_attn,
-            "train_mlp": self.config.trains_mlp,
-            "train_unembed": self.config.trains_unembed,
-        }
-
-    def _checkpoint_meta(self, checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
-        meta_file = Path(checkpoint_dir) / "META.json"
-        if not meta_file.exists():
-            raise UserInputError(f"unknown checkpoint {shown_path!r}")
-        try:
-            meta = json.loads(meta_file.read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            raise UserInputError(f"cannot read checkpoint {shown_path!r}: {error}") from error
-        if meta["tenant_digest"] != _tenant_digest(tenant):
-            raise OwnershipError(f"checkpoint {shown_path!r} does not belong to this tenant")
-        return meta
-
-    def _checkpoint_dir(self, model_id: str, kind: str, name: str) -> str:
-        root = os.path.realpath(self.config.checkpoint_root)
-        path = os.path.realpath(f"{root}/{model_id}/{kind}/{name}")
-        assert path.startswith(root + os.sep), f"checkpoint path {path!r} escapes {root!r}"
-        return path
 
     # -------- sampling plane (future-based but never queues) --------
 
@@ -526,7 +486,7 @@ class TinkerService:
                 f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
                 f"{self.config.max_samples_per_request}"
             )
-        lora_name, lora_path = self._resolve_sampler(tenant, model_path) if model_path else (None, None)
+        lora_name, lora_path = resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model) if model_path else (None, None)
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
         task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
@@ -561,25 +521,10 @@ class TinkerService:
         if entry is not None:
             entry[0].cancel()
 
-    def _resolve_sampler(self, tenant: str, model_path: str) -> tuple[str, str]:
-        """-> (engine lora_name, adapter dir): the request carries both, so the
-        engine can backfill an evicted version from disk on its own."""
-        model_id, kind, name = _parse_tinker_path(model_path)
-        if kind != "sampler_weights":
-            raise UserInputError(f"cannot sample from {model_path!r}: not a sampler_weights path")
-        checkpoint_dir = self._checkpoint_dir(model_id, "sampler_weights", name)
-        meta = self._checkpoint_meta(checkpoint_dir, tenant, model_path)
-        if meta["base_model"] != self.config.base_model:
-            raise UserInputError(
-                f"checkpoint {model_path!r} uses base_model={meta['base_model']!r}; "
-                f"this server serves {self.config.base_model!r}"
-            )
-        return f"{model_id}@{name}", checkpoint_dir
-
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
-        model_id, kind, name = _parse_tinker_path(tinker_path)
-        meta = self._checkpoint_meta(self._checkpoint_dir(model_id, kind, name), tenant, tinker_path)
+        model_id, kind, name = parse_tinker_path(tinker_path)
+        meta = read_checkpoint_metadata(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path)
         return {
             "base_model": meta["base_model"],
             "is_lora": True,
@@ -657,26 +602,6 @@ def _validate_seq_id(value, name: str, minimum: int = 1) -> int:
     return value
 
 
-def _tenant_digest(tenant: str) -> str:
-    return hashlib.sha256(tenant.encode()).hexdigest()
-
 
 def _failed_stream_message(error: str) -> str:
     return f"training stream failed ({error}); create a new model and restore from a checkpoint"
-
-
-def _parse_tinker_path(path: str) -> tuple[str, str, str]:
-    if not path.startswith("tinker://"):
-        raise UserInputError(f"not a tinker path: {path!r}")
-    parts = path.removeprefix("tinker://").split("/")
-    if len(parts) != 3 or parts[1] not in ("weights", "sampler_weights"):
-        raise UserInputError(f"malformed tinker path: {path!r}")
-    for segment in parts:
-        _validate_checkpoint_segment(segment)
-    return parts[0], parts[1], parts[2]
-
-
-def _validate_checkpoint_segment(segment: str) -> None:
-    """Reject client path segments that could escape the checkpoint root."""
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", segment) is None:
-        raise UserInputError(f"invalid checkpoint path segment {segment!r}")
