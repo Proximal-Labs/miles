@@ -220,8 +220,10 @@ _MILES_SERVER_ARG_DEFAULTS = {"enable_prefill_weight_versions": False}
 def _set_defaults_for_unsupported_server_args(parser) -> None:
     field_names = _server_args_field_names()
     for name, default in _MILES_SERVER_ARG_DEFAULTS.items():
-        if name not in field_names:
-            parser.set_defaults(**{f"sglang_{name}": default})
+        if name in field_names:
+            continue
+        assert default is False
+        parser.add_argument("--sglang-" + name.replace("_", "-"), action="store_true", default=default)
 
 
 def _assert_supported_server_args_are_requested(args) -> None:
