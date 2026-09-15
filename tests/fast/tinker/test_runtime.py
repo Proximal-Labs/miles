@@ -4,6 +4,8 @@ import pytest
 import torch
 
 from miles.tinker.core.types import UserInputError
+from miles.tinker.server.proto_codec import encode_sample_response
+from tinker.proto.response_conv import deserialize_sample_response
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
@@ -126,7 +128,13 @@ class TestEngineResponseParsing:
         topk = _topk_prompt_logprobs(response, k=2)
         assert topk["token_ids"] == [[0, 0], [5, 0]]
         assert topk["logprobs"][1][0] == -0.1
-        assert topk["logprobs"][0][0] != topk["logprobs"][0][0]
+        result = {"sequences": [], "topk_prompt_logprobs": topk}
+        decoded = deserialize_sample_response(encode_sample_response(result)).topk_prompt_logprobs
+        assert decoded[0] is None
+        assert len(decoded[1]) == 1
+        token_id, logprob = decoded[1][0]
+        assert token_id == 5
+        assert logprob == pytest.approx(-0.1)
 
 
 async def test_forward_only_runs_the_requested_loss():
