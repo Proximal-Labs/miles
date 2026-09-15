@@ -80,7 +80,8 @@ class RequestScheduler:
         for model_queue in self._model_queues.values():
             for request in model_queue.open_batch_run():
                 datums.extend(
-                    DatumRef(model_queue, request, index) for index in range(request.num_issued_datums, len(request.datums))
+                    DatumRef(model_queue, request, index)
+                    for index in range(request.num_issued_datums, len(request.datums))
                 )
         return datums
 

@@ -19,7 +19,16 @@ from miles.tinker.core.input_validation import (
 )
 from miles.tinker.core.model_queue import ModelRequestQueue
 from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
-from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ModelRecord, OwnershipError, UserInputError, SessionRecord, SamplingSessionRecord
+from miles.tinker.core.types import (
+    Command,
+    CommandOp,
+    GatewayConfig,
+    ModelRecord,
+    OwnershipError,
+    SamplingSessionRecord,
+    SessionRecord,
+    UserInputError,
+)
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
     parse_tinker_path,
@@ -477,7 +486,12 @@ class TinkerService:
         return future.request_id, sequence_ids
 
     async def _run_sample(
-        self, request_id: str, sequence_ids: list[str], payload: dict, lora_name: str | None, lora_path: str | None = None
+        self,
+        request_id: str,
+        sequence_ids: list[str],
+        payload: dict,
+        lora_name: str | None,
+        lora_path: str | None = None,
     ) -> None:
         try:
             result = await self.backend.sample(payload, lora_name, lora_path)
