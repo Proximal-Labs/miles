@@ -27,6 +27,7 @@ def make_args(**overrides) -> Namespace:
         debug_train_only=False,
         offload_train=False,
         ci_test=False,
+        namespaced_radix_cache=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
