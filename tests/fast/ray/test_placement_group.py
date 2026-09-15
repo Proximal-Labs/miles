@@ -18,6 +18,7 @@ from miles.ray.placement_group import (
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.init_once import InitState
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_spec import HostAndPort
@@ -474,13 +475,18 @@ class TestUpdateWeights:
 
 
 def _make_trainer_handle(
-    *, initialized: bool = False, deployment_identity: DeploymentIdentity | None = None
+    *,
+    initialized: bool = False,
+    deployment_identity: DeploymentIdentity | None = None,
+    load_states: list[TrainerLoadState] | None = None,
 ) -> MagicMock:
+    if load_states is None:
+        load_states = [TrainerLoadState(start_rollout_id=0, restored_trained_iteration=False)]
     handle = MagicMock()
     handle.is_initialized = AsyncMock(return_value=initialized)
     handle.wait_idle = AsyncMock(return_value=None)
-    handle.init = AsyncMock(return_value=[0])
-    handle.load_state = AsyncMock(return_value=[0])
+    handle.init = AsyncMock(return_value=load_states)
+    handle.load_state = AsyncMock(return_value=load_states)
     handle.get_deployment_identity = AsyncMock(return_value=deployment_identity)
     handle.get_train_parallel_config = AsyncMock(return_value=None)
     return handle
@@ -488,12 +494,18 @@ def _make_trainer_handle(
 
 class TestCreateTrainingModels:
     @staticmethod
-    def _patched(monkeypatch, requested: list[str], *, initialized: bool = False) -> list[MagicMock]:
+    def _patched(
+        monkeypatch,
+        requested: list[str],
+        *,
+        initialized: bool = False,
+        load_states: list[TrainerLoadState] | None = None,
+    ) -> list[MagicMock]:
         handles: list[MagicMock] = []
 
         def _create_handle(args, *, capability, trainer_id: str):
             requested.append(trainer_id)
-            handle = _make_trainer_handle(initialized=initialized)
+            handle = _make_trainer_handle(initialized=initialized, load_states=load_states)
             handles.append(handle)
             return handle
 
@@ -555,6 +567,36 @@ class TestCreateTrainingModels:
         await create_training_models(self._args(tmp_path), rollout_executor)
 
         rollout_executor.load.assert_not_awaited()
+
+    async def test_a_lora_finetune_off_an_untrained_checkpoint_leaves_the_executor_unloaded(
+        self, tmp_path, monkeypatch
+    ):
+        """A fresh lora run reports start rollout 1 without having trained one, and rollout 0 was never saved."""
+        self._patched(
+            monkeypatch,
+            [],
+            load_states=[TrainerLoadState(start_rollout_id=1, restored_trained_iteration=False)],
+        )
+        rollout_executor = self._rollout_executor()
+
+        await create_training_models(self._args(tmp_path), rollout_executor)
+
+        rollout_executor.load.assert_not_awaited()
+
+    async def test_a_trainer_that_restored_a_trained_iteration_reloads_the_rollout_it_saved(
+        self, tmp_path, monkeypatch
+    ):
+        """A real resume saved rollout state beside the checkpoint, and dropping it would retrain seen prompts."""
+        self._patched(
+            monkeypatch,
+            [],
+            load_states=[TrainerLoadState(start_rollout_id=101, restored_trained_iteration=True)],
+        )
+        rollout_executor = self._rollout_executor()
+
+        await create_training_models(self._args(tmp_path), rollout_executor)
+
+        rollout_executor.load.assert_awaited_once_with(100)
 
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""
@@ -737,10 +779,14 @@ class TestTakeOverTrainers:
 
 class TestCreateTrainingModel:
     @staticmethod
-    def _handle(*, restored: list[int]) -> MagicMock:
+    def _handle(*, restored: list[int], restored_trained_iteration: bool = True) -> MagicMock:
+        states = [
+            TrainerLoadState(start_rollout_id=value, restored_trained_iteration=restored_trained_iteration)
+            for value in restored
+        ]
         handle = MagicMock()
-        handle.init = AsyncMock(return_value=restored)
-        handle.load_state = AsyncMock(return_value=restored)
+        handle.init = AsyncMock(return_value=states)
+        handle.load_state = AsyncMock(return_value=states)
         return handle
 
     async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self):

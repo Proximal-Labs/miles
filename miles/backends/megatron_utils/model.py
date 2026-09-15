@@ -1000,6 +1000,7 @@ def build_model_and_optimizer(
 class LoadCheckpointOutput:
     loaded_rollout_id: int
     start_rollout_id: int
+    restored_trained_iteration: bool
 
 
 def load_model_state(
@@ -1071,4 +1072,6 @@ def load_model_state(
     else:
         start_rollout_id = iteration + 1
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+    return LoadCheckpointOutput(
+        loaded_rollout_id=iteration, start_rollout_id=start_rollout_id, restored_trained_iteration=iteration > 0
+    )
