@@ -104,9 +104,7 @@ class TestAddSamples:
 
 
 class TestLoad:
-    def test_load_warns_when_no_adapter_source_exists(
-        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
-    ) -> None:
+    def test_load_warns_when_no_adapter_source_exists(self, caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
         """A run serving no adapter must say that it restored no dataset state."""
         source = MultiLoRAAsyncDataSource(Namespace())
 
