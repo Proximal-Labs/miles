@@ -425,7 +425,10 @@ class TinkerService:
         if kind != "weights":
             raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
         checkpoint_dir = os.path.realpath(resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name))
-        meta = read_checkpoint_metadata(checkpoint_dir, record.tenant, payload["path"])
+        source_tenant = payload.get("weights_access_token")
+        if source_tenant is None:
+            source_tenant = record.tenant
+        meta = read_checkpoint_metadata(checkpoint_dir, source_tenant, payload["path"])
         validate_checkpoint_compatibility(meta, record, self.config, payload["path"])
         failure = await self.backend.load_slot(
             record.slot,

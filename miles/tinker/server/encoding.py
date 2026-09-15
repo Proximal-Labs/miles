@@ -74,7 +74,11 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         _reject_unsupported_save_options(payload)
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
-        return op, decoded | {"path": payload["path"], "optimizer": payload["optimizer"]}
+        return op, decoded | {
+            "path": payload["path"],
+            "optimizer": payload["optimizer"],
+            "weights_access_token": payload.get("weights_access_token"),
+        }
     if op == "save_weights_for_sampler":
         _reject_unsupported_save_options(payload)
         return op, decoded | {"sampler_path": payload.get("path")}
