@@ -284,7 +284,9 @@ class TestDisposeRecordsHeldGroups:
 
     async def test_dispose_records_every_held_group_and_no_drained_one(self, monkeypatch, tmp_path: Path) -> None:
         """A run that ends really abandons what the producer still holds, and only that."""
-        set_event_logger(EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor")))
+        set_event_logger(
+            EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor"))
+        )
         try:
             fn = self._make_started_fn(monkeypatch)
             drained = make_group(4)
@@ -311,7 +313,9 @@ class TestDisposeRecordsHeldGroups:
         self, monkeypatch, tmp_path: Path, source: str
     ) -> None:
         """Each of the three places save() reads is a place a group can be stranded at shutdown."""
-        set_event_logger(EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor")))
+        set_event_logger(
+            EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor"))
+        )
         try:
             fn = self._make_started_fn(monkeypatch)
             group = make_group(7)
@@ -331,7 +335,9 @@ class TestDisposeRecordsHeldGroups:
 
     async def test_dispose_records_nothing_when_the_producer_holds_nothing(self, monkeypatch, tmp_path: Path) -> None:
         """A clean shutdown abandons no sample, so it may not invent a drop."""
-        set_event_logger(EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor")))
+        set_event_logger(
+            EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor"))
+        )
         try:
             fn = self._make_started_fn(monkeypatch)
 
@@ -343,7 +349,9 @@ class TestDisposeRecordsHeldGroups:
 
     async def test_dispose_is_idempotent(self, monkeypatch, tmp_path: Path) -> None:
         """A second dispose would otherwise drop the same held samples twice and read as a lost sample."""
-        set_event_logger(EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor")))
+        set_event_logger(
+            EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor"))
+        )
         try:
             fn = self._make_started_fn(monkeypatch)
             fn._retry_buffer.append(make_group(8))
