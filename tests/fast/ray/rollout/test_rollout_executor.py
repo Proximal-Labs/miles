@@ -228,6 +228,9 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     executor.data_source = _FakeDataSource(tmp_path)
     executor._train_parallel_configs_of_model_id = {None: {}}
     executor._weight_versions_of_model_id = {}
+    executor.last_get_rollout_id_of_model_id = {}
+    executor._rollout_id_being_served = None
+    executor.custom_convert_samples_to_train_data_func = None
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     return executor
 
