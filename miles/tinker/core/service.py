@@ -501,6 +501,8 @@ class TinkerService:
         return sampling_session_id
 
     def _new_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
+        if model_path is not None:
+            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
         self.sampling_sessions[sampling_session_id] = {
             "tenant": tenant,
