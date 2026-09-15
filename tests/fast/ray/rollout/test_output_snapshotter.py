@@ -8,7 +8,7 @@ from miles.utils.types import Sample
 
 
 def _args() -> Namespace:
-    return Namespace()
+    return Namespace(ci_test=False, ci_inject_missing_prefetched_batch_bug=False)
 
 
 class TestRolloutExecutorOutputSnapshotter:

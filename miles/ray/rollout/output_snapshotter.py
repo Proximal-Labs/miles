@@ -59,15 +59,20 @@ class _RolloutExecutorOutputSnapshotter:
         assert not any(
             entry.phase is _OutputSnapshotPhase.CAPTURED for entry in self._snapshots.values()
         ), "the executor restores its untrained outputs before it generates any"
-        outputs = load_simple_checkpoint(directory=directory)
+        loaded = {
+            key: _OutputSnapshotEntry(data=data, metadata=metadata, phase=_OutputSnapshotPhase.LOADED)
+            for key, (data, metadata) in load_simple_checkpoint(directory=directory).items()
+        }
+        if self._args.ci_inject_missing_prefetched_batch_bug:
+            assert self._args.ci_test and loaded
+            logger.info(
+                f"Injected CI bug: discarding {len(loaded)} loaded untrained rollout batches "
+                f"for rollouts {sorted(key.rollout_id for key in loaded)}"
+            )
+            loaded.clear()
 
-        self._snapshots.update(
-            {
-                key: _OutputSnapshotEntry(data=data, metadata=metadata, phase=_OutputSnapshotPhase.LOADED)
-                for key, (data, metadata) in outputs.items()
-            }
-        )
-        logger.info(f"Loaded {len(outputs)} untrained rollout batches")
+        self._snapshots.update(loaded)
+        logger.info(f"Loaded {len(loaded)} untrained rollout batches")
 
 
 class _OutputSnapshotKey(NamedTuple):
