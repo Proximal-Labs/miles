@@ -201,9 +201,9 @@ async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: s
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     [restored_rollout_id] = set(restored_rollout_ids)
     restored_trained_iterations = [state.restored_trained_iteration for state in load_states]
-    assert len(set(restored_trained_iterations)) == 1, (
-        f"trainer {trainer_id!r} disagrees about having restored a trained iteration: {restored_trained_iterations}"
-    )
+    assert (
+        len(set(restored_trained_iterations)) == 1
+    ), f"trainer {trainer_id!r} disagrees about having restored a trained iteration: {restored_trained_iterations}"
     [restored_trained_iteration] = set(restored_trained_iterations)
 
     if (x := args.start_rollout_id) is None:
