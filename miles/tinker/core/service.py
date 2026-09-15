@@ -404,6 +404,8 @@ class TinkerService:
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = parse_tinker_path(payload["path"])
+        if kind != "weights":
+            raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name)
         meta = read_checkpoint_metadata(checkpoint_dir, record.tenant, payload["path"])
         validate_checkpoint_compatibility(meta, record, self.config, payload["path"])
