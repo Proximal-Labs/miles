@@ -317,13 +317,13 @@ class RolloutExecutor:
 
         directory = compute_rollout_checkpoint_dir(save_dir, rollout_id=rollout_id)
         directory.mkdir(parents=True, exist_ok=True)
+        event_logger_checkpoint.snapshot(self.args, directory=directory / event_logger_checkpoint.SNAPSHOT_DIRNAME)
         self.data_source.save(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
                 self.generate_rollout.save(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.save(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
-        event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id: int | None = None, *, require_complete: bool = False) -> None:
         directory = self._resolve_checkpoint_dir(rollout_id=rollout_id)
