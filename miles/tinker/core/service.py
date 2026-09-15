@@ -377,7 +377,11 @@ class TinkerService:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
             if pending.command.op.changes_training_state():
-                await self._close_model(stream.model_id, _failed_stream_message(outcome["error"]), category)
+                await self._close_model(
+                    stream.model_id,
+                    f"training stream failed ({outcome['error']}); create a new model and restore from a checkpoint",
+                    category,
+                )
                 return
             self.futures.fail(pending.command.request_id, outcome["error"], category)
         else:
@@ -590,7 +594,3 @@ def _validate_seq_id(value, name: str, minimum: int = 1) -> int:
     if not isinstance(value, int) or value < minimum:
         raise UserInputError(f"{name} must be an integer >= {minimum}, got {value!r}")
     return value
-
-
-def _failed_stream_message(error: str) -> str:
-    return f"training stream failed ({error}); create a new model and restore from a checkpoint"
