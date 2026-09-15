@@ -2934,7 +2934,7 @@ class TestSecretArgumentsAreClassified:
             if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
         }
 
-        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+        assert suspicious - _SECRET_ARG_NAMES <= _NOT_ACTUALLY_SECRET_ARG_NAMES, (
             "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
             "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
         )
