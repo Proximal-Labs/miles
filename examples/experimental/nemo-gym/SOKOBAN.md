@@ -100,3 +100,18 @@ Set `verifier_url` to a cluster-reachable address if the verifier and rollout
 executor run on different nodes. W&B credentials must already be installed in
 the credential store on both nodes; they are omitted from the submitted argv.
 This recipe preserves the existing final-answer-v2-format-penalty grader.
+
+## Qwen3.6 model comparison
+
+Set `model_family` to `qwen36` and `model_name` to `Qwen3.6-35B-A3B`
+in the same launcher configuration. The reward, data, optimizer, parallel layout,
+async settings and budgets are unchanged. This selects the target-only model
+preset `qwen3.6-35B-A3B-no-mtp` and the native Qwen weight exporter.
+
+Convert the original Hugging Face model once with that preset into
+`<model_dir>/Qwen3.6-35B-A3B_torch_dist`. The conversion must finish with
+a `release` tracker. Record `sokoban_initialization.json` in that directory
+with `hf_checkpoint` equal to the original HF directory and `mtp_enabled: false`.
+The runtime guard rejects intermediate training checkpoints and active MTP layers.
+The conversion starts fresh; optimizer state, RNG state and the rollout cursor
+are not restored.

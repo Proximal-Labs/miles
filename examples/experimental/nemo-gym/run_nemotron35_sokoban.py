@@ -1,4 +1,4 @@
-"""Nemotron 3.5 Lightning Sokoban GRPO with separate rollout and training nodes.
+"""Nemotron 3.5 Lightning or Qwen3.6 Sokoban GRPO on separate nodes.
 
 Requires two joined eight-GPU Ray nodes, matching model and dataset paths on both,
 and the NeMo Gym Sokoban verifier. The model starts from original HF weights.
@@ -15,6 +15,7 @@ import json
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from tap import Tap
 
@@ -28,6 +29,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 8
     model_dir: str = "/root/models"
     model_name: str = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+    model_family: Literal["nemotron35", "qwen36"] = "nemotron35"
     data_dir: str = "/root/datasets"
     data_file: str = "sokoban_train.jsonl"
     megatron_path: str = "/root/Megatron-LM"
@@ -52,10 +54,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
         assert self.num_nodes == 2 and self.num_gpus_per_node == 8
         assert self.global_batch_size == self.rollout_batch_size * self.group_size
         assert self.response_length < self.context_length
+        assert self.model_family in ("nemotron35", "qwen36")
+        if self.model_family == "qwen36":
+            assert self.model_name == "Qwen3.6-35B-A3B"
 
     @property
     def run_name(self) -> str:
-        return f"{self.run_id}-nemotron35-lightning-sokoban-async-2n-bs{self.global_batch_size}-g{self.group_size}"
+        model = "qwen36-35b-a3b" if self.model_family == "qwen36" else "nemotron35-lightning"
+        return f"{self.run_id}-{model}-sokoban-async-2n-bs{self.global_batch_size}-g{self.group_size}"
 
 
 def _flags(values: dict[str, object]) -> str:
@@ -154,10 +160,10 @@ def execute(args: ScriptArgs) -> None:
     checkpoint_args = _flags(
         {
             "hf_checkpoint": checkpoint,
-            "ref_load": checkpoint,
+            "ref_load": checkpoint + "_torch_dist" if args.model_family == "qwen36" else checkpoint,
             "save": str(Path(args.output_dir) / "checkpoints"),
             "save_interval": args.save_interval,
-            "megatron_to_hf_mode": "bridge",
+            "megatron_to_hf_mode": "raw" if args.model_family == "qwen36" else "bridge",
             "no_load_optim": True,
             "no_load_rng": True,
             "finetune": True,
@@ -227,10 +233,10 @@ def execute(args: ScriptArgs) -> None:
         config=args,
         train_script="train_async.py",
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type="nemotron-3-nano-30b-a3b",
+        megatron_model_type=("qwen3.6-35B-A3B-no-mtp" if args.model_family == "qwen36" else "nemotron-3-nano-30b-a3b"),
         megatron_path=args.megatron_path,
         extra_env_vars={
-            "MILES_NEMOTRONH_KEEP_MTP": "",
+            **({"MILES_NEMOTRONH_KEEP_MTP": ""} if args.model_family == "nemotron35" else {}),
             "NEMO_GYM_SOKOBAN_URL": args.verifier_url,
             "HF_HOME": args.hf_cache_dir,
             "HUGGINGFACE_HUB_CACHE": str(Path(args.hf_cache_dir) / "hub"),
