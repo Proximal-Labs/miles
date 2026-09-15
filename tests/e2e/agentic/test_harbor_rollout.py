@@ -171,9 +171,7 @@ def execute(worker_env: dict[str, str]):
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
         "--train-backend fsdp --debug-rollout-only --ci-test "
     )
-    train_args = (
-        f"{ckpt_args} {rollout_args} {agent_args} {sglang_args} {command_utils.get_default_wandb_args(__file__)} {misc_args}"
-    )
+    train_args = f"{ckpt_args} {rollout_args} {agent_args} {sglang_args} {command_utils.get_default_wandb_args(__file__)} {misc_args}"
 
     extra_env_vars = {
         "PYTHONPATH": ":".join([*agentic_pythonpath_dirs(), str(REPO)]),
