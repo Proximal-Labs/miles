@@ -1032,6 +1032,15 @@ class TestActorPublicationSource:
         assert worker._get_actor_weights() == {"weight": actor_weight}
         assert worker.model[0].model_companion.weight_version.item() == 3
 
+    def test_reading_host_backups_still_finds_the_companion_version(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Colocated LoRA translates live weights to host backups and must tolerate the host-resident companion."""
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: True))
+
+        assert worker._get_actor_weight_version() == 3
+
 
 @pytest.mark.parametrize("use_tms_backup", [False, True])
 @pytest.mark.parametrize("include_model_companion", [False, True])
