@@ -375,9 +375,13 @@ class TestUpdateWeights:
     @staticmethod
     def _checksum_args(*, start_rollout_id: int = 0):
         return Namespace(
-            debug_train_only=False,
-            debug_rollout_only=False,
-            start_rollout_id=start_rollout_id,
+            **{
+                **parser_defaults(),
+                "debug_train_only": False,
+                "debug_rollout_only": False,
+                "start_rollout_id": start_rollout_id,
+                "log_inference_engine_weight_checksums": True,
+            }
         )
 
     def _record_checksum_events(self, monkeypatch) -> list[dict]:
@@ -594,7 +598,7 @@ class TestCreateTrainingModels:
         )
         rollout_executor = self._rollout_executor()
 
-        await create_training_models(self._args(tmp_path), rollout_executor)
+        await create_training_models(self._args(tmp_path, megatron_config=None), rollout_executor)
 
         rollout_executor.load.assert_awaited_once_with(100)
 
