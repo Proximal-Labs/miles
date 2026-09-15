@@ -18,8 +18,10 @@ from miles.ray.placement_group import (
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.ray.train.group import TrainerController
 from miles.utils.hot_restart import TrainerLoadState
 from miles.utils.init_once import InitState
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -886,3 +888,31 @@ class TestCreateTrainingModel:
         assert info.start_rollout_id == 4
         handle.load_state.assert_awaited_once_with()
         handle.init.assert_not_awaited()
+
+
+class TestCreateTrainingModelOverRpc:
+    @staticmethod
+    def _round_trip(states: list[TrainerLoadState], *, method_name: str) -> list[TrainerLoadState]:
+        serializer = collect_rpc_method_specs(TrainerController)[method_name].serializer
+        return serializer.decode_result(serializer.encode_result(states))
+
+    @pytest.mark.parametrize("method_name", ["init", "load_state"])
+    async def test_a_trainer_reached_over_rpc_starts_where_its_cells_restored(self, method_name: str):
+        """Under --worker-comm-backend rpc the controller re-encodes its answer, which erases an untyped state."""
+        states = [
+            TrainerLoadState(start_rollout_id=3, restored_trained_iteration=True),
+            TrainerLoadState(start_rollout_id=3, restored_trained_iteration=True),
+        ]
+        handle = MagicMock()
+        handle.init = AsyncMock(return_value=self._round_trip(states, method_name="init"))
+        handle.load_state = AsyncMock(return_value=self._round_trip(states, method_name="load_state"))
+
+        info = await create_training_model(
+            Namespace(start_rollout_id=None),
+            handle=handle,
+            trainer_id="alpha-actor",
+            resumed=method_name == "load_state",
+        )
+
+        assert info.start_rollout_id == 3
+        assert info.restored_trained_iteration
