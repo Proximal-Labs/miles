@@ -196,12 +196,12 @@ class DefaultDataBuffer(DataBuffer):
 
                 staleness = group_staleness(entry.group, current_version)
                 if staleness is not None:
-                    self._metric_consumed_staleness.append(staleness)
                     if self._args.max_weight_staleness is not None and staleness > self._args.max_weight_staleness:
                         logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
                         self._metric_stale_groups += 1
                         self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
                         continue
+                    self._metric_consumed_staleness.append(staleness)
                 return entry
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
