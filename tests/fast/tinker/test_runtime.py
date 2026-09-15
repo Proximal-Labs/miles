@@ -4,8 +4,6 @@ import pytest
 import torch
 
 from miles.tinker.core.types import UserInputError
-from miles.tinker.server.proto_codec import encode_sample_response
-from tinker.proto.response_conv import deserialize_sample_response
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
@@ -15,6 +13,8 @@ from miles.tinker.runtime import (
     _to_sequence,
     _topk_prompt_logprobs,
 )
+from miles.tinker.server.proto_codec import encode_sample_response
+from tinker.proto.response_conv import deserialize_sample_response
 
 
 def _datum(tokens: list[int], **extra) -> dict:
