@@ -55,6 +55,47 @@ class TinkerService:
         # why each model closed, so later requests get the reason instead of "unknown model"
         self._close_reasons: dict[str, str] = {}
 
+    async def run(self) -> None:
+        sweep_task = asyncio.create_task(self.sweep_leases())
+        sweep_task.add_done_callback(self._observe_background_task)
+        try:
+            while True:
+                if self._background_error is not None:
+                    raise self._background_error
+                # unit selection shares the critical section with execution, so
+                # lease expiry cannot reclaim a stream between the two
+                async with self._trainer_lock:
+                    rejections = self.planner.ready_rejections()
+                    if rejections:
+                        for stream, pending in rejections:
+                            await self._finish_request(
+                                stream, pending, {"error": pending.command.validation_error, "error_category": "user"}
+                            )
+                        continue
+                    unit = self.planner.next_to_run()
+                    if unit is not None:
+                        if isinstance(unit, BatchUnit):
+                            await self._run_batch(unit)
+                        else:
+                            await self._run_barrier(unit)
+                        if self.backend.trainer_dead():
+                            raise RuntimeError("the trainer workers died; exiting so clients get refused connections")
+                        continue
+                await self._wake.wait()
+                self._wake.clear()
+        finally:
+            tasks = [sweep_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
+            for task in tasks:
+                task.cancel()
+            # Cleanup failures must not replace the error that stopped the dispatcher.
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _observe_background_task(self, task: asyncio.Task) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            if self._background_error is None:
+                self._background_error = error
+            self._wake.set()
+
     def create_session(self, tenant: str) -> str:
         session_id = f"session-{uuid.uuid4().hex}"
         self.sessions[session_id] = {
@@ -121,6 +162,17 @@ class TinkerService:
         session["models_by_seq"][model_seq_id] = (future.request_id, model_id)
         return future.request_id, model_id
 
+    async def _run_create_model(self, record: ModelRecord) -> None:
+        async with self._trainer_lock:
+            if self.models.get(record.model_id) is not record:
+                return
+            failure = await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
+            record.slot_initialized = True
+            if failure is not None:
+                await self._close_model(record.model_id, failure["error"], "server")
+                return
+            self.futures.resolve(record.create_request_id, {"op": "create_model", "model_id": record.model_id})
+
     def _reject_unsupported_lora_config(self, lora_config: dict) -> None:
         """Reject per-model settings that conflict with the fixed server adapter layout."""
         if lora_config.get("seed") is not None:
@@ -138,23 +190,6 @@ class TinkerService:
                     f"({field}={layout_trains}); the layout is fixed by --target-modules at server start"
                 )
 
-    def _observe_background_task(self, task: asyncio.Task) -> None:
-        if not task.cancelled() and (error := task.exception()) is not None:
-            if self._background_error is None:
-                self._background_error = error
-            self._wake.set()
-
-    async def _run_create_model(self, record: ModelRecord) -> None:
-        async with self._trainer_lock:
-            if self.models.get(record.model_id) is not record:
-                return
-            failure = await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
-            record.slot_initialized = True
-            if failure is not None:
-                await self._close_model(record.model_id, failure["error"], "server")
-                return
-            self.futures.resolve(record.create_request_id, {"op": "create_model", "model_id": record.model_id})
-
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
         if record is None:
@@ -166,7 +201,27 @@ class TinkerService:
             raise OwnershipError(f"model {model_id} does not belong to this tenant")
         return record
 
-    # -------- client submit path --------
+    async def _close_model(self, model_id: str, error: str, category: str) -> None:
+        """Free a model's slot and fail its pending requests; requires the trainer lock. Idempotent."""
+        record = self.models.pop(model_id, None)
+        if record is None:
+            return
+        self._close_reasons[model_id] = error
+        while len(self._close_reasons) > 4 * self.config.n_slots:
+            self._close_reasons.pop(next(iter(self._close_reasons)))
+        stream = self.planner.stream(model_id)
+        self.planner.remove_stream(model_id)
+        for request_id in [record.create_request_id, *stream.request_id_by_seq.values()]:
+            if self.futures.get(request_id, record.tenant) is not None:
+                self.futures.fail(request_id, error, category)
+        if self.backend.trainer_dead():
+            return
+        if record.slot_initialized:
+            failure = await self.backend.unload_slot(record.slot)
+            if failure is not None:
+                logger.error("slot %s remains unavailable after unload failed: %s", record.slot, failure["error"])
+                return
+        self.free_slots.add(record.slot)
 
     def submit(self, tenant: str, op: str, payload: dict) -> str:
         """Admit a decoded command; content errors settle its future as a user failure."""
@@ -256,43 +311,6 @@ class TinkerService:
     def retrieve_future(self, tenant: str, request_id: str) -> Future | None:
         return self.futures.get(request_id, tenant)
 
-    # -------- dispatch loop --------
-
-    async def run(self) -> None:
-        sweep_task = asyncio.create_task(self.sweep_leases())
-        sweep_task.add_done_callback(self._observe_background_task)
-        try:
-            while True:
-                if self._background_error is not None:
-                    raise self._background_error
-                # unit selection shares the critical section with execution, so
-                # lease expiry cannot reclaim a stream between the two
-                async with self._trainer_lock:
-                    rejections = self.planner.ready_rejections()
-                    if rejections:
-                        for stream, pending in rejections:
-                            await self._finish_request(
-                                stream, pending, {"error": pending.command.validation_error, "error_category": "user"}
-                            )
-                        continue
-                    unit = self.planner.next_to_run()
-                    if unit is not None:
-                        if isinstance(unit, BatchUnit):
-                            await self._run_batch(unit)
-                        else:
-                            await self._run_barrier(unit)
-                        if self.backend.trainer_dead():
-                            raise RuntimeError("the trainer workers died; exiting so clients get refused connections")
-                        continue
-                await self._wake.wait()
-                self._wake.clear()
-        finally:
-            tasks = [sweep_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
-            for task in tasks:
-                task.cancel()
-            # Cleanup failures must not replace the error that stopped the dispatcher.
-            await asyncio.gather(*tasks, return_exceptions=True)
-
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
         refs = sorted(batch.datums, key=lambda ref: ref.stream.slot)
@@ -331,17 +349,6 @@ class TinkerService:
         for (stream, pending), outcome in zip(barrier.entries, outcomes, strict=True):
             await self._finish_request(stream, pending, outcome)
 
-    async def _finish_request(self, stream, pending, outcome: dict) -> None:
-        if "error" in outcome:
-            category = outcome.get("error_category", "server")
-            if pending.command.op.changes_training_state():
-                await self._close_model(stream.model_id, _failed_stream_message(outcome["error"]), category)
-                return
-            self.futures.fail(pending.command.request_id, outcome["error"], category)
-        else:
-            self.futures.resolve(pending.command.request_id, outcome)
-        stream.finish(pending)
-
     async def _dispatch_barrier_op(self, barrier: BarrierUnit) -> list[dict]:
         """Return one result or error per entry; only the caller settles futures and retires models."""
         if barrier.op == CommandOp.OPTIM_STEP:
@@ -368,6 +375,17 @@ class TinkerService:
             else:
                 outcomes.append({"op": "optim_step", "metrics": {key: float(value) for key, value in outcome.items()}})
         return outcomes
+
+    async def _finish_request(self, stream, pending, outcome: dict) -> None:
+        if "error" in outcome:
+            category = outcome.get("error_category", "server")
+            if pending.command.op.changes_training_state():
+                await self._close_model(stream.model_id, _failed_stream_message(outcome["error"]), category)
+                return
+            self.futures.fail(pending.command.request_id, outcome["error"], category)
+        else:
+            self.futures.resolve(pending.command.request_id, outcome)
+        stream.finish(pending)
 
     async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
@@ -425,7 +443,18 @@ class TinkerService:
             result["sampling_session_id"] = self._new_sampling_session(record.tenant, result["path"])
         return result
 
-    # -------- sampling plane (future-based but never queues) --------
+    def weights_info(self, tenant: str, tinker_path: str) -> dict:
+        """What the SDK needs to rebuild a training client from a checkpoint."""
+        model_id, kind, name = parse_tinker_path(tinker_path)
+        meta = read_checkpoint_metadata(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path)
+        return {
+            "base_model": meta["base_model"],
+            "is_lora": True,
+            "lora_rank": meta["lora_rank"],
+            "train_attn": meta["train_attn"],
+            "train_mlp": meta["train_mlp"],
+            "train_unembed": meta["train_unembed"],
+        }
 
     def create_sampling_session(self, tenant: str, payload: dict) -> str:
         session = self._session_for(tenant, payload["session_id"])
@@ -510,19 +539,6 @@ class TinkerService:
         if entry is not None:
             entry[0].cancel()
 
-    def weights_info(self, tenant: str, tinker_path: str) -> dict:
-        """What the SDK needs to rebuild a training client from a checkpoint."""
-        model_id, kind, name = parse_tinker_path(tinker_path)
-        meta = read_checkpoint_metadata(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path)
-        return {
-            "base_model": meta["base_model"],
-            "is_lora": True,
-            "lora_rank": meta["lora_rank"],
-            "train_attn": meta["train_attn"],
-            "train_mlp": meta["train_mlp"],
-            "train_unembed": meta["train_unembed"],
-        }
-
     async def sweep_leases(self) -> None:
         """Reclaim from stale tenants: cancel sampling, unload models, free
         slots. Training state dies with the lease; only checkpoints survive."""
@@ -560,28 +576,6 @@ class TinkerService:
             logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
             async with self._trainer_lock:
                 await self._close_model(model_id, "lease expired", "user")
-
-    async def _close_model(self, model_id: str, error: str, category: str) -> None:
-        """Free a model's slot and fail its pending requests; requires the trainer lock. Idempotent."""
-        record = self.models.pop(model_id, None)
-        if record is None:
-            return
-        self._close_reasons[model_id] = error
-        while len(self._close_reasons) > 4 * self.config.n_slots:
-            self._close_reasons.pop(next(iter(self._close_reasons)))
-        stream = self.planner.stream(model_id)
-        self.planner.remove_stream(model_id)
-        for request_id in [record.create_request_id, *stream.request_id_by_seq.values()]:
-            if self.futures.get(request_id, record.tenant) is not None:
-                self.futures.fail(request_id, error, category)
-        if self.backend.trainer_dead():
-            return
-        if record.slot_initialized:
-            failure = await self.backend.unload_slot(record.slot)
-            if failure is not None:
-                logger.error("slot %s remains unavailable after unload failed: %s", record.slot, failure["error"])
-                return
-        self.free_slots.add(record.slot)
 
 
 def _validate_seq_id(value, name: str) -> int:
