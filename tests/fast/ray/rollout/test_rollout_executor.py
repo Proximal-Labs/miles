@@ -231,6 +231,7 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     executor.last_get_rollout_id_of_model_id = {}
     executor._rollout_id_being_served = None
     executor.custom_convert_samples_to_train_data_func = None
+    executor.custom_reward_post_process_func = None
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     return executor
 

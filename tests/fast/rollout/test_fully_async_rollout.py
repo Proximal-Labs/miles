@@ -1879,7 +1879,7 @@ class TestLifecycle:
         """A failed eval that left the producer paused would stall every later training step."""
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
 
-        async def failing_run_eval_datasets(state, cache):
+        async def failing_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
             raise RuntimeError("eval exploded")
 
         monkeypatch.setattr(fully_async, "run_eval_datasets", failing_run_eval_datasets)
