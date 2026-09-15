@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 
-from miles.tinker.core.future import Future, FutureStore
+from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
     validate_batch_payload,
     validate_checkpoint_compatibility,
@@ -35,7 +35,7 @@ class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
         self.config = config
-        self.futures = FutureStore()
+        self.futures = RequestFutureStore()
         self.planner = Planner(config.batch_token_budget)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, dict] = {}
@@ -243,7 +243,7 @@ class TinkerService:
         self._wake.set()
         return future.request_id
 
-    def retrieve_future(self, tenant: str, request_id: str) -> Future | None:
+    def retrieve_future(self, tenant: str, request_id: str) -> RequestFuture | None:
         return self.futures.get(request_id, tenant)
 
     async def _run_batch(self, batch: BatchUnit) -> None:
