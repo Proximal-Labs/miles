@@ -527,11 +527,12 @@ class TinkerService:
                 request_id = self.futures.request_id_for_retry(request_id, model_path or "base", tenant)
                 sampling_session["samples_by_seq"][seq_id] = (request_id, sequence_ids)
                 return request_id, sequence_ids
-        if payload.get("num_samples", 1) > self.config.max_samples_per_request:
-            raise UserInputError(
-                f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
-                f"{self.config.max_samples_per_request}"
-            )
+        num_samples = payload.get("num_samples", 1)
+        if type(num_samples) is not int or not 1 <= num_samples <= self.config.max_samples_per_request:
+            raise UserInputError(f"num_samples must be an integer in [1, {self.config.max_samples_per_request}]")
+        topk = payload.get("topk_prompt_logprobs", 0)
+        if type(topk) is not int or topk < 0:
+            raise UserInputError("topk_prompt_logprobs must be a nonnegative integer")
         lora_name, lora_path = (
             resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
             if model_path
