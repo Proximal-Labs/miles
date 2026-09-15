@@ -960,7 +960,9 @@ class TestPerPolicyBufferClass:
             "solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"]
         )
 
-        assert RecordingBuffer.constructed_with.unused_handler_fn == unused.append
+        RecordingBuffer.constructed_with.unused_handler_fn(["a-group"], "a-reason")
+
+        assert unused == [["a-group"]]
         assert RecordingBuffer.constructed_with.args is buffer._inners["verifier"]._args
 
     def test_a_policy_this_run_does_not_train_is_refused(self):
