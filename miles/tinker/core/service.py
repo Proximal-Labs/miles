@@ -320,16 +320,11 @@ class TinkerService:
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
-                self.futures.resolve(
-                    request.command.request_id, {"op": request.command.op, "outputs": request.outputs}
+                await self._finish_request(
+                    ref.stream, request, {"op": request.command.op, "outputs": request.outputs}
                 )
-                ref.stream.finish(request)
 
     async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:
-        if batch.op.changes_training_state():
-            for model_id in sorted({ref.stream.model_id for ref in batch.datums}):
-                await self._close_model(model_id, _failed_stream_message(error), category)
-            return
         requests = {ref.request.command.request_id: (ref.stream, ref.request) for ref in batch.datums}
         for stream, pending in requests.values():
             await self._finish_request(stream, pending, {"error": error, "error_category": category})
