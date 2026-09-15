@@ -197,6 +197,50 @@ class _CustomDataSource:
 
 
 class TestOneDirectoryPerRolloutCheckpoint:
+    def test_the_directory_appears_only_after_every_component_saved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A half-written checkpoint under the published name would be restored as if it were whole."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        published = compute_rollout_checkpoint_dir(tmp_path, rollout_id=2)
+        original = executor.data_source.save
+
+        def save(directory: Path) -> None:
+            assert not published.exists()
+            original(directory)
+
+        monkeypatch.setattr(executor.data_source, "save", save)
+
+        executor.save(2)
+
+        assert sorted(one.name for one in published.iterdir()) == ["data_source"]
+
+    def test_an_interrupted_save_publishes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash mid-save must leave no directory a resume would trust, and no rubbish behind either."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        def fail(directory: Path) -> None:
+            raise RuntimeError("save interrupted")
+
+        monkeypatch.setattr(executor.data_source, "save", fail)
+        with pytest.raises(RuntimeError, match="save interrupted"):
+            executor.save(2)
+
+        assert not compute_rollout_checkpoint_dir(tmp_path, rollout_id=2).exists()
+        assert list((tmp_path / "rollout").glob(".tmp-*")) == []
+
+    def test_a_configured_event_log_must_reach_the_checkpoint(self, tmp_path: Path) -> None:
+        """An accounting-enabled run cannot publish a checkpoint that forgot the issued and terminal events."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.args.save_debug_event_data = str(tmp_path / "absent-events")
+
+        with pytest.raises(AssertionError, match="absent-events"):
+            executor.save(5)
+
+        assert not compute_rollout_checkpoint_dir(tmp_path, rollout_id=5).exists()
+
     def test_a_restored_trainer_requires_the_rollout_directory(self, tmp_path: Path) -> None:
         """A numbered trainer checkpoint cannot resume with absent rollout-side state."""
         executor = _make_executor(tmp_path, _CountingRolloutFn())
