@@ -710,6 +710,8 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     worker.model[0].model_companion.weight_version.fill_(3)
     worker._multi_lora_weight_version = 0
     worker.weight_updater = _RecordingWeightUpdater()
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.get.return_value = dict(worker.model[0].named_parameters())
     monkeypatch.setattr(actor_module, "print_memory", Mock())
     monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
     monkeypatch.setattr(actor_module, "get_gloo_group", lambda: None)
