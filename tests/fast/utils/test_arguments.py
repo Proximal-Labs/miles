@@ -67,6 +67,7 @@ _NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
         "metadata_key",
         "opd_teacher_key",
         "reward_key",
+        "router_allow_requests_without_routing_key",
         "tool_key",
     }
 )
@@ -488,7 +489,7 @@ class TestSampleOwnershipCheckArguments:
             debug_rollout_only=False,
             debug_disable_optimizer=False,
             enable_witness=False,
-            save_debug_event_data=None,
+            save_debug_event_data="/audit/events",
             run_uuid="0123456789abcdef",
         )
         values.update(overrides)
