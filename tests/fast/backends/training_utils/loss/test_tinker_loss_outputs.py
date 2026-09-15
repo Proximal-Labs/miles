@@ -78,11 +78,19 @@ def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, lo
     [
         ("importance_sampling", {}, [-1, 1.5, -2, 3, -10, 15], [-1, 1.5, -2, 3, -10, 15]),
         ("ppo", {}, [-1, 2.4, -2, 3, -2.4, 15], [-1, 0, -2, 3, 0, 15]),
-        ("ppo", {"clip_low_threshold": 0.4, "clip_high_threshold": 6},
-         [-1, 1.5, -2, 3, -10, 15], [-1, 1.5, -2, 3, -10, 15]),
+        (
+            "ppo",
+            {"clip_low_threshold": 0.4, "clip_high_threshold": 6},
+            [-1, 1.5, -2, 3, -10, 15],
+            [-1, 1.5, -2, 3, -10, 15],
+        ),
         ("cispo", {}, [1, -1.5, 2, -3, 8, -12], [-1, 1.5, -2, 3, -8, 12]),
-        ("cispo", {"clip_low_threshold": 0.75, "clip_high_threshold": 2},
-         [1.5, -2.25, 2, -3, 4, -6], [-1.5, 2.25, -2, 3, -4, 6]),
+        (
+            "cispo",
+            {"clip_low_threshold": 0.75, "clip_high_threshold": 2},
+            [1.5, -2.25, 2, -3, 4, -6],
+            [-1.5, 2.25, -2, 3, -4, 6],
+        ),
         ("dro", {}, None, None),
         ("dro", {"beta": 0.5}, None, None),
     ],
