@@ -8,6 +8,7 @@ register_cuda_ci(
     est_time=3000,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
     disabled=(
         "FIXME: the base re-sync needs sglang-miles's in-place MXFP4 reload; today load_weights hits the "
         "experts repacked by Mxfp4MoEMethod.process_weights_after_loading, which carry no weight_loader"
