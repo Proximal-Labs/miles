@@ -122,7 +122,7 @@ class TinkerService:
         model_seq_id = _validate_seq_id(payload["model_seq_id"], "model_seq_id")
         if (previous := session["models_by_seq"].get(model_seq_id)) is not None:
             request_id, model_id = previous
-            request_id = self.futures.retained_request_id(request_id, model_id, tenant)
+            request_id = self.futures.request_id_for_retry(request_id, model_id, tenant)
             session["models_by_seq"][model_seq_id] = (request_id, model_id)
             return request_id, model_id
         base_model = payload["base_model"]
@@ -235,7 +235,7 @@ class TinkerService:
 
         # retries must not accumulate gradients twice
         if seq_id in stream.request_id_by_seq:
-            request_id = self.futures.retained_request_id(stream.request_id_by_seq[seq_id], model_id, tenant)
+            request_id = self.futures.request_id_for_retry(stream.request_id_by_seq[seq_id], model_id, tenant)
             stream.request_id_by_seq[seq_id] = request_id
             return request_id
 
@@ -501,7 +501,7 @@ class TinkerService:
             seq_id = _validate_seq_id(payload["seq_id"], "seq_id")
             if (previous := sampling_session["samples_by_seq"].get(seq_id)) is not None:
                 request_id, sequence_ids = previous
-                request_id = self.futures.retained_request_id(request_id, model_path or "base", tenant)
+                request_id = self.futures.request_id_for_retry(request_id, model_path or "base", tenant)
                 sampling_session["samples_by_seq"][seq_id] = (request_id, sequence_ids)
                 return request_id, sequence_ids
         if payload.get("num_samples", 1) > self.config.max_samples_per_request:

@@ -66,7 +66,7 @@ class FutureStore:
             raise OwnershipError(f"request {request_id} does not belong to this tenant")
         return future
 
-    def retained_request_id(self, request_id: str, model_id: str, tenant: str) -> str:
+    def request_id_for_retry(self, request_id: str, model_id: str, tenant: str) -> str:
         if self.get(request_id, tenant) is not None:
             return request_id
         replacement = self.create(model_id, tenant)
