@@ -1,5 +1,4 @@
 import argparse
-import dataclasses
 
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import wrap_ipv6
@@ -216,27 +215,38 @@ def validate_args(args):
 
 _MILES_SERVER_ARG_DEFAULTS = {"enable_prefill_weight_versions": False}
 
+_MILES_OWNED_FALLBACKS_DEST = "miles_owned_server_arg_fallbacks"
 
-def _set_defaults_for_unsupported_server_args(parser) -> None:
-    field_names = _server_args_field_names()
+
+def _set_defaults_for_unsupported_server_args(parser: argparse.ArgumentParser) -> None:
+    registered = _parser_option_strings(parser)
+    fallbacks: list[str] = []
+
     for name, default in _MILES_SERVER_ARG_DEFAULTS.items():
-        if name in field_names:
+        flag = _server_arg_flag(name)
+        if flag in registered:
             continue
         assert default is False
-        parser.add_argument("--sglang-" + name.replace("_", "-"), action="store_true", default=default)
+        parser.add_argument(flag, action="store_true", default=default)
+        fallbacks.append(name)
+
+    parser.set_defaults(**{_MILES_OWNED_FALLBACKS_DEST: tuple(fallbacks)})
 
 
 def _assert_supported_server_args_are_requested(args) -> None:
-    field_names = _server_args_field_names()
-    for name in _MILES_SERVER_ARG_DEFAULTS:
-        if name in field_names or not getattr(args, f"sglang_{name}"):
+    for name in getattr(args, _MILES_OWNED_FALLBACKS_DEST):
+        if not getattr(args, f"sglang_{name}"):
             continue
-        flag = "--sglang-" + name.replace("_", "-")
+        flag = _server_arg_flag(name)
         raise ValueError(
             f"{flag} is set, but the installed sglang has no ServerArgs.{name}; "
             f"install an sglang that supports it or drop the flag"
         )
 
 
-def _server_args_field_names() -> set[str]:
-    return {field.name for field in dataclasses.fields(ServerArgs)}
+def _server_arg_flag(name: str) -> str:
+    return "--sglang-" + name.replace("_", "-")
+
+
+def _parser_option_strings(parser: argparse.ArgumentParser) -> set[str]:
+    return {option for action in parser._actions for option in action.option_strings}
