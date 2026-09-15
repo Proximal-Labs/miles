@@ -105,9 +105,16 @@ def run_worker(checkpoint_dir):
     for step in (1, 2, 3):
         apply_step(model, source, step)
     saved = snapshot(model, source)
-    masters = [param for child in source._inner.chained_optimizers for group in child.fp32_from_float16_groups for param in group]
+    masters = [
+        param
+        for child in source._inner.chained_optimizers
+        for group in child.fp32_from_float16_groups
+        for param in group
+    ]
     assert sum(param.numel() for param in masters) == 192, "DP=2 must own half of the slot's 384 parameters"
-    assert any(not torch.equal(param, param.bfloat16().float()) for param in masters), "warmup must create sub-BF16 precision"
+    assert any(
+        not torch.equal(param, param.bfloat16().float()) for param in masters
+    ), "warmup must create sub-BF16 precision"
     assert all(param.dtype == torch.float32 for param in masters)
     for child in source._inner.chained_optimizers:
         assert child.optimizer.state
@@ -159,6 +166,15 @@ if __name__ == "__main__":
     else:
         with tempfile.TemporaryDirectory(prefix="slot-checkpoint-", dir=options.checkpoint_root) as directory:
             subprocess.run(
-                [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=2", __file__, "--worker-dir", directory + "/checkpoint"],
+                [
+                    sys.executable,
+                    "-m",
+                    "torch.distributed.run",
+                    "--standalone",
+                    "--nproc_per_node=2",
+                    __file__,
+                    "--worker-dir",
+                    directory + "/checkpoint",
+                ],
                 check=True,
             )
