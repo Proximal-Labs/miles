@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import wrap_ipv6
@@ -163,6 +164,8 @@ def add_sglang_arguments(parser):
         inherit=True,
     )
 
+    _set_defaults_for_unsupported_server_args(parser)
+
     parser.add_argument(
         "--sglang-config",
         type=str,
@@ -183,6 +186,8 @@ def add_sglang_arguments(parser):
 
 
 def validate_args(args):
+    _assert_supported_server_args_are_requested(args)
+
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
     if args.true_on_policy_mode:
@@ -205,3 +210,31 @@ def validate_args(args):
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)
+
+
+# ====================== unsupported sglang server args ========================
+
+_MILES_SERVER_ARG_DEFAULTS = {"enable_prefill_weight_versions": False}
+
+
+def _set_defaults_for_unsupported_server_args(parser) -> None:
+    field_names = _server_args_field_names()
+    for name, default in _MILES_SERVER_ARG_DEFAULTS.items():
+        if name not in field_names:
+            parser.set_defaults(**{f"sglang_{name}": default})
+
+
+def _assert_supported_server_args_are_requested(args) -> None:
+    field_names = _server_args_field_names()
+    for name in _MILES_SERVER_ARG_DEFAULTS:
+        if name in field_names or not getattr(args, f"sglang_{name}"):
+            continue
+        flag = "--sglang-" + name.replace("_", "-")
+        raise ValueError(
+            f"{flag} is set, but the installed sglang has no ServerArgs.{name}; "
+            f"install an sglang that supports it or drop the flag"
+        )
+
+
+def _server_args_field_names() -> set[str]:
+    return {field.name for field in dataclasses.fields(ServerArgs)}

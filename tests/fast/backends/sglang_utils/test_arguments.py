@@ -9,6 +9,7 @@ pytest.importorskip("sglang")
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils import arguments as sglang_arguments
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 
 
@@ -65,3 +66,13 @@ class TestAllocatorOwnedServerArgs:
     def test_the_skipped_launch_gate_port_names_a_real_server_args_field(self):
         """A renamed upstream field would leave the skip entry stale and quietly re-expose the flag."""
         assert "gated_launch_port" in {field.name for field in dataclasses.fields(ServerArgs)}
+
+
+class TestUnsupportedServerArgs:
+    def test_prefill_weight_versions_defaults_to_false_when_sglang_lacks_the_field(self, monkeypatch):
+        """An sglang without ServerArgs.enable_prefill_weight_versions still parses the flag as False."""
+        monkeypatch.setattr(sglang_arguments, "_server_args_field_names", set)
+
+        args = _parse_sglang_args([])
+
+        assert args.sglang_enable_prefill_weight_versions is False
