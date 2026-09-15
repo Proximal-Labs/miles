@@ -20,6 +20,7 @@ from miles.tinker.server.app import build_app
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.hf_config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 async def serve(args):
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters (a count, or 'auto')"
     assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
+    checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
+    assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
+    vocab_size = load_hf_config(args.hf_checkpoint).vocab_size
     configure_logger(args, source=MainProcessIdentity())
 
     init_http_client(args)
@@ -48,8 +52,6 @@ async def serve(args):
     )
     await trainer.init()
 
-    checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
-    assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     dp_size = actor_world_size // (
@@ -68,6 +70,7 @@ async def serve(args):
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=checkpoint_root,
+        vocab_size=vocab_size,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
         trains_attn=bool(target_modules & {"q_proj", "k_proj", "v_proj", "o_proj"}),
@@ -93,6 +96,9 @@ async def serve(args):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+    await inference_controller.dispose()
+    await trainer.dispose()
 
 
 if __name__ == "__main__":
