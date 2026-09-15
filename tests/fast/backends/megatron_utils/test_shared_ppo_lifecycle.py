@@ -806,11 +806,14 @@ def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu
 
 @pytest.mark.parametrize("offload_train", [False, True])
 @pytest.mark.parametrize("connect_fails", [False, True])
+@pytest.mark.parametrize("colocate", [False, True])
 def test_connection_uses_safe_allocations_when_offloading(
-    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool, connect_fails: bool
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool, connect_fails: bool, colocate: bool
 ) -> None:
+    """Connection allocations use one non-nested safe region in either deployment layout."""
     worker = _weight_update_worker(actor_module, monkeypatch)
     worker.args.offload_train = offload_train
+    worker.args.colocate = colocate
     worker._asleep = offload_train
     inside_safe_region = False
 
