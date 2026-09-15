@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import suppress
+from pathlib import Path
 
 import pytest
 from tests.fast.tinker.harness import (
@@ -129,7 +130,8 @@ async def test_save_then_load_roundtrip_paths(service):
     assert (await await_settled(service, "tenant", load)).state == DONE
     weights_only = service.backend.named("load_slot")[-1]
     assert weights_only["load_optimizer"] is False
-    assert weights_only["ckpt_path"].endswith(f"{model_id}/weights/ckpt")
+    checkpoint = Path(service.config.checkpoint_root) / model_id / "weights" / "ckpt"
+    assert weights_only["ckpt_path"] == str(checkpoint.resolve())
 
 
 async def test_sampler_save_publishes_successive_versions(service):
