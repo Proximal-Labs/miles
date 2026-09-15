@@ -201,9 +201,13 @@ def _default_missing_entries_when_load_from_state_dict(
 ) -> None:
     for name, parameter in module.named_parameters(recurse=False):
         key = f"{prefix}{name}"
-        if key in state_dict:
+        if _is_companion_entry(state_dict.get(key), parameter):
             continue
         state_dict[key] = torch.zeros(tuple(parameter.shape), dtype=parameter.dtype, device=parameter.device)
+
+
+def _is_companion_entry(value: Any, parameter: torch.Tensor) -> bool:
+    return isinstance(value, torch.Tensor) and value.dtype == parameter.dtype
 
 
 def _resize_when_load_from_state_dict(
