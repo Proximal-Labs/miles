@@ -82,7 +82,8 @@ def build_app(service: TinkerService) -> FastAPI:
     async def session_heartbeat(request: Request):
         tenant = _tenant(request)
         payload = await request.json()
-        service.heartbeat(tenant, payload["session_id"])
+        if not service.heartbeat(tenant, payload["session_id"]):
+            return JSONResponse(status_code=410, content={"error": "unknown or expired session"})
         return {"type": "session_heartbeat"}
 
     @app.post("/api/v1/get_server_capabilities")

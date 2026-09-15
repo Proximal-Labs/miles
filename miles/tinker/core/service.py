@@ -112,10 +112,12 @@ class TinkerService:
             raise UserInputError(f"unknown session {session_id!r}; create a session first")
         return session
 
-    def heartbeat(self, tenant: str, session_id: str) -> None:
+    def heartbeat(self, tenant: str, session_id: str) -> bool:
         session = self.sessions.get(session_id)
-        if session is not None and session["tenant"] == tenant:
-            session["last_heartbeat"] = time.monotonic()
+        if session is None or session["tenant"] != tenant:
+            return False
+        session["last_heartbeat"] = time.monotonic()
+        return True
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
