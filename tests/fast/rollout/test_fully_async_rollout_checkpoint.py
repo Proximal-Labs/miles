@@ -191,6 +191,9 @@ async def test_an_incomplete_batch_stays_in_the_checkpoint(monkeypatch, tmp_path
     assert restored._output.state_dict() == []
 
 
+_DRAIN_WAKEUP_YIELDS = 100
+
+
 async def test_a_save_taken_as_the_drain_wakes_cannot_lose_the_batch(monkeypatch, tmp_path: Path) -> None:
     """A batch that has left the buffer has already reached the drain, so no save sees it nowhere."""
     args = _checkpoint_args(tmp_path)
@@ -202,8 +205,15 @@ async def test_a_save_taken_as_the_drain_wakes_cannot_lose_the_batch(monkeypatch
         assert not draining.done()
         group = make_group(5)
         await fn._output.put(DataBufferInput(prompt_group=group, group=group))
-        await asyncio.sleep(0)
-        fn.save(tmp_path)
+
+        for _ in range(_DRAIN_WAKEUP_YIELDS):
+            fn.save(tmp_path)
+            state = torch.load(tmp_path / "state.pt", weights_only=False)
+            assert state.running == []
+            assert bool(state.output) != draining.done()
+            if draining.done():
+                break
+            await asyncio.sleep(0)
 
         assert draining.done()
         output = await draining
@@ -212,8 +222,6 @@ async def test_a_save_taken_as_the_drain_wakes_cannot_lose_the_batch(monkeypatch
         fn._worker.cancel()
         await asyncio.gather(draining, fn._worker, return_exceptions=True)
 
-    state = torch.load(tmp_path / "state.pt", weights_only=False)
-    assert state.output == [] and state.running == []
     assert [sample.index for sample in output.samples[0]] == [50, 51]
 
 
