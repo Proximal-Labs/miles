@@ -240,10 +240,10 @@ class TestKvCacheNamespace:
         """The producer follows the rollout id of the call in flight, never a counter of its own."""
         fn = make_fn(monkeypatch, make_args(), FakeDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=5))
+        await fn(train_input(rollout_id=5))
         assert fn._curr_kv_cache_namespace == "train:-:5"
 
-        await fn(RolloutFnTrainInput(rollout_id=6))
+        await fn(train_input(rollout_id=6))
         assert fn._curr_kv_cache_namespace == "train:-:6"
 
     @pytest.mark.parametrize("producer_namespace", [None, "train:-:1"])
@@ -279,7 +279,7 @@ class TestKvCacheNamespace:
         """With --no-namespaced-radix-cache the producer names no namespace at all."""
         fn = make_fn(monkeypatch, make_args(namespaced_radix_cache=False), FakeDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=5))
+        await fn(train_input(rollout_id=5))
 
         assert fn._curr_kv_cache_namespace is None
 
@@ -311,7 +311,7 @@ class TestKvCacheNamespace:
             marker = len(stamps)
             for _ in range(2 * fn.args.rollout_batch_size):
                 gate.put_nowait(None)
-            await fn(RolloutFnTrainInput(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
+            await fn(train_input(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
             await asyncio.sleep(0.05)
 
             assert set(stamps[marker:]) == {f"train:{trainer_model_id}:{rollout_id}"}
@@ -367,7 +367,7 @@ async def test_missing_reward_group_dropped_without_recycling(monkeypatch):
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source)
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
     assert data_source.recycled == []
     assert output.samples[0][0].group_index != 1
