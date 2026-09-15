@@ -33,7 +33,9 @@ def write_checkpoint_dir(
             if not overwrite and final_dir.exists():
                 raise FileExistsError(f"checkpoint {final_dir} already exists")
             if final_dir.exists() and not final_dir.is_symlink():
-                raise NotImplementedError(f"cannot overwrite a legacy checkpoint directory {final_dir}; save under a new name")
+                raise NotImplementedError(
+                    f"cannot overwrite a legacy checkpoint directory {final_dir}; save under a new name"
+                )
             # a crashed attempt may leave shards or an unpublished version link
             if tmp_dir.is_symlink():
                 tmp_dir.unlink()
