@@ -209,8 +209,18 @@ def _default_missing_entries_when_load_from_state_dict(
 def _resize_when_load_from_state_dict(
     module: torch.nn.Module, state_dict: dict[str, torch.Tensor], name: str, *, prefix: str
 ) -> None:
-    incoming = state_dict[f"{prefix}{name}"]
-    assert incoming.dtype == torch.int64 and incoming.ndim == 2 and incoming.shape[1] == _ROW_WIDTH
+    key = f"{prefix}{name}"
+    incoming = state_dict[key]
+    assert (
+        isinstance(incoming, torch.Tensor)
+        and incoming.dtype == torch.int64
+        and incoming.ndim == 2
+        and incoming.shape[1] == _ROW_WIDTH
+    ), (
+        f"Model companion entry {key} must be a (*, {_ROW_WIDTH}) int64 tensor, but got "
+        f"type={type(incoming).__name__} dtype={getattr(incoming, 'dtype', None)} "
+        f"shape={getattr(incoming, 'shape', None)}"
+    )
     module.get_parameter(name).resize_(incoming.shape)
 
 
