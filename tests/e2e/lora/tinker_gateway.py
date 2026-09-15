@@ -48,4 +48,3 @@ def running_gateway():
     finally:
         server.terminate()
         server.wait(timeout=120)
-
