@@ -9,6 +9,7 @@ import pydantic
 
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
+from tinker.types.sample_response import MASK_LOGPROB
 
 # materialized at the boundary so core and the executor can require every key
 ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
@@ -194,7 +195,11 @@ def render_result(result: dict) -> dict:
         if result.get("topk_prompt_logprobs") is not None:
             topk = result["topk_prompt_logprobs"]
             rendered["topk_prompt_logprobs"] = [
-                [(token_id, logprob) for token_id, logprob in zip(ids, probs, strict=True) if not math.isnan(logprob)]
+                [
+                    (token_id, logprob)
+                    for token_id, logprob in zip(ids, probs, strict=True)
+                    if (token_id, logprob) != (0, MASK_LOGPROB)
+                ]
                 or None
                 for ids, probs in zip(topk["token_ids"], topk["logprobs"], strict=True)
             ]
