@@ -354,7 +354,7 @@ class TinkerService:
         record = self.models[stream.model_id]
         payload = pending.command.payload
         if barrier.op == CommandOp.SAVE_STATE:
-            return [await self._save_state(record, pending, payload)]
+            return [await self._save_state(record, payload)]
         if barrier.op == CommandOp.LOAD_STATE:
             return [await self._load_state(record, payload)]
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
@@ -388,18 +388,17 @@ class TinkerService:
             self.futures.resolve(pending.command.request_id, outcome)
         stream.finish(pending)
 
-    async def _save_state(self, record: ModelRecord, pending, payload: dict) -> dict:
+    async def _save_state(self, record: ModelRecord, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
-        name = payload["name"] or f"checkpoint-{pending.command.seq_id:06d}"
+        name = payload["name"] or f"checkpoint-{payload['seq_id']:06d}"
         validate_checkpoint_segment(name)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "weights", name)
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
-        if (
-            failure := await self.backend.save_slot(
-                record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
-            )
-        ) is not None:
+        failure = await self.backend.save_slot(
+            record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
+        )
+        if failure is not None:
             return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
@@ -429,15 +428,14 @@ class TinkerService:
         path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "sampler_weights", version)
         if os.path.exists(path):
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
-        if (
-            failure := await self.backend.export_slot(
-                record.slot,
-                record.lora_rank,
-                record.lora_alpha,
-                path,
-                metadata=build_checkpoint_metadata(record, self.config),
-            )
-        ) is not None:
+        failure = await self.backend.export_slot(
+            record.slot,
+            record.lora_rank,
+            record.lora_alpha,
+            path,
+            metadata=build_checkpoint_metadata(record, self.config),
+        )
+        if failure is not None:
             return failure
         result = {
             "op": "save_weights_for_sampler",
