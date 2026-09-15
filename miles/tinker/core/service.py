@@ -7,7 +7,6 @@ import logging
 import os
 import time
 import uuid
-from contextlib import suppress
 
 from miles.tinker.core.future import Future, FutureStore
 from miles.tinker.core.planner import BarrierUnit, BatchUnit, Planner
@@ -117,6 +116,7 @@ class TinkerService:
         self.planner.add_stream(ModelStream(model_id, tenant, slot))
         task = asyncio.create_task(self._run_create_model(record))
         self._create_tasks.add(task)
+        task.add_done_callback(self._create_tasks.discard)
         task.add_done_callback(self._observe_background_task)
         session["models_by_seq"][model_seq_id] = (future.request_id, model_id)
         return future.request_id, model_id
@@ -139,7 +139,6 @@ class TinkerService:
                 )
 
     def _observe_background_task(self, task: asyncio.Task) -> None:
-        self._create_tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             if self._background_error is None:
                 self._background_error = error
@@ -288,9 +287,11 @@ class TinkerService:
                 await self._wake.wait()
                 self._wake.clear()
         finally:
-            sweep_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await sweep_task
+            tasks = [sweep_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
+            for task in tasks:
+                task.cancel()
+            # Cleanup failures must not replace the error that stopped the dispatcher.
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_batch(self, batch: BatchUnit) -> None:
         # slot-contiguous order; outputs come back aligned to it
