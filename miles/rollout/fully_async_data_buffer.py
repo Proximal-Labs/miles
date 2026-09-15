@@ -189,20 +189,33 @@ class DefaultDataBuffer(DataBuffer):
             self._current_version = current_version
         async with self._cond:
             while True:
-                while not self._buffer:
-                    await self._cond.wait()
-                entry = self._buffer.pop(0)
-                self._cond.notify_all()  # wake producers blocked on a full buffer
+                # filters at retrieving sample: staleness filter
+                self._drop_stale(current_version)
+                if self._buffer:
+                    break
+                await self._cond.wait()
 
-                staleness = group_staleness(entry.group, current_version)
-                if staleness is not None:
-                    if self._args.max_weight_staleness is not None and staleness > self._args.max_weight_staleness:
-                        logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
-                        self._metric_stale_groups += 1
-                        self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
-                        continue
-                    self._metric_consumed_staleness.append(staleness)
-                return entry
+            entry = self._buffer.pop(0)
+            self._cond.notify_all()  # wake producers blocked on a full buffer
+            if (staleness := group_staleness(entry.group, current_version)) is not None:
+                self._metric_consumed_staleness.append(staleness)
+            return entry
+
+    def _drop_stale(self, current_version: int | None) -> None:
+        limit = self._args.max_weight_staleness
+        kept: list[DataBufferInput] = []
+        for entry in self._buffer:
+            staleness = group_staleness(entry.group, current_version)
+            if limit is None or staleness is None or staleness <= limit:
+                kept.append(entry)
+            else:
+                logger.info(f"Filtered stale group ({staleness=} > max={limit})")
+                self._metric_stale_groups += 1
+                self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
+
+        if len(kept) != len(self._buffer):
+            self._buffer = kept
+            self._cond.notify_all()
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
