@@ -1,6 +1,6 @@
 """Sessions, models, futures, and ordered trainer dispatch.
 
-The backend lock serializes trainer calls across dispatch, model creation, and lease expiry."""
+The trainer lock serializes trainer calls across dispatch, model creation, and lease expiry."""
 
 import asyncio
 import hashlib
@@ -41,14 +41,14 @@ class TinkerService:
         self.sampling_sessions: dict[str, dict] = {}
         self.free_slots = set(range(config.n_slots))
         self._wake = asyncio.Event()
-        self._backend_lock = asyncio.Lock()
+        self._trainer_lock = asyncio.Lock()
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, tenant)
         self._create_tasks: set = set()
         self._arrival_counter = 0
         self._batch_counter = 0
         self._background_error: BaseException | None = None
-        # why each evicted model died, so later requests get the reason instead of "unknown model"
-        self._eviction_reasons: dict[str, str] = {}
+        # why each model closed, so later requests get the reason instead of "unknown model"
+        self._close_reasons: dict[str, str] = {}
 
     def create_session(self, tenant: str) -> str:
         session_id = f"session-{uuid.uuid4().hex}"
@@ -140,20 +140,20 @@ class TinkerService:
             self._wake.set()
 
     async def _run_create_model(self, record: ModelRecord) -> None:
-        async with self._backend_lock:
+        async with self._trainer_lock:
             if self.models.get(record.model_id) is not record:
                 return
             failure = await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha)
             record.slot_initialized = True
             if failure is not None:
-                await self._evict_model(record.model_id, failure["error"], "server")
+                await self._close_model(record.model_id, failure["error"], "server")
                 return
             self.futures.resolve(record.create_request_id, {"op": "create_model", "model_id": record.model_id})
 
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
         if record is None:
-            reason = self._eviction_reasons.get(model_id)
+            reason = self._close_reasons.get(model_id)
             if reason is not None:
                 raise UserInputError(f"model {model_id!r} was unloaded: {reason}")
             raise UserInputError(f"unknown model {model_id!r}")
@@ -269,11 +269,11 @@ class TinkerService:
                     raise self._background_error
                 # unit selection shares the critical section with execution, so
                 # lease expiry cannot reclaim a stream between the two
-                async with self._backend_lock:
+                async with self._trainer_lock:
                     rejections = self.planner.ready_rejections()
                     if rejections:
                         for stream, pending in rejections:
-                            await self._settle_request(
+                            await self._finish_request(
                                 stream, pending, {"error": pending.command.validation_error, "error_category": "user"}
                             )
                         continue
@@ -322,11 +322,11 @@ class TinkerService:
     async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:
         if batch.op.changes_training_state():
             for model_id in sorted({ref.stream.model_id for ref in batch.datums}):
-                await self._evict_model(model_id, _failed_stream_message(error), category)
+                await self._close_model(model_id, _failed_stream_message(error), category)
             return
         requests = {ref.request.command.request_id: (ref.stream, ref.request) for ref in batch.datums}
         for stream, pending in requests.values():
-            await self._settle_request(stream, pending, {"error": error, "error_category": category})
+            await self._finish_request(stream, pending, {"error": error, "error_category": category})
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
@@ -334,13 +334,13 @@ class TinkerService:
         except (UserInputError, OwnershipError) as error:
             outcomes = [{"error": str(error), "error_category": "user"} for _ in barrier.entries]
         for (stream, pending), outcome in zip(barrier.entries, outcomes, strict=True):
-            await self._settle_request(stream, pending, outcome)
+            await self._finish_request(stream, pending, outcome)
 
-    async def _settle_request(self, stream, pending, outcome: dict) -> None:
+    async def _finish_request(self, stream, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
             if pending.command.op.changes_training_state():
-                await self._evict_model(stream.model_id, _failed_stream_message(outcome["error"]), category)
+                await self._close_model(stream.model_id, _failed_stream_message(outcome["error"]), category)
                 return
             self.futures.fail(pending.command.request_id, outcome["error"], category)
         else:
@@ -624,17 +624,17 @@ class TinkerService:
             if not lease_expired(record.tenant):
                 continue
             logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
-            async with self._backend_lock:
-                await self._evict_model(model_id, "lease expired", "user")
+            async with self._trainer_lock:
+                await self._close_model(model_id, "lease expired", "user")
 
-    async def _evict_model(self, model_id: str, error: str, category: str) -> None:
-        """Free a model's slot and fail its pending requests; requires the backend lock. Idempotent."""
+    async def _close_model(self, model_id: str, error: str, category: str) -> None:
+        """Free a model's slot and fail its pending requests; requires the trainer lock. Idempotent."""
         record = self.models.pop(model_id, None)
         if record is None:
             return
-        self._eviction_reasons[model_id] = error
-        while len(self._eviction_reasons) > 4 * self.config.n_slots:
-            self._eviction_reasons.pop(next(iter(self._eviction_reasons)))
+        self._close_reasons[model_id] = error
+        while len(self._close_reasons) > 4 * self.config.n_slots:
+            self._close_reasons.pop(next(iter(self._close_reasons)))
         stream = self.planner.stream(model_id)
         self.planner.remove_stream(model_id)
         for request_id in [record.create_request_id, *stream.request_id_by_seq.values()]:
