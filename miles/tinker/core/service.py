@@ -508,6 +508,18 @@ class TinkerService:
         }
         return sampling_session_id
 
+    def get_sampler(self, tenant: str, sampling_session_id: str) -> dict:
+        session = self.sampling_sessions.get(sampling_session_id)
+        if session is None:
+            raise UserInputError(f"unknown sampling session {sampling_session_id!r}")
+        if session["tenant"] != tenant:
+            raise OwnershipError("sampling session does not belong to this tenant")
+        return {
+            "sampler_id": sampling_session_id,
+            "base_model": self.config.base_model,
+            "model_path": session["model_path"],
+        }
+
     def submit_sample(self, tenant: str, payload: dict) -> tuple[str, list[str]]:
         base_model = payload.get("base_model")
         if base_model is not None and base_model != self.config.base_model:

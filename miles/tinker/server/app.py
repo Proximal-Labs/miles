@@ -170,6 +170,10 @@ def build_app(service: TinkerService) -> FastAPI:
         sampling_session_id = service.create_sampling_session(_tenant(request), payload)
         return {"type": "create_sampling_session", "sampling_session_id": sampling_session_id}
 
+    @app.get("/api/v1/samplers/{sampling_session_id}")
+    async def get_sampler(sampling_session_id: str, request: Request):
+        return service.get_sampler(_tenant(request), sampling_session_id)
+
     @app.post("/api/v1/asample")
     async def asample(request: Request):
         payload = decode_sample_request(await request.json())
