@@ -807,7 +807,10 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             reload_process_groups()
 
-        needs_reconnect = self.weight_updater.reconnect_if_needed(info)
+        # Connection setup also allocates CUDA tensors (e.g. NCCL object
+        # collectives). Do not reuse unmapped, offloaded allocator blocks.
+        with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+            needs_reconnect = self.weight_updater.reconnect_if_needed(info)
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
