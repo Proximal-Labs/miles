@@ -793,3 +793,41 @@ async def test_a_read_only_batch_failure_preserves_queued_training(service):
     assert (await await_settled(service, "tenant", readonly)).state == FAILED
     assert (await await_settled(service, "tenant", backward)).state == DONE
     assert (await await_settled(service, "tenant", step)).state == DONE
+
+
+@pytest.mark.parametrize("shutdown", ["cancel", "failure"])
+async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, monkeypatch, shutdown):
+    gateway = make_service(tmp_path)
+    started = asyncio.Queue()
+    fail_sweep = asyncio.Event()
+
+    async def blocked_backend_call(*args):
+        started.put_nowait(asyncio.current_task())
+        await asyncio.Event().wait()
+
+    async def sweep_leases():
+        await fail_sweep.wait()
+        raise RuntimeError("lease sweeper failed")
+
+    monkeypatch.setattr(gateway.backend, "load_slot", blocked_backend_call)
+    monkeypatch.setattr(gateway.backend, "sample", blocked_backend_call)
+    monkeypatch.setattr(gateway, "sweep_leases", sweep_leases)
+    run_task = asyncio.create_task(gateway.run())
+    gateway.create_model("tenant", model_payload(gateway))
+    gateway.submit_sample("tenant", {"num_samples": 1})
+    tasks = [run_task, *gateway._create_tasks, *(task for task, _ in gateway._sample_tasks.values())]
+    try:
+        backend_tasks = [await asyncio.wait_for(started.get(), timeout=2) for _ in range(2)]
+        if shutdown == "cancel":
+            run_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(run_task, timeout=2)
+        else:
+            fail_sweep.set()
+            with pytest.raises(RuntimeError, match="lease sweeper failed"):
+                await asyncio.wait_for(run_task, timeout=2)
+        assert all(task.done() for task in backend_tasks), "backend tasks outlived the dispatcher"
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
