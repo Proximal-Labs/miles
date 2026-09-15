@@ -346,6 +346,8 @@ async def test_aborted_group_recycled(monkeypatch):
         calls += 1
         for sample in group:
             sample.status = Sample.Status.ABORTED if calls == 1 else Sample.Status.COMPLETED
+            if calls > 1:
+                sample.reward = 1
         return group
 
     fn = make_fn(monkeypatch, args, data_source, generate=abort_once)
