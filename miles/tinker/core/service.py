@@ -448,7 +448,9 @@ class TinkerService:
         }
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
-            result["sampling_session_id"] = self._new_sampling_session(record.tenant, record.session_id, result["path"])
+            result["sampling_session_id"] = self._new_sampling_session(
+                record.tenant, record.session_id, result["path"]
+            )
         return result
 
     def weights_info(self, tenant: str, tinker_path: str) -> dict:

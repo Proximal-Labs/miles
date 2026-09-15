@@ -43,12 +43,9 @@ def test_expiry_only_reclaims_the_owning_sessions_resources(tmp_path):
         implicit_sampler = exported["sampling_session_id"]
         assert service.sampling_sessions[implicit_sampler]["session_id"] == sessions[0]
         slots = [service.models[model].slot for model in models]
-        pending_train = [
-            service.submit("tenant", "optim_step", {"model_id": model, "seq_id": 1}) for model in models
-        ]
+        pending_train = [service.submit("tenant", "optim_step", {"model_id": model, "seq_id": 1}) for model in models]
         pending_sample = [
-            service.submit_sample("tenant", {"sampling_session_id": sampler, "seq_id": 1})[0]
-            for sampler in samplers
+            service.submit_sample("tenant", {"sampling_session_id": sampler, "seq_id": 1})[0] for sampler in samplers
         ]
         direct_sample = service.submit_sample("tenant", {})[0]
         tasks = [entry[0] for entry in service._sample_tasks.values()]
