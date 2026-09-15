@@ -38,7 +38,7 @@ def _args() -> ScriptArgs:
         rollout_max_concurrency=16,
         check_weight_update_equal=True,
         skip_saving=True,
-        extra_args="--ci-test --check-weight-update-allow-quant-error --ci-disable-logprobs-checker ",
+        extra_args="--ci-test --ci-disable-logprobs-checker ",
     )
 
 

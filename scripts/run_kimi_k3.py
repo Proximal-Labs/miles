@@ -476,8 +476,10 @@ def _train(args: ScriptArgs) -> None:
     )
     if args.is_4layer:
         misc_args += "--no-check-for-nan-in-loss-and-grad "
+    # the trainer has no vision tower, and the MXFP4 experts round-trip through BF16 on every sync
+    misc_args += "--check-weight-update-skip-list vision_tower. mm_projector. --check-weight-update-allow-quant-error "
     if args.check_weight_update_equal:
-        misc_args += "--check-weight-update-equal --check-weight-update-skip-list vision_tower. mm_projector. "
+        misc_args += "--check-weight-update-equal "
     if not args.skip_saving:
         misc_args += f"--save {args.save_dir}/{args.run_id} --save-interval 50 "
 
