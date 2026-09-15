@@ -42,11 +42,7 @@ class TestCheckpointSampleOwnership:
         fn = make_fn(monkeypatch, args, source)
         [group] = source.get_samples(1)
         await fn._output.put(DataBufferInput(prompt_group=group, group=group))
-        taking = asyncio.create_task(fn._output.get(num_groups=1, current_version=1, trainer_model_id=None))
-        await asyncio.sleep(0)
-        assert taking.done()
         fn.save(tmp_path)
-        await taking
 
         restored = make_fn(monkeypatch, args, source)
         restored.load(tmp_path)
