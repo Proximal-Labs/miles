@@ -21,7 +21,6 @@ from miles.tinker.core.types import (
     OwnershipError,
     UserInputError,
 )
-
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
     parse_tinker_path,
@@ -332,9 +331,7 @@ class TinkerService:
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
-                await self._finish_request(
-                    ref.stream, request, {"op": request.command.op, "outputs": request.outputs}
-                )
+                await self._finish_request(ref.stream, request, {"op": request.command.op, "outputs": request.outputs})
 
     async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:
         requests = {ref.request.command.request_id: (ref.stream, ref.request) for ref in batch.datums}
@@ -430,7 +427,11 @@ class TinkerService:
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
         if (
             failure := await self.backend.export_slot(
-                record.slot, record.lora_rank, record.lora_alpha, path, metadata=build_checkpoint_metadata(record, self.config)
+                record.slot,
+                record.lora_rank,
+                record.lora_alpha,
+                path,
+                metadata=build_checkpoint_metadata(record, self.config),
             )
         ) is not None:
             return failure
@@ -446,7 +447,9 @@ class TinkerService:
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
-        meta = read_checkpoint_metadata(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path)
+        meta = read_checkpoint_metadata(
+            resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path
+        )
         return {
             "base_model": meta["base_model"],
             "is_lora": True,
@@ -504,7 +507,11 @@ class TinkerService:
                 f"num_samples {payload['num_samples']} exceeds max_samples_per_request="
                 f"{self.config.max_samples_per_request}"
             )
-        lora_name, lora_path = resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model) if model_path else (None, None)
+        lora_name, lora_path = (
+            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
+            if model_path
+            else (None, None)
+        )
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
         task = asyncio.create_task(self._run_sample(future.request_id, payload, lora_name, lora_path))
@@ -583,7 +590,6 @@ def _validate_seq_id(value, name: str, minimum: int = 1) -> int:
     if not isinstance(value, int) or value < minimum:
         raise UserInputError(f"{name} must be an integer >= {minimum}, got {value!r}")
     return value
-
 
 
 def _failed_stream_message(error: str) -> str:

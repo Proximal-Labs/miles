@@ -83,8 +83,7 @@ def resolve_sampler_checkpoint(checkpoint_root: str, tenant: str, model_path: st
     meta = read_checkpoint_metadata(checkpoint_dir, tenant, model_path)
     if meta["base_model"] != base_model:
         raise UserInputError(
-            f"checkpoint {model_path!r} uses base_model={meta['base_model']!r}; "
-            f"this server serves {base_model!r}"
+            f"checkpoint {model_path!r} uses base_model={meta['base_model']!r}; this server serves {base_model!r}"
         )
     return f"{model_id}@{name}", checkpoint_dir
 
