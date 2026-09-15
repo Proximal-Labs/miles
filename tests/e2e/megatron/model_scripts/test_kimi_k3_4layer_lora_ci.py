@@ -40,10 +40,7 @@ def _args() -> ScriptArgs:
         rollout_max_concurrency=16,
         check_lora_weight_equal=True,
         skip_saving=True,
-        # --ci-test turns on the base weight checker, which re-pushes the frozen base every sync; the MXFP4
-        # engine cannot reload its repacked experts yet (see test_kimi_k3_4layer_ci.py), and the adapter
-        # is checked by --check-lora-weight-equal
-        extra_args="--ci-test --ci-disable-weight-update-checker --ci-disable-logprobs-checker ",
+        extra_args="--ci-test --ci-disable-logprobs-checker ",
     )
 
 
