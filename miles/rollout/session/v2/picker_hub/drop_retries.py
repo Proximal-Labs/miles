@@ -1,4 +1,4 @@
-"""The default pick hook: trim retry-superseded leaves."""
+"""Opt-in heuristic that treats earlier terminal siblings as superseded retries."""
 
 import logging
 
@@ -50,7 +50,7 @@ def drop_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sam
         ]
         if clock_regressions:
             logger.warning(
-                "Default picker detected wall-clock rollback for superseded leaf "
+                "Retry picker detected wall-clock rollback for superseded leaf "
                 "(response_id=%r, seq=%d, committed_at=%s); "
                 "later siblings=%s; continuing by seq",
                 descriptor["response_id"],
@@ -67,7 +67,7 @@ def drop_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sam
         )
         if nodes[leaf_id]["num_tokens"] > survivors_max:
             logger.warning(
-                "Default picker trimming superseded leaf (response_id=%r, seq=%d) "
+                "Retry picker trimming superseded leaf (response_id=%r, seq=%d) "
                 "even though it is longer than every later sibling's deepest leaf "
                 "(%d > %d tokens); continuing by seq; use a custom picker to keep it",
                 descriptor["response_id"],
@@ -75,7 +75,7 @@ def drop_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sam
                 nodes[leaf_id]["num_tokens"],
                 survivors_max,
             )
-        logger.info("Default picker trimmed superseded retry leaf seq=%d", leaf_id)
+        logger.info("Retry picker trimmed superseded retry leaf seq=%d", leaf_id)
     return sorted(
         kept,
         key=lambda sample: (

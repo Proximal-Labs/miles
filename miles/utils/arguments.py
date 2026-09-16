@@ -2558,13 +2558,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
-                default="miles.rollout.session.v2.picker_hub.drop_retries",
+                default="miles.rollout.session.v2.picker_hub.keep_all",
                 help="v2 only. Import path of the sample-pick hook for the "
                 "session samples op: fn(leaf_samples, session_metadata) -> "
                 "list[Sample], a pure selection over the per-leaf raw samples. "
                 "Runs synchronously inside the session server process; long CPU "
-                "work stalls every session on the instance. Default: the "
-                "temporal-supersession retry trim.",
+                "work stalls every session on the instance. Default: keep all leaves. "
+                "Use miles.rollout.session.v2.picker_hub.drop_retries to opt into sibling-order retry trimming.",
             )
             parser.add_argument(
                 "--session-sample-postprocessor-path",
