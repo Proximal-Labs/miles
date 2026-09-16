@@ -628,7 +628,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 
-        self.weight_updater.update_weights()
+        self.weight_updater.update_weights(weight_version=self.weight_updater.weight_version + 1)
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
