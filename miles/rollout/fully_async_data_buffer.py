@@ -109,6 +109,10 @@ class DataBuffer(ABC):
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         """Report the metrics of one policy since its previous call (its window counters reset here)."""
 
+    def held_prompt_groups(self) -> list[list[Sample]]:
+        """List the resubmittable prompt of every group still buffered, for shutdown accounting."""
+        return []
+
     def state_dict(self) -> Any:
         raise NotImplementedError(f"{type(self).__name__} must implement state_dict() for checkpointing")
 
@@ -243,6 +247,9 @@ class DefaultDataBuffer(DataBuffer):
             self._buffer = kept
             self._cond.notify_all()
 
+    def held_prompt_groups(self) -> list[list[Sample]]:
+        return [entry.prompt_group for entry in self._buffer]
+
     def state_dict(self) -> list[DataBufferInput]:
         return list(self._buffer)
 
@@ -305,6 +312,9 @@ class DefaultMultiDataBuffer(DataBuffer):
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         return self._inner_of(trainer_model_id).get_metrics(trainer_model_id=trainer_model_id)
+
+    def held_prompt_groups(self) -> list[list[Sample]]:
+        return [group for inner in self._inners.values() for group in inner.held_prompt_groups()]
 
     def state_dict(self) -> Any:
         logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
