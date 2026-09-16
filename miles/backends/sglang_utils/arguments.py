@@ -213,40 +213,17 @@ def validate_args(args):
 
 # ====================== unsupported sglang server args ========================
 
-_MILES_SERVER_ARG_DEFAULTS = {"enable_prefill_weight_versions": False}
-
-_MILES_OWNED_FALLBACKS_DEST = "miles_owned_server_arg_fallbacks"
-
-
 def _set_defaults_for_unsupported_server_args(parser: argparse.ArgumentParser) -> None:
-    registered = _parser_option_strings(parser)
-    fallbacks: list[str] = []
-
-    for name, default in _MILES_SERVER_ARG_DEFAULTS.items():
-        flag = _server_arg_flag(name)
-        if flag in registered:
-            continue
-        assert default is False
-        parser.add_argument(flag, action="store_true", default=default)
-        fallbacks.append(name)
-
-    parser.set_defaults(**{_MILES_OWNED_FALLBACKS_DEST: tuple(fallbacks)})
+    flag = "--sglang-enable-prefill-weight-versions"
+    supported = any(flag in action.option_strings for action in parser._actions)
+    parser.set_defaults(miles_supports_prefill_weight_versions=supported)
+    if not supported:
+        parser.add_argument(flag, action="store_true", default=False)
 
 
-def _assert_supported_server_args_are_requested(args) -> None:
-    for name in getattr(args, _MILES_OWNED_FALLBACKS_DEST):
-        if not getattr(args, f"sglang_{name}"):
-            continue
-        flag = _server_arg_flag(name)
+def _assert_supported_server_args_are_requested(args: argparse.Namespace) -> None:
+    if args.sglang_enable_prefill_weight_versions and not args.miles_supports_prefill_weight_versions:
         raise ValueError(
-            f"{flag} is set, but the installed sglang has no ServerArgs.{name}; "
-            f"install an sglang that supports it or drop the flag"
+            "--sglang-enable-prefill-weight-versions is set, but the installed sglang has no "
+            "ServerArgs.enable_prefill_weight_versions; install an sglang that supports it or drop the flag"
         )
-
-
-def _server_arg_flag(name: str) -> str:
-    return "--sglang-" + name.replace("_", "-")
-
-
-def _parser_option_strings(parser: argparse.ArgumentParser) -> set[str]:
-    return {option for action in parser._actions for option in action.option_strings}

@@ -97,7 +97,7 @@ class TestUnsupportedServerArgs:
         args = _parse_sglang_args([])
 
         assert args.sglang_enable_prefill_weight_versions is False
-        assert args.miles_owned_server_arg_fallbacks == ("enable_prefill_weight_versions",)
+        assert args.miles_supports_prefill_weight_versions is False
 
     def test_prefill_weight_versions_keeps_the_real_flag_when_sglang_has_the_field(self):
         """With a supporting sglang the real prefixed flag parses and no miles-owned fallback is registered."""
@@ -107,7 +107,7 @@ class TestUnsupportedServerArgs:
         args = _parse_sglang_args(["--sglang-enable-prefill-weight-versions"])
 
         assert args.sglang_enable_prefill_weight_versions is True
-        assert args.miles_owned_server_arg_fallbacks == ()
+        assert args.miles_supports_prefill_weight_versions is True
 
     def test_enabling_prefill_weight_versions_on_an_unsupported_sglang_is_an_error(self, monkeypatch):
         """The fallback flag only exists to keep parsing working, so requesting it must fail loudly."""
