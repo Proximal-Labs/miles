@@ -256,8 +256,6 @@ def test_group_staleness_includes_cached_prompt_weights(
 ) -> None:
     """Fresh decode weights cannot hide stale prompt KV, and fresh prompt KV cannot hide old decode weights."""
     sample = make_sample(weight_versions=(decode_version,))
-    sample.weight_versions[0].prefill_spans = [
-        WeightVersionSpan(version=prefill_version, abs_start=0, abs_end=1)
-    ]
+    sample.weight_versions[0].prefill_spans = [WeightVersionSpan(version=prefill_version, abs_start=0, abs_end=1)]
 
     assert group_staleness([[sample]], current_version=10) == expected
