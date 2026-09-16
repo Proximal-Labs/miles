@@ -37,6 +37,7 @@ def restore(args: Namespace) -> None:
 
     src = _restorable_snapshot_dir(args)
     if src is None:
+        dst.mkdir(parents=True, exist_ok=True)
         return
 
     shutil.copytree(src, dst)

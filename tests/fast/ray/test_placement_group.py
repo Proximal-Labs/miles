@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -731,56 +732,35 @@ class TestTakeOverTrainers:
 
         handle.get_deployment_identity.assert_not_awaited()
 
-    @staticmethod
-    def _recorded_discards(monkeypatch) -> list[Namespace]:
-        discarded: list[Namespace] = []
-        monkeypatch.setattr(placement_group_module.event_logger_checkpoint, "discard", discarded.append)
-        return discarded
-
-    async def test_discards_the_log_without_a_checkpoint(self, monkeypatch, tmp_path):
-        """Such a run trains its steps again, and one log holding each of them twice is not a run anyone can compare."""
+    @pytest.mark.parametrize("initialized", [False, True])
+    async def test_event_history_is_replaced_only_after_trainers_are_idle(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, initialized: bool
+    ) -> None:
+        """A retained trainer can finish logging its step before the old history is replaced."""
         self._patched(monkeypatch, events=[])
-        discarded = self._recorded_discards(monkeypatch)
-        args = self._args(requested_load=str(tmp_path / "ckpt"))
+        event_dir = tmp_path / "events"
+        event_dir.mkdir()
+        log_path = event_dir / "trainer.jsonl"
+        log_path.write_text("old step\n")
+        args = self._args(save_debug_event_data=str(event_dir), requested_load=None)
+        handle = _make_trainer_handle(initialized=initialized, deployment_identity=self._identity())
 
-        handle = _make_trainer_handle(initialized=True, deployment_identity=self._identity())
+        async def finish_step(*, timeout: float) -> None:
+            with log_path.open("a") as stream:
+                stream.write("finished step\n")
 
-        assert await take_over_trainers(args, handles={"alpha-actor": handle}) is True
+        handle.wait_idle = AsyncMock(side_effect=finish_step)
 
-        assert discarded == [args]
+        assert await take_over_trainers(args, handles={"alpha-actor": handle}) is initialized
 
-    async def test_keeps_the_log_with_a_checkpoint(self, monkeypatch, tmp_path):
-        """That run resumes from its checkpoint, and the snapshot beside it is what replaces the log."""
-        self._patched(monkeypatch, events=[])
-        discarded = self._recorded_discards(monkeypatch)
-        ckpt = tmp_path / "ckpt"
-        ckpt.mkdir()
-        (ckpt / "latest_checkpointed_iteration.txt").write_text("3")
-
-        assert (
-            await take_over_trainers(
-                self._args(requested_load=str(ckpt)),
-                handles={"alpha-actor": _make_trainer_handle(initialized=True, deployment_identity=self._identity())},
-            )
-            is True
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "trainer.jsonl").read_text() == (
+            "old step\nfinished step\n" if initialized else "old step\n"
         )
-
-        assert discarded == []
-
-    async def test_keeps_the_log_of_a_first_launch(self, monkeypatch, tmp_path):
-        """A launch that installed the trainers itself is the run's first, and its log is the one it just opened."""
-        self._patched(monkeypatch, events=[])
-        discarded = self._recorded_discards(monkeypatch)
-
-        assert (
-            await take_over_trainers(
-                self._args(requested_load=str(tmp_path / "ckpt")),
-                handles={"alpha-actor": _make_trainer_handle(deployment_identity=self._identity())},
-            )
-            is False
-        )
-
-        assert discarded == []
+        assert event_dir.is_dir() and list(event_dir.iterdir()) == []
+        with log_path.open("a") as stream:
+            stream.write("new step\n")
+        assert log_path.read_text() == "new step\n"
 
 
 class TestCreateTrainingModel:

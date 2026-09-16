@@ -93,7 +93,7 @@ class TestSnapshotRestoreRoundtrip:
 def _assert_moved_aside(tmp_path: Path, events: Path, *, stale: str) -> None:
     [trash] = list(tmp_path.glob(".trash_*"))
     assert (trash / "main.jsonl").read_text() == stale
-    assert not events.exists()
+    assert events.is_dir() and list(events.iterdir()) == []
 
 
 class TestEveryRunStartsFromACleanEventDir:
@@ -160,13 +160,13 @@ class TestEveryRunStartsFromACleanEventDir:
         _assert_moved_aside(tmp_path, events, stale="previous run\n")
 
     def test_restore_leaves_a_first_run_with_no_event_dir_alone(self, tmp_path: Path) -> None:
-        """Nothing to move aside and no snapshot means the logger creates the directory itself."""
+        """A fresh event directory is ready for loggers already initialized before takeover."""
         events = tmp_path / "events"
 
         event_logger_checkpoint.restore(_args(event_dir=events))
 
         assert list(tmp_path.glob(".trash_*")) == []
-        assert not events.exists()
+        assert events.is_dir() and list(events.iterdir()) == []
 
 
 class TestNoOpCases:
