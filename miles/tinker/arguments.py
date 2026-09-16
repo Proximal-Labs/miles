@@ -5,19 +5,23 @@ from miles.utils.hf_config import load_hf_config
 
 def add_tinker_arguments(parser):
     group = parser.add_argument_group("Tinker")
-    group.add_argument("--tinker-server-host", default="0.0.0.0")
-    group.add_argument("--tinker-server-port", type=int, default=10613)
-    group.add_argument(
-        "--tinker-base-model",
+
+    def add_argument(name, **kwargs):
+        return group.add_argument(f"--tinker-{name}", **kwargs)
+
+    add_argument("server-host", default="0.0.0.0")
+    add_argument("server-port", type=int, default=10613)
+    add_argument(
+        "base-model",
         help="Model name advertised by the gateway (default: --hf-checkpoint)",
     )
-    group.add_argument(
-        "--tinker-checkpoint-root",
+    add_argument(
+        "checkpoint-root",
         help="Directory for tinker:// checkpoints (default: <save>/tinker)",
     )
-    group.add_argument("--tinker-train-attn", action=argparse.BooleanOptionalAction, default=True)
-    group.add_argument("--tinker-train-mlp", action=argparse.BooleanOptionalAction, default=True)
-    group.add_argument("--tinker-train-unembed", action=argparse.BooleanOptionalAction, default=True)
+    add_argument("train-attn", action=argparse.BooleanOptionalAction, default=True)
+    add_argument("train-mlp", action=argparse.BooleanOptionalAction, default=True)
+    add_argument("train-unembed", action=argparse.BooleanOptionalAction, default=True)
     return parser
 
 
