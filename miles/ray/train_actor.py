@@ -51,7 +51,8 @@ class WeightUpdateOutput:
         assert len(failed_cell_ids) == len(
             set(failed_cell_ids)
         ), f"a cell failed under more than one trainer cell: {failed_cell_ids}"
-        return cls(weight_version=outputs[0].weight_version, failed_cell_ids=tuple(failed_cell_ids))
+        [weight_version] = weight_versions or {None}
+        return cls(weight_version=weight_version, failed_cell_ids=tuple(failed_cell_ids))
 
 
 def get_local_gpu_id():
