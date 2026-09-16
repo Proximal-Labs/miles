@@ -13,7 +13,7 @@ from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core import cell_view, pod_view
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys
-from miles.utils.workers.worker_spec import BaseSpec, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,20 @@ class KubernetesRunInfo(FrozenStrictBaseModel):
     namespace: str
     label_selector: str
     label_keys: CellLabelKeys
-    specs: dict[str, BaseSpec]
 
 
 class KubernetesWorkerProvider(BaseWorkerProvider):
-    def __init__(self, *, run: KubernetesRunInfo, pool_ids: list[str], resync_period: float | None) -> None:
+    def __init__(
+        self,
+        *,
+        run: KubernetesRunInfo,
+        pool_ids: list[str] | None,
+        resync_period: float | None,
+        category: str | None = None,
+    ) -> None:
         self._run = run
         self._pool_ids = pool_ids
+        self._category = category
         self._resync_period = resync_period
         self._loop: ReconcileLoop | None = None
 
@@ -81,7 +88,11 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
 
     def _cell_id_of_pod(self, pod: Pod) -> str | None:
         parsed = pod_view.parse_pod(pod, self._run.label_keys)
-        if parsed is None or parsed.pool_id not in self._pool_ids:
+        if parsed is None or (self._pool_ids is not None and parsed.pool_id not in self._pool_ids):
+            return None
+        if parsed.worker_metadata.gpus_per_cell == 0:
+            return None
+        if self._category is not None and parsed.worker_metadata.category != self._category:
             return None
         return parsed.cell_id
 
@@ -106,7 +117,9 @@ async def _kubernetes_pod_api() -> AsyncIterator[KubernetesAsyncioPodApi]:
         yield KubernetesAsyncioPodApi(core_v1_api=kubernetes_client.CoreV1Api(api_client))
 
 
-def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str]) -> str:
+def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str] | None) -> str:
+    if pool_ids is None:
+        return base_selector
     if not pool_ids:
         return f"{base_selector},{_NO_POD_CARRIES_THIS_LABEL}"
     wanted = ",".join(sorted(pool_ids))

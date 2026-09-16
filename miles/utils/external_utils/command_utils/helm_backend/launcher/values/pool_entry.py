@@ -24,6 +24,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
     sentinels_to_placeholders,
 )
 from miles.utils.workers.argv_utils import python_argv_prefix
+from miles.utils.workers.connection_config import StaticConnConfig, build_worker_annotations
 from miles.utils.workers.naming import compute_port_name
 from miles.utils.workers.serving.runtime_config import RuntimeConfig
 from miles.utils.workers.types import PlatformAccess
@@ -41,7 +42,6 @@ _BIND_HOST = "0.0.0.0"
 
 _SERVE_MODULE = "miles.utils.workers.serving.serve"
 _SUPERVISOR_MODULE = "miles.utils.workers.process_supervisor"
-_SPECS_FN = "miles.ray.specs.entrypoint.compute_specs_from_argv"
 
 
 def build_entry(
@@ -51,6 +51,7 @@ def build_entry(
     pairing_layout: PairingLayout | None = None,
     *,
     args: Any,
+    static_connections: StaticConnConfig,
 ) -> PoolEntry:
     assert spec.scheduling().num_cells > 0, (
         f"Spec '{spec.name}' asks for {spec.scheduling().num_cells} cells; a spec a run has turned off is dropped "
@@ -72,10 +73,13 @@ def build_entry(
         name=spec.name,
         object_name=naming.component_name(plan.release, spec.name),
         pool_id=spec.name,
-        command=_with_prepare_cmd(_command_of_spec(spec, context, plan=plan), spec, plan=plan),
+        command=_with_prepare_cmd(
+            _command_of_spec(spec, context, static_connections=static_connections), spec, plan=plan
+        ),
         ports=[PortEntry(name=compute_port_name(port.name), port=port.static_port) for port in spec.port_infos()],
         env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node) or None,
         meta=_meta_of_spec(spec) or None,
+        annotations=build_worker_annotations(spec=spec),
         service_account_name=_service_account_name(spec, plan=plan),
         replicas=spec.scheduling().num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
@@ -172,17 +176,19 @@ def _launch_context(
     )
 
 
-def _command_of_spec(spec: BaseSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
+def _command_of_spec(
+    spec: BaseSpec, context: LaunchCommandContext, *, static_connections: StaticConnConfig
+) -> list[str]:
     match spec:
         case BaseCommandSpec():
             return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
         case BaseServeSpec():
-            return _serve_command(spec, plan, args=context.args)
+            return _serve_command(spec, args=context.args, static_connections=static_connections)
         case _:
             raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
 
 
-def _serve_command(spec: BaseServeSpec, plan: LaunchPlan, *, args: Any) -> list[str]:
+def _serve_command(spec: BaseServeSpec, *, args: Any, static_connections: StaticConnConfig) -> list[str]:
     interpreter_prefix = python_argv_prefix()
     workers_per_pod = spec.scheduling().workers_per_pod()
     serve = [
@@ -190,13 +196,11 @@ def _serve_command(spec: BaseServeSpec, plan: LaunchPlan, *, args: Any) -> list[
         "-m",
         _SERVE_MODULE,
         "--config",
-        RuntimeConfig(worker={"kind": spec.worker_type, "args": args}).model_dump_json(),
-        "--specs",
-        _SPECS_FN,
-        "--pool-id",
-        spec.name,
-        "--",
-    ] + plan.worker_argv
+        RuntimeConfig(
+            worker={"kind": spec.worker_type, "args": args},
+            static_connections=static_connections,
+        ).model_dump_json(),
+    ]
     if workers_per_pod == 1:
         return serve
     return [

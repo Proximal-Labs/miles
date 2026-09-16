@@ -4,6 +4,7 @@ from pydantic import Field
 
 from miles.utils.args.runtime import InferenceControllerConfig, MultiLoraConfig, RolloutConfig, TrainerConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.connection_config import StaticConnConfig
 
 
 class RolloutWorkerConfig(FrozenStrictBaseModel):
@@ -31,3 +32,4 @@ class RuntimeConfig(FrozenStrictBaseModel):
         RolloutWorkerConfig | MultiLoraWorkerConfig | InferenceWorkerConfig | TrainerWorkerConfig,
         Field(discriminator="kind"),
     ]
+    static_connections: StaticConnConfig

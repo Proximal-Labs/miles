@@ -58,8 +58,6 @@ def split_worker_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 def parse_own_args(own_argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve one pool of a miles run")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--specs", required=True)
-    parser.add_argument("--pool-id", required=True)
     return parser.parse_args(own_argv)
 
 

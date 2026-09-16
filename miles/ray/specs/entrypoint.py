@@ -1,6 +1,4 @@
 from miles.ray.specs import inference, multi_lora, rollout, train
-from miles.utils.arguments import parse_args
-from miles.utils.workers.serving.utils import override_argv
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import BaseSpec
 
@@ -40,8 +38,3 @@ def _compute_all_specs(args) -> list[BaseSpec]:
         *train.specs_trainer_controller(args),
         *train.specs_trainer(args),
     ]
-
-
-def compute_specs_from_argv(argv: list[str]) -> list[BaseSpec]:
-    with override_argv(argv):
-        return compute_specs(parse_args())
