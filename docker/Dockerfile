@@ -260,7 +260,7 @@ ARG SGL_ROUTER_USE_WHEELS=1
 ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
 ARG SGL_ROUTER_BRANCH=main
 # The source and prebuilt artifacts must preserve lora_backfill_paths (sgl-router-for-miles#19).
-ARG SGL_ROUTER_COMMIT=650df7f1834047cda313bf1b8068dc73ffb8306e
+ARG SGL_ROUTER_COMMIT=b6342a3515e259bbd1eb4db728035a4efbe4fdf9
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eux; \
