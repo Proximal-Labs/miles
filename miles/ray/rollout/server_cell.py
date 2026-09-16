@@ -15,6 +15,7 @@ from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -105,6 +106,17 @@ class ServerCell:
                     workers_hash=self.meta.workers_hash,
                 )
 
+            case StateErrored():
+                return CellStatus(
+                    phase="Running",
+                    conditions=[
+                        CellCondition.allocated(TriState.TRUE),
+                        CellCondition.healthy(TriState.FALSE, reason="CellErrored"),
+                        CellCondition.serving(TriState.FALSE),
+                    ],
+                    workers_hash=self.meta.workers_hash,
+                )
+
             case StateDisposed():
                 return CellStatus(
                     phase="Suspended",
@@ -134,6 +146,10 @@ class ServerCell:
     @property
     def is_serving(self) -> bool:
         return isinstance(self._state, StateServing)
+
+    @property
+    def is_errored(self) -> bool:
+        return isinstance(self._state, StateErrored)
 
     @property
     def is_initializing_past_deadline(self) -> bool:
@@ -216,22 +232,26 @@ class ServerCell:
             bootstrap_port=addr_info.bootstrap_port,
         )
 
+    async def mark_errored(self) -> None:
+        if isinstance(self._state, (StateErrored, StateDisposed)):
+            return
+        await self._leave_service()
+        self._change_state(
+            "mark_errored", (StatePendingWeights, StateServing), StateErrored(addr_info=self._state.addr_info)
+        )
+
     async def dispose(self) -> None:
-        self._health_checker.stop()
-
-        match self._state:
-            case StateServing():
-                await self._unregister_from_router()
-            case StateUninitialized() | StateInitializing() | StatePendingWeights() | StateDisposed():
-                pass
-            case _:
-                raise ValueError(f"{self._state=}")
-
+        await self._leave_service()
         self._change_state(
             "dispose",
-            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateDisposed),
+            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateErrored, StateDisposed),
             StateDisposed(),
         )
+
+    async def _leave_service(self) -> None:
+        self._health_checker.stop()
+        if self.is_serving:
+            await self._unregister_from_router()
 
     async def _unregister_from_router(self) -> None:
         try:

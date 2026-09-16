@@ -276,7 +276,9 @@ class InferenceController:
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
-            cells = [cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.all_server_cells.values()]
+            cells = [
+                cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.normal_server_cells.values()
+            ]
             if self.args.colocate:
                 await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
             pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
