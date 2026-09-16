@@ -196,9 +196,7 @@ def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
 
 
-def _restored_megatron_training_state(
-    *, args: Namespace, checkpointing_context: dict[str, Any] | None
-) -> bool:
+def _restored_megatron_training_state(*, args: Namespace, checkpointing_context: dict[str, Any] | None) -> bool:
     if args.finetune:
         return False
 

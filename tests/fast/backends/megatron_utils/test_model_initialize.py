@@ -214,7 +214,11 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
 
 def _load_model_state_with(
-    *, tmp_path: Path, finetune: bool, iteration: int, lora_rank: int = 0,
+    *,
+    tmp_path: Path,
+    finetune: bool,
+    iteration: int,
+    lora_rank: int = 0,
     restored_trained_iteration: bool | None = None,
 ) -> "LoadCheckpointOutput":
     from miles.backends.megatron_utils.model import load_model_state
