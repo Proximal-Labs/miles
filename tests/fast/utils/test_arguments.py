@@ -488,7 +488,7 @@ class TestSampleOwnershipCheckArguments:
             debug_rollout_only=False,
             debug_disable_optimizer=False,
             enable_witness=False,
-            save_debug_event_data=None,
+            save_debug_event_data="/audit/events",
             run_uuid="0123456789abcdef",
         )
         values.update(overrides)
@@ -512,6 +512,26 @@ class TestSampleOwnershipCheckArguments:
 
         with pytest.raises(ValueError, match=reason):
             _resolve_sample_ownership_check(args)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"multi_lora": True},
+            {"debug_train_only": True},
+            {"debug_rollout_only": True},
+            {"debug_disable_optimizer": True},
+            {"num_critic_only_steps": 1},
+        ],
+    )
+    def test_unsupported_modes_silently_disable_the_default(self, overrides: dict) -> None:
+        """A run that never asked for checking is not blocked by a mode the checker cannot cover."""
+        args = self._checker_args(enable_sample_ownership_checker=None, ci_test=True, **overrides)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.enable_sample_ownership_checker is False
 
     def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Several actor lineages cannot share the single-policy current-witness checker."""
