@@ -116,10 +116,11 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return await self._drain(input)
 
     async def dispose(self) -> None:
-        if (worker := self._worker) is None or self._disposed:
+        if self._disposed:
             return
         self._disposed = True
-        await _end_worker(worker)
+        if self._worker is not None:
+            await _end_worker(self._worker)
         self._log_held_groups_as_dropped()
 
     def _log_held_groups_as_dropped(self) -> None:

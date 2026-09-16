@@ -276,6 +276,34 @@ async def test_a_group_blocked_in_put_is_restored_as_a_clean_retry(monkeypatch, 
 
 
 class TestDisposeRecordsHeldGroups:
+    async def test_dispose_records_restored_groups_without_starting_the_producer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Replaying saved executor outputs can finish a run without starting its restored producer."""
+        args = _checkpoint_args(tmp_path, enable_sample_ownership_checker=True)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        fn._retry_buffer.append(make_group(2))
+        buffered = make_group(3)
+        await fn._output.put(DataBufferInput(prompt_group=buffered, group=buffered))
+        fn.save(tmp_path)
+        restored = make_fn(monkeypatch, args, FakeDataSource())
+        restored.load(tmp_path)
+        set_event_logger(
+            EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="rollout_executor"))
+        )
+        try:
+            assert restored._worker is None
+
+            await restored.dispose()
+            await restored.dispose()
+
+            [event] = read_events(tmp_path / "events")
+            assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+            assert sorted(event.source_sample_indices) == [20, 21, 30, 31]
+            assert event.reason == "shutdown_in_flight"
+        finally:
+            set_event_logger(None)
+
     def _make_started_fn(self, monkeypatch) -> FullyAsyncRolloutFn:
         args = make_args(rollout_batch_size=1, enable_sample_ownership_checker=True)
         fn = make_fn(monkeypatch, args, FakeDataSource())
