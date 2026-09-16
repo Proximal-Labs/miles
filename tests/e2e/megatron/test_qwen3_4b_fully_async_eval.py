@@ -68,6 +68,7 @@ def execute(eval_mode: str):
 
     rollout_args = (
         "--fully-async "
+        "--max-weight-staleness 1 "
         "--prompt-data /root/datasets/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
