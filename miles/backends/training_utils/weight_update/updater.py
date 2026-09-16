@@ -112,6 +112,7 @@ class WeightUpdater:
             maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(cell_updaters, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base)
+        _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
