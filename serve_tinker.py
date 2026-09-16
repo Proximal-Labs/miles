@@ -27,7 +27,14 @@ async def serve(args):
     assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
-    vocab_size = load_hf_config(args.hf_checkpoint).vocab_size
+    hf_config = load_hf_config(args.hf_checkpoint)
+    max_tokens_per_datum = hf_config.max_position_embeddings
+    if args.max_tokens_per_gpu is not None:
+        # The trainer pads each packed microbatch to this multiple.
+        pad_size = args.tensor_model_parallel_size * args.data_pad_size_multiplier
+        trainer_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
+        max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
+    assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
     configure_logger(args, source=MainProcessIdentity())
 
     init_http_client(args)
@@ -53,7 +60,8 @@ async def serve(args):
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=checkpoint_root,
-        vocab_size=vocab_size,
+        vocab_size=hf_config.vocab_size,
+        max_tokens_per_datum=max_tokens_per_datum,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
         trains_attn=bool(target_modules & {"q_proj", "k_proj", "v_proj", "o_proj"}),
