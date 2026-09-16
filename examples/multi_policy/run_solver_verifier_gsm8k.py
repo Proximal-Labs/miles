@@ -158,6 +158,7 @@ def build_train_args(
 
     ci_args = (
         "--ci-test --no-enable-sample-ownership-checker "
+        "--max-weight-staleness 1 "
         "--ci-assert-prefill-lag-max 1 "
         f"--save-debug-event-data {events_dir} "
         f"--save-debug-rollout-data {compute_rollout_data_path_template(args)} "
