@@ -29,11 +29,9 @@ from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT_INFO,
     BaseCommandSpec,
     BaseServeSpec,
-    CommandWorkerSpec,
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
-    ServeWorkerSpec,
     WorkerCtorContext,
     WorkerLaunchContext,
 )
@@ -67,13 +65,13 @@ class RouterSpec(BaseCommandSpec):
 
     def port_infos(self) -> list[PortInfo]:
         return [
-            _deferred_compute_router_primary_port_info(self.router_port, model_idx=self.model_idx),
+            _compute_router_primary_port_info(self.router_port, model_idx=self.model_idx),
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
         ]
 
     @classmethod
     def create(cls, args: Any, *, model_idx: int, model_cfg: ModelConfig) -> Self:
-        return _deferred_compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
+        return _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
 
     def slice_config(self, args: Any) -> Any:
         return args
@@ -125,11 +123,11 @@ class SessionServerSpec(BaseCommandSpec):
         return {}
 
     def port_infos(self) -> list[PortInfo]:
-        return [_deferred_compute_session_server_primary_port_info(self.session_server_port)]
+        return [_compute_session_server_primary_port_info(self.session_server_port)]
 
     @classmethod
     def create(cls, args: Any) -> Self:
-        return _deferred_compute_spec_session_server(args)
+        return _compute_spec_session_server(args)
 
     def slice_config(self, args: Any) -> Any:
         return args
@@ -199,7 +197,7 @@ class InferenceEngineSpec(BaseCommandSpec):
         model_cfg: ModelConfig,
         server_group_config: ServerGroupConfig,
     ) -> Self:
-        return _deferred_compute_spec_inference_engine(
+        return _compute_spec_inference_engine(
             args,
             model_idx=model_idx,
             group_index=group_index,
@@ -337,7 +335,7 @@ class InferenceRegistrationReporterSpec(BaseServeSpec):
         )
 
 
-def _deferred_compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> RouterSpec:
+def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> RouterSpec:
     return RouterSpec(
         model_idx=model_idx,
         model_cfg=model_cfg,
@@ -351,13 +349,13 @@ def _deferred_compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) 
     )
 
 
-def _deferred_compute_router_primary_port_info(router_port: int | None, model_idx: int) -> PortInfo:
+def _compute_router_primary_port_info(router_port: int | None, model_idx: int) -> PortInfo:
     if router_port is None:
         return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
     return PortInfo(name="primary", static_port=router_port + model_idx)
 
 
-def _deferred_compute_spec_session_server(args: Any) -> SessionServerSpec:
+def _compute_spec_session_server(args: Any) -> SessionServerSpec:
     sglang_config = args.sglang  # TODO avoid resolve repeatedly
     router_model_idx = 0 if sglang_config.models else None
 
@@ -375,13 +373,13 @@ def _deferred_compute_spec_session_server(args: Any) -> SessionServerSpec:
     )
 
 
-def _deferred_compute_session_server_primary_port_info(session_server_port: int | None) -> PortInfo:
+def _compute_session_server_primary_port_info(session_server_port: int | None) -> PortInfo:
     if session_server_port is None:
         return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
     return PortInfo(name="primary", static_port=session_server_port, offset_by_cell=True)
 
 
-def _deferred_compute_spec_inference_engine(
+def _compute_spec_inference_engine(
     args,
     model_idx: int,
     group_index: int,
@@ -437,88 +435,6 @@ def _deferred_compute_spec_inference_engine(
     )
 
 
-def _deferred_compute_controller_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
-        return _deferred_compute_engine_provider(args, capability=capability)
-    return RegistrationHub(run_uuid=args.run_uuid)
-
-
-def _deferred_create_inference_registration_reporter(args, *, capability: BackendCapability) -> RegistrationReporter:
-    controller_provider = compute_inference_controller_provider(args, capability=capability)
-    return RegistrationReporter(
-        run_uuid=args.run_uuid,
-        reporter_id=args.deploy_instance_id,
-        hub_endpoint=controller_provider.get_handle(inference_controller_worker_name()),
-        worker_provider=_deferred_compute_engine_provider(args, capability=capability),
-    )
-
-
-def _deferred_compute_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    provider = load_function(args.custom_inference_engine_provider_path)
-    if provider is _deferred_backend_inference_engine_provider:
-        return provider(args, capability=capability)
-    return provider(args, capability=capability)
-
-
-def _deferred_backend_inference_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    return capability.dynamic_worker_provider(pool_ids=None, category=POOL_CATEGORY_INFERENCE_ENGINE)
-
-
-def _deferred_compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:
-    return [
-        capability.static_worker_provider(pool_id=compute_router_pool_id(model_idx))
-        for model_idx in range(len(args.sglang.models))
-    ]
-
-
-def spec_inference_controller(args) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
-        name=INFERENCE_CONTROLLER_POOL_ID,
-        platform_access=PlatformAccess.READ,
-        port_infos=[],
-        env_var=lambda _ctx: {},
-        scheduling=SchedulingSpec(
-            num_cells=1,
-            num_workers_per_cell=1,
-            num_gpus_per_worker=0,
-            num_cpus_per_worker=1,
-            pin_to_head=args.pin_rollout_manager_to_head,
-        ),
-        worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
-        ctor_kwargs=lambda ctx: dict(
-            args=args,
-            engine_provider=_compute_controller_engine_provider(args, capability=ctx.capability),
-            router_providers=compute_router_providers(args, capability=ctx.capability),
-        ),
-    )
-
-
-def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
-    if DeployComponent(args.deploy_component) is not DeployComponent.INFERENCE:
-        return []
-
-    return [
-        ServeWorkerSpec(
-            name=INFERENCE_REGISTRATION_REPORTER_POOL_ID,
-            deploy_component=DeployComponent.INFERENCE,
-            platform_access=PlatformAccess.READ,
-            port_infos=[],
-            env_var=lambda _ctx: {},
-            scheduling=SchedulingSpec(
-                num_cells=1,
-                num_workers_per_cell=1,
-                num_gpus_per_worker=0,
-                num_cpus_per_worker=1,
-                pin_to_head=args.pin_rollout_manager_to_head,
-            ),
-            worker_class=INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS,
-            ctor_kwargs=lambda ctx: dict(
-                args=args, reporter=_create_inference_registration_reporter(args, capability=ctx.capability)
-            ),
-        )
-    ]
-
-
 def _compute_controller_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
     if DeployComponent(args.deploy_component).deploys_own_inference_engines():
         return compute_engine_provider(args, capability=capability)
@@ -543,15 +459,22 @@ def compute_engine_provider(args, *, capability: BackendCapability) -> BaseWorke
 
 
 def backend_inference_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    return capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args))
+    return capability.dynamic_worker_provider(pool_ids=None, category=POOL_CATEGORY_INFERENCE_ENGINE)
 
 
 def compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:
-    config = args.sglang
     return [
         capability.static_worker_provider(pool_id=compute_router_pool_id(model_idx))
-        for model_idx in range(len(config.models))
+        for model_idx in range(len(args.sglang.models))
     ]
+
+
+def spec_inference_controller(args: Any) -> BaseServeSpec:
+    return InferenceControllerSpec.create(args)
+
+
+def specs_inference_registration_reporter(args: Any) -> list[BaseServeSpec]:
+    return InferenceRegistrationReporterSpec.create(args)
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
@@ -578,11 +501,11 @@ def inference_controller_worker_name() -> str:
     return compute_worker_name(pool_id=INFERENCE_CONTROLLER_POOL_ID)
 
 
-def specs_router(args) -> list[CommandWorkerSpec]:
-    config = args.sglang  # TODO avoid resolve repeatedly
+def specs_router(args) -> list[BaseCommandSpec]:
+    sglang_config = args.sglang  # TODO avoid resolve repeatedly
     return [
-        _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
-        for model_idx, model_cfg in enumerate(config.models)
+        RouterSpec.create(args, model_idx=model_idx, model_cfg=model_cfg)
+        for model_idx, model_cfg in enumerate(sglang_config.models)
     ]
 
 
@@ -594,98 +517,8 @@ def compute_router_worker_name(model_idx: int) -> str:
     return compute_worker_name(pool_id=compute_router_pool_id(model_idx))
 
 
-def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:
-    interpreter_prefix = python_argv_prefix()
-
-    def _compute_launch_command(ctx: LaunchCommandContext) -> str:
-        primary = ctx.self_addrs["primary"]
-
-        has_pd_disaggregation = model_cfg.has_pd_disaggregation or args.rollout_external_router_pd
-
-        if args.use_miles_router:
-            assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
-            router_config = compute_miles_router_config(
-                args, host=primary.host, port=primary.port, num_engines=model_cfg.num_server_cells
-            )
-            launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
-        else:
-            router_args = compute_sglang_router_args(
-                args,
-                host=resolve_ip(primary.host),
-                port=primary.port,
-                prometheus_port=ctx.self_addrs["prometheus"].port,
-                has_pd_disaggregation=has_pd_disaggregation,
-            )
-            logger.info(f"Launch router with args: {router_args}")
-            launch_argv = [
-                *interpreter_prefix,
-                "-m",
-                "sglang_router.launch_router",
-                *router_args_to_argv(router_args),
-            ]
-
-        return shlex.join(launch_argv)
-
-    return CommandWorkerSpec(
-        name=compute_router_pool_id(model_idx),
-        port_infos=[
-            _compute_router_primary_port_info(args, model_idx=model_idx),
-            PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
-        ],
-        env_var=lambda _ctx: {},
-        scheduling=SchedulingSpec.single(
-            num_gpus_per_worker=0,
-            # TODO: refactor the flag
-            pin_to_head=args.pin_rollout_manager_to_head,
-        ),
-        launch_command=_compute_launch_command,
-    )
-
-
-def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
-    if args.sglang_router_port is None:
-        return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
-    return PortInfo(name="primary", static_port=args.sglang_router_port + model_idx)
-
-
-def spec_session_server(args) -> CommandWorkerSpec:
-    config = args.sglang  # TODO avoid resolve repeatedly
-    interpreter_prefix = python_argv_prefix()
-
-    def _compute_launch_command(ctx: LaunchCommandContext) -> str:
-        (router_addrs,) = ctx.pool_addrs[compute_router_pool_id(0)]
-        config = compute_session_server_config(
-            args,
-            host=args.session_server_ip or ctx.self_addrs["primary"].host,
-            port=ctx.self_addrs["primary"].port,
-            # TODO: make the indexing it k8s native compatible
-            instance_id=compute_session_server_instance_id(args, ctx.cell_index),
-            backend_url=router_addrs["primary"].addr,
-        )
-        launch_argv = [*interpreter_prefix, "-m", "miles.rollout.session.server", *config_to_argv(config)]
-        return shlex.join(launch_argv)
-
-    return CommandWorkerSpec(
-        name=SESSION_SERVER_POOL_ID,
-        port_infos=[
-            _compute_session_server_primary_port_info(args),
-        ],
-        env_var=lambda _ctx: {},
-        scheduling=SchedulingSpec(
-            num_cells=(args.session_server_workers if args.use_session_server and config.models else 0),
-            num_workers_per_cell=1,
-            num_gpus_per_worker=0,
-            num_cpus_per_worker=0,
-            pin_to_head=True,
-        ),
-        launch_command=_compute_launch_command,
-    )
-
-
-def _compute_session_server_primary_port_info(args) -> PortInfo:
-    if args.session_server_port is None:
-        return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
-    return PortInfo(name="primary", static_port=args.session_server_port, offset_by_cell=True)
+def spec_session_server(args: Any) -> BaseCommandSpec:
+    return SessionServerSpec.create(args)
 
 
 def compute_session_server_instance_id(args, instance_index: int) -> str:
@@ -697,130 +530,35 @@ def compute_engine_pool_id(args, *, model_idx: int, group_index: int) -> str:
     return f"{ENGINE_POOL_ID_PREFIX}-{segment}-{model_idx}-{group_index}"
 
 
-def specs_inference_engine(args) -> list[CommandWorkerSpec]:
+def specs_inference_engine(args) -> list[BaseCommandSpec]:
     if args.rollout_external:
         return []
 
-    config = args.sglang  # TODO avoid resolve repeatedly
+    sglang_config = args.sglang  # TODO avoid resolve repeatedly
 
     return [
-        _compute_spec_inference_engine(
+        InferenceEngineSpec.create(
             args,
             model_idx=model_idx,
             group_index=group_index,
             model_cfg=model_cfg,
             server_group_config=server_group_config,
         )
-        for model_idx, model_cfg in enumerate(config.models)
+        for model_idx, model_cfg in enumerate(sglang_config.models)
         for group_index, server_group_config in enumerate(model_cfg.server_groups)
         if server_group_config.worker_type != WorkerType.PLACEHOLDER
     ]
 
 
 def compute_engine_pool_ids(args) -> list[str]:
-    return [spec.name for spec in specs_inference_engine(args)]
-
-
-def _compute_spec_inference_engine(
-    args,
-    model_idx: int,
-    group_index: int,
-    model_cfg: ModelConfig,
-    server_group_config: ServerGroupConfig,
-) -> CommandWorkerSpec:
-    num_workers_per_cell = max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node)
-    interpreter_prefix = python_argv_prefix()
-
-    def _compute_launch_command(ctx: LaunchCommandContext) -> str:
-        dist_init = ctx.self_addrs["dist_init"]
-        # TODO: only node 0's seed is used by sglang; node != 0 should get node 0's number
-        random_seed = (
-            args.seed
-            + server_group_config.engine_offset
-            + ctx.cell_index * num_workers_per_cell
-            + ctx.worker_in_cell_index
-        )
-        return compute_engine_launch_cmd(
-            args=args,
-            interpreter_prefix=interpreter_prefix,
-            # TODO: make the indexing it k8s native compatible
-            node_rank=ctx.worker_in_cell_index,
-            worker_type=server_group_config.worker_type,
-            base_gpu_id=ctx.local_gpu_ids[0],
-            sglang_overrides=server_group_config.overrides,
-            num_gpus_per_engine=server_group_config.num_gpus_per_engine,
-            dist_init_addr=f"{dist_init.host}:{dist_init.port}",
-            nccl_port=ctx.self_addrs["nccl"].port,
-            host=ctx.self_addrs["primary"].host,
-            port=ctx.self_addrs["primary"].port,
-            disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
-            engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
-            gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
-            random_seed=random_seed,
-        )
-
-    num_gpus_per_engine = server_group_config.num_gpus_per_engine
-    assert num_gpus_per_engine <= args.num_gpus_per_node or num_gpus_per_engine % args.num_gpus_per_node == 0, (
-        f"group '{server_group_config.worker_type.value}' wants {num_gpus_per_engine=} which neither fits in one node of "
-        f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
-    )
-
-    envs = compute_inference_engine_env_vars(args)
-    scheduling = SchedulingSpec(
-        num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
-        num_workers_per_cell=num_workers_per_cell,
-        # TODO: may need real num for k8s native mode
-        num_gpus_per_worker=0.2,
-        num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
-        num_gpus_per_node=args.num_gpus_per_node,
-        pg_name="rollout",
-        pg_slot_offset=server_group_config.gpu_offset,
-    )
-
-    num_workers_total = server_group_config.num_gpus // scheduling.num_gpu_slots_per_worker
-    assert num_workers_total % scheduling.num_workers_per_cell == 0, (
-        f"group '{server_group_config.worker_type.value}' has {num_workers_total=} which is not a whole number of "
-        f"{scheduling.num_workers_per_cell}-worker engines; the trailing engine would have no node to run its "
-        f"remaining ranks"
-    )
-
-    return CommandWorkerSpec(
-        name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
-        category=POOL_CATEGORY_INFERENCE_ENGINE,
-        deploy_component=DeployComponent.INFERENCE,
-        port_infos=[
-            PortInfo(name="primary", static_port=8000, allow_dynamic=True),
-            PortInfo(
-                name="dist_init",
-                static_port=9000,
-                mode="master",
-                allow_dynamic=True,
-                num_consecutive=30 + args.sglang.get_value("dp_size", group=server_group_config),
-            ),
-            PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
-            *(
-                [PortInfo(name="disaggregation_bootstrap", static_port=11000, allow_dynamic=True)]
-                if server_group_config.worker_type == WorkerType.PREFILL
-                else []
-            ),
-            PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
-            PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
-        ],
-        env_var=lambda _ctx: envs,
-        scheduling=scheduling,
-        launch_command=_compute_launch_command,
-        # TODO: reduce complexity around passing around configs later during arguments refactor
-        meta=lambda ctx: dict(
-            model_id=model_cfg.name,
-            worker_type=server_group_config.worker_type.value,
-            num_gpus_per_engine=server_group_config.num_gpus_per_engine,
-            gpu_offset=server_group_config.gpu_offset
-            + ctx.cell_index * scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
-            sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
-            needs_offload=server_group_config.needs_offload,
-            update_weights=model_cfg.update_weights,
-        ),
-    )
+    if args.rollout_external:
+        return []
+    return [
+        compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index)
+        for model_idx, model in enumerate(args.sglang.models)
+        for group_index, group in enumerate(model.server_groups)
+        if group.worker_type != WorkerType.PLACEHOLDER
+    ]
 
 
 def compute_inference_engine_env_vars(args) -> dict[str, str]:

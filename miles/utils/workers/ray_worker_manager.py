@@ -30,15 +30,15 @@ from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
-    BaseWorkerSpec,
-    CommandWorkerSpec,
+    BaseCommandSpec,
+    BaseServeSpec,
+    BaseSpec,
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
-    ServeWorkerSpec,
     WorkerCtorContext,
     WorkerLaunchContext,
-    WorkerMetaContext,
+    compute_spec_meta,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,9 +58,7 @@ class RayWorkerManager:
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(
-        args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
-    ):
+    def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
         ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
         return obj
@@ -70,12 +68,13 @@ class RayWorkerManager:
         return ray.get_actor(_ACTOR_NAME)
 
     async def init(
-        self, args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+        self, args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
     ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
         self.comm_backend = comm_backend
         self.pgs = pgs
+        self._configs = {spec.name: spec.slice_config(args) for spec in specs}
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
         self._membership_lock = asyncio.Lock()
@@ -130,11 +129,18 @@ class RayWorkerManager:
         cell = self._find_cell(cell_id)
         return [self._compute_worker_info(actor) for actor in (cell.actors if cell.actors is not None else [])]
 
-    def get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
+    def get_cell_infos(self, *, pool_ids: list[str] | None, category: str | None = None) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
+        if pool_ids is None:
+            pool_ids = [name for name, pool in self._pools.items() if pool.spec.scheduling().gpus_per_cell() > 0]
         unknown = set(pool_ids) - set(self._pools)
         assert not unknown, f"{unknown=} {sorted(self._pools)=}"
-        infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
+        infos = [
+            c.get_info()
+            for name in pool_ids
+            if category is None or self._pools[name].spec.category == category
+            for c in self._pools[name].cells
+        ]
         return {info.cell_id: info for info in infos}
 
     def get_actor_handle(self, worker_name: str, *, expected_generation: int) -> ray.actor.ActorHandle:
@@ -146,7 +152,7 @@ class RayWorkerManager:
         return actor.actor_handle
 
     def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
-        served_over_rpc = isinstance(actor.spec, ServeWorkerSpec) and self.comm_backend == WorkerCommBackend.RPC
+        served_over_rpc = isinstance(actor.spec, BaseServeSpec) and self.comm_backend == WorkerCommBackend.RPC
         return WorkerInfo(
             name=actor.name,
             generation=actor.generation,
@@ -171,11 +177,11 @@ class RayWorkerManager:
 
 @dataclass(kw_only=True)
 class _PoolManager:
-    spec: BaseWorkerSpec
+    spec: BaseSpec
     cells: list[_CellManager]
 
     @classmethod
-    def initial(cls, spec: BaseWorkerSpec, manager: RayWorkerManager) -> _PoolManager:
+    def initial(cls, spec: BaseSpec, manager: RayWorkerManager) -> _PoolManager:
         return cls(
             spec=spec,
             cells=[
@@ -185,21 +191,21 @@ class _PoolManager:
                     spec=spec,
                     actors=None,
                 )
-                for cell_index in range(spec.scheduling.num_cells)
+                for cell_index in range(spec.scheduling().num_cells)
             ],
         )
 
 
-SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
+SpecT = TypeVar("SpecT", bound=BaseSpec)
 
 
-def _actor_manager_cls(spec: BaseWorkerSpec, *, comm_backend: WorkerCommBackend) -> type[_BaseActorManager]:
+def _actor_manager_cls(spec: BaseSpec, *, comm_backend: WorkerCommBackend) -> type[_BaseActorManager]:
     match spec, comm_backend:
-        case CommandWorkerSpec(), _:
+        case BaseCommandSpec(), _:
             return _CommandActorManager
-        case ServeWorkerSpec(), WorkerCommBackend.RPC:
+        case BaseServeSpec(), WorkerCommBackend.RPC:
             return _ServeActorRpcCommManager
-        case ServeWorkerSpec(), WorkerCommBackend.RAY:
+        case BaseServeSpec(), WorkerCommBackend.RAY:
             return _ServeActorRayCommManager
     raise AssertionError(f"{spec.name} is neither served nor launched as a command")
 
@@ -216,7 +222,7 @@ class _CellManager(Generic[SpecT]):
     async def launch_actors(self):
         assert self.actors is None
         self.generation += 1
-        scheduling = self.spec.scheduling
+        scheduling = self.spec.scheduling()
         actor_manager_cls = _actor_manager_cls(self.spec, comm_backend=self.manager.comm_backend)
         self.actors = [
             actor_manager_cls(
@@ -289,7 +295,7 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
+            meta=compute_spec_meta(self.spec, cell_index=self.cell_index),
         )
 
     @property
@@ -332,7 +338,7 @@ class _BaseActorManager(Generic[SpecT]):
             self.actor_handle._get_node_ip.remote(),
             self.actor_handle._to_local_gpu_ids.remote(gpu_ids=self.gpu_ids),
         )
-        for port_info in self.spec.port_infos:
+        for port_info in self.spec.port_infos():
             if self.worker_in_cell_index != 0 and port_info.mode == "master":
                 continue
             if port_info.allow_dynamic:
@@ -356,6 +362,7 @@ class _BaseActorManager(Generic[SpecT]):
     @property
     def launch_context(self) -> WorkerLaunchContext:
         return WorkerLaunchContext(
+            args=self.manager._configs[self.spec.name],
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
             gpu_ids=self.gpu_ids,
@@ -366,7 +373,7 @@ class _BaseActorManager(Generic[SpecT]):
 
     def _create_actor(self, actor_class: type, **ctor_kwargs) -> ray.actor.ActorHandle:
         scheduling_strategy = None
-        if (pg_name := self.spec.scheduling.pg_name) is not None:
+        if (pg_name := self.spec.scheduling().pg_name) is not None:
             pg = self.manager.pgs[pg_name]
             scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg.pg,
@@ -378,11 +385,11 @@ class _BaseActorManager(Generic[SpecT]):
         remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
 
         return remote_class.options(
-            num_cpus=self.spec.scheduling.num_cpus_per_worker,
-            num_gpus=self.spec.scheduling.num_gpus_per_worker,
+            num_cpus=self.spec.scheduling().num_cpus_per_worker,
+            num_gpus=self.spec.scheduling().num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
             runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
-            **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
+            **(compute_ray_pin_head_options() if self.spec.scheduling().pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
     async def probe_is_dead(self) -> bool:
@@ -419,19 +426,19 @@ class _BaseActorManager(Generic[SpecT]):
 
     @property
     def gpu_ids(self) -> list[int]:
-        if (pg_name := self.spec.scheduling.pg_name) is None:
+        if (pg_name := self.spec.scheduling().pg_name) is None:
             return []
         pg = self.manager.pgs[pg_name]
         base_gpu_id = int(pg.pg_reordered_gpu_ids[self.gpu_slot_index])
-        return list(range(base_gpu_id, base_gpu_id + self.spec.scheduling.num_gpu_slots_per_worker))
+        return list(range(base_gpu_id, base_gpu_id + self.spec.scheduling().num_gpu_slots_per_worker))
 
     @property
     def master_mode_addrs(self) -> NamedHostAndPorts:
-        return {info.name: self.self_addrs[info.name] for info in self.spec.port_infos if info.mode == "master"}
+        return {info.name: self.self_addrs[info.name] for info in self.spec.port_infos() if info.mode == "master"}
 
 
 @dataclass
-class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
+class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(CommandActor)
 
@@ -456,7 +463,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
 
 @dataclass
-class _ServeActorRayCommManager(_BaseActorManager[ServeWorkerSpec]):
+class _ServeActorRayCommManager(_BaseActorManager[BaseServeSpec]):
     def _compute_remote_options(self) -> dict:
         groups = self.spec.concurrency_groups
         return {} if groups is None else dict(concurrency_groups=groups)
@@ -511,7 +518,7 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
 
 
 @dataclass
-class _ServeActorRpcCommManager(_BaseActorManager[ServeWorkerSpec]):
+class _ServeActorRpcCommManager(_BaseActorManager[BaseServeSpec]):
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(
             ServeActor,
@@ -551,6 +558,7 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
 def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
     return WorkerCtorContext(
+        args=launch_context.args,
         cell_index=launch_context.cell_index,
         worker_in_cell_index=launch_context.worker_in_cell_index,
         gpu_ids=launch_context.gpu_ids,

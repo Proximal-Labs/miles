@@ -78,42 +78,42 @@ class RunExitedError(SystemExit):
         self.exit_code = exit_code
 
 
-def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
-    run_id = config.run_id
+def execute_train(*, request: ExecuteTrainRequest, args: ExecuteTrainConfig) -> None:
+    run_id = args.run_id
     assert _RUN_ID_PATTERN.fullmatch(
         run_id
     ), f"run_id {run_id!r} names every object this run installs, so it has to match {_RUN_ID_PATTERN.pattern}"
 
-    namespace = config.namespace
+    namespace = args.namespace
     release = ReleaseName(
         run_id=run_id,
-        deploy_component=config.deploy_component,
-        deploy_instance_id=config.deploy_instance_id,
+        deploy_component=args.deploy_component,
+        deploy_instance_id=args.deploy_instance_id,
     ).serialize()
     installed_manifest = Helm.get_manifest(release, namespace)
-    run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
-    env = train_env_vars(request, {}, config=config)
+    run_uuid = _resolve_run_uuid(args, installed_manifest=installed_manifest, release=release)
+    env = train_env_vars(request, {}, args=args)
     pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
     deploy_component = DeployComponent(args.deploy_component)
-    assert (deploy_component, args.deploy_instance_id) == (config.deploy_component, config.deploy_instance_id), (
+    assert (deploy_component, args.deploy_instance_id) == (args.deploy_component, args.deploy_instance_id), (
         f"the run's pods are told {deploy_component.value}/{args.deploy_instance_id!r}, the release is named "
-        f"{config.deploy_component.value}/{config.deploy_instance_id!r}"
+        f"{args.deploy_component.value}/{args.deploy_instance_id!r}"
     )
     deploys_orchestration_script = deploy_component.deploys_orchestration_script()
 
     with override_env(env):
         specs = compute_specs(args)
     chart = chart_dir(repo_base_dir=repo_base_dir)
-    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
+    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(args.helm_values)), namespace=namespace)
     run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
 
-    if config.ci_run:
+    if args.ci_run:
         _uninstall_leftover_ci_releases(namespace, keep_run_id=run_id)
     Helm.build_dependencies(chart)
 
     orchestrator_command = ["python", request.train_script, *pod_argv] if deploys_orchestration_script else []
     hot_restart_plan = plan_hot_restart(
-        components=config.parsed_hot_restart,
+        components=args.parsed_hot_restart,
         deploy_component=deploy_component,
         release=release,
         installed_manifest=installed_manifest,
@@ -124,7 +124,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         else {}
     )
     values_path = RunFiles.new_values_file(run_directory=run_directory)
-    values_files: list[str | Path] = [*config.helm_values, values_path]
+    values_files: list[str | Path] = [*args.helm_values, values_path]
     record_path = RunFiles.new_record_file(run_directory=run_directory)
 
     def render_and_propose(state_file: Path | None) -> tuple[LaunchRecord, Manifest]:
@@ -151,7 +151,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
                 ),
             }
         )
-        _write_helm_values(values_path, build_values(specs, rendered).as_values())
+        _write_helm_values(values_path, build_values(specs, rendered, args=args).as_values())
         return computed, Helm.render_upgrade(
             release=release, namespace=namespace, chart=chart, values_files=values_files
         )
@@ -190,7 +190,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
                 )
             ),
             release=release,
-            skip_upgrade_check=config.skip_upgrade_check,
+            skip_upgrade_check=args.skip_upgrade_check,
             allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
         )
     if rebuilds_orchestrator:
@@ -206,7 +206,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         namespace=namespace,
         chart=chart,
         values_files=values_files,
-        ci_run=config.ci_run,
+        ci_run=args.ci_run,
     )
 
     if not deploys_orchestration_script:
@@ -274,12 +274,12 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         logger.info(farewell(namespace=namespace, release=release, workload=orchestrator_workload))
 
 
-def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifest | None, release: str) -> str:
-    if (given := config.run_uuid) is not None:
+def _resolve_run_uuid(args: ExecuteTrainConfig, *, installed_manifest: Manifest | None, release: str) -> str:
+    if (given := args.run_uuid) is not None:
         return validate_run_uuid(given)
 
-    assert not config.deploy_component.is_split(), (
-        f"--deploy-component {config.deploy_component.value} installs one part of a run whose other parts are "
+    assert not args.deploy_component.is_split(), (
+        f"--deploy-component {args.deploy_component.value} installs one part of a run whose other parts are "
         f"installed by other launches, and they are joined by nothing but the run uuid, so the layer that deploys "
         f"them all has to name it with --run-uuid"
     )

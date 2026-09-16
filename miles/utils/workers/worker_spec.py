@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import ConfigDict, model_validator
@@ -12,10 +11,6 @@ from miles.utils.workers.types import DeployComponent, PlatformAccess
 RPC_PORT_NAME = "rpc"
 MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
-
-
-def _port_info_name(port_info: "PortInfo | dict") -> str:
-    return port_info["name"] if isinstance(port_info, dict) else port_info.name
 
 
 class PortInfo(FrozenStrictBaseModel):
@@ -83,11 +78,6 @@ class SchedulingSpec(FrozenStrictBaseModel):
         )
 
 
-# TODO: improve meta computation logic later
-class WorkerMetaContext(FrozenStrictBaseModel):
-    cell_index: int
-
-
 class WorkerLaunchContext(FrozenStrictBaseModel):
     args: Any = None
     cell_index: int
@@ -99,27 +89,6 @@ class WorkerCtorContext(WorkerLaunchContext):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
     capability: BackendCapability
-
-
-SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
-
-
-class BaseWorkerSpec(FrozenStrictBaseModel):
-    name: str
-    category: str | None = None
-    port_infos: list[PortInfo]
-    env_var: Callable[[WorkerLaunchContext], dict[str, str]]
-    scheduling: SchedulingSpec
-    meta: SpecMetaFn | None = None
-    deploy_component: DeployComponent = DeployComponent.PRIMARY
-    platform_access: PlatformAccess = PlatformAccess.NONE
-
-    @model_validator(mode="after")
-    def _reject_selector_component(self) -> "BaseWorkerSpec":
-        assert (
-            self.deploy_component is not DeployComponent.ALL
-        ), f"pool {self.name} must name the one component it is deployed with, not the selector for all of them"
-        return self
 
 
 class HostAndPort(FrozenStrictBaseModel):
@@ -139,27 +108,6 @@ class LaunchCommandContext(WorkerLaunchContext):
     self_addrs: NamedHostAndPorts
     pool_addrs: dict[str, list[NamedHostAndPorts]]
     local_gpu_ids: list[int]
-
-
-class CommandWorkerSpec(BaseWorkerSpec):
-    launch_command: Callable[[LaunchCommandContext], str]
-
-
-class ServeWorkerSpec(BaseWorkerSpec):
-    worker_class: str
-    ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]]
-    concurrency_groups: dict[str, int] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _inject_rpc_port(cls, values: dict) -> dict:
-        if "port_infos" not in values:
-            return values
-
-        port_infos = list(values["port_infos"])
-        if all(_port_info_name(port_info) != RPC_PORT_NAME for port_info in port_infos):
-            port_infos.append(DEFAULT_RPC_PORT_INFO)
-        return {**values, "port_infos": port_infos}
 
 
 class BaseSpec(ABC):
@@ -187,6 +135,19 @@ class BaseSpec(ABC):
 class BaseCommandSpec(BaseSpec):
     @abstractmethod
     def launch_command(self, ctx: LaunchCommandContext) -> str: ...
+
+
+# TODO: improve meta computation logic later
+def compute_spec_meta(spec: BaseSpec, *, cell_index: int) -> dict[str, Any]:
+    values = spec.static_meta().copy()
+    include_cell_index = values.pop("include_cell_index", False)
+    gpu_offset_base = values.pop("gpu_offset_base", None)
+    gpu_offset_stride = values.pop("gpu_offset_stride_per_cell", 0)
+    if gpu_offset_base is not None:
+        values["gpu_offset"] = gpu_offset_base + cell_index * gpu_offset_stride
+    if include_cell_index:
+        values["cell_index"] = cell_index
+    return values
 
 
 class BaseServeSpec(BaseSpec):

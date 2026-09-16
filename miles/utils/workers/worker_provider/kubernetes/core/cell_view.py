@@ -12,10 +12,10 @@ from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
 from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
+    BaseServeSpec,
     HostAndPort,
     NamedHostAndPorts,
-    ServeWorkerSpec,
-    WorkerMetaContext,
+    compute_spec_meta,
 )
 
 if TYPE_CHECKING:
@@ -79,12 +79,12 @@ def _compute_worker_info(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo
         generation=worker.pod.restart_count,
         self_addrs=addrs_of_worker(worker, run=run),
         gpu_ids=list(worker.gpu_ids),
-        worker_class=spec.worker_class if isinstance(spec, ServeWorkerSpec) else None,
+        worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
     )
 
 
 def _workers_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> list[KubernetesWorkerInfo]:
-    workers_per_pod = run.specs[pod.pool_id].scheduling.workers_per_pod()
+    workers_per_pod = run.specs[pod.pool_id].scheduling().workers_per_pod()
     assert len(pod.gpu_ids) % workers_per_pod == 0, (
         f"pod {pod.name} was annotated with {len(pod.gpu_ids)} gpus for the {workers_per_pod} workers it serves, "
         f"so no worker owns an equal share of them"
@@ -108,7 +108,7 @@ def _workers_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> list[
 
 
 def _ports_of_pool(pool_id: str, *, run: KubernetesRunInfo) -> dict[str, int]:
-    return {port.name: port.static_port for port in run.specs[pool_id].port_infos}
+    return {port.name: port.static_port for port in run.specs[pool_id].port_infos()}
 
 
 def _host_of_pod(pod: pod_view.ParsedPod, *, namespace: str) -> str:
@@ -126,10 +126,7 @@ def _has_all_pods(pods: list[pod_view.ParsedPod]) -> bool:
 
 
 def _spec_meta_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> dict[str, Any]:
-    compute_meta = run.specs[pod.pool_id].meta
-    if compute_meta is None:
-        return {}
-    return dict(compute_meta(WorkerMetaContext(cell_index=pod.cell_index)))
+    return compute_spec_meta(run.specs[pod.pool_id], cell_index=pod.cell_index)
 
 
 def _pod_meta_of_cell(pods: list[pod_view.ParsedPod]) -> dict[str, str]:

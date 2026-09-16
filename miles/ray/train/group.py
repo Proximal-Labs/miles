@@ -7,7 +7,7 @@ from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils import object_store
@@ -55,6 +55,7 @@ class TrainerController:
         self,
         *,
         deployment_identity: DeploymentIdentity,
+        expected_num_cells: int,
         cell_provider: BaseWorkerProvider,
         cell_operations: BaseCellOperations,
         trainer_id: str,
@@ -64,6 +65,7 @@ class TrainerController:
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
         self._deployment_identity = deployment_identity
+        self._expected_num_cells = expected_num_cells
         self._trainer_id = trainer_id
         self._role = role
         self._with_ref = with_ref
@@ -88,10 +90,6 @@ class TrainerController:
     @property
     def expected_num_cells(self) -> int:
         return self._expected_num_cells
-
-    @property
-    def _expected_num_cells(self) -> int:
-        return compute_trainer_num_cells(self.args, role=self._role)
 
     @property
     def _cells(self) -> list[TrainerCell]:

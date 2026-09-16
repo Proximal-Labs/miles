@@ -5,7 +5,12 @@ import sys
 
 from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.env_vars import PLATFORM_IDENTITY_ENV_VARS
-from miles.utils.workers.serving.utils import compute_serve_worker_spec, parse_own_args, split_worker_argv
+from miles.utils.workers.serving.utils import (
+    compute_serve_worker_spec,
+    compute_worker_config,
+    parse_own_args,
+    split_worker_argv,
+)
 from miles.utils.workers.serving.worker_identity import read_worker_identity
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
@@ -18,9 +23,10 @@ def main() -> None:
     _log(f"start own_argv={own_argv} worker_argv={worker_argv}")
 
     spec = compute_serve_worker_spec(specs_fn=args.specs, pool_id=args.pool_id, worker_argv=worker_argv)
-    identity = read_worker_identity(scheduling=spec.scheduling, environ=os.environ)
+    identity = read_worker_identity(scheduling=spec.scheduling(), environ=os.environ)
     env_vars = spec.env_var(
         WorkerLaunchContext(
+            args=compute_worker_config(spec=spec, worker_argv=worker_argv),
             cell_index=identity.cell_index,
             worker_in_cell_index=identity.worker_in_cell_index,
             gpu_ids=identity.gpu_ids,
