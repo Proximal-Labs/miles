@@ -44,6 +44,7 @@ from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
+from miles.utils.args.runtime import MilesConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -277,14 +278,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
 def parse_args(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
-) -> argparse.Namespace:
+) -> MilesConfig:
     args, _ = parse_args_and_get_parser(add_custom_arguments=add_custom_arguments)
     return args
 
 
 def parse_args_and_get_parser(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
-) -> tuple[argparse.Namespace, argparse.ArgumentParser]:
+) -> tuple[MilesConfig, argparse.ArgumentParser]:
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
 
@@ -361,7 +362,7 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    return args, parser
+    return MilesConfig.model_validate(vars(args)), parser
 
 
 def parse_args_train_backend():
