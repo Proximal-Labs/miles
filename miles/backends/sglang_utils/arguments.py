@@ -163,6 +163,8 @@ def add_sglang_arguments(parser):
         inherit=True,
     )
 
+    _set_defaults_for_unsupported_server_args(parser)
+
     parser.add_argument(
         "--sglang-config",
         type=str,
@@ -183,6 +185,8 @@ def add_sglang_arguments(parser):
 
 
 def validate_args(args):
+    _assert_supported_server_args_are_requested(args)
+
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
     if args.true_on_policy_mode:
@@ -205,3 +209,22 @@ def validate_args(args):
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)
+
+
+# ====================== unsupported sglang server args ========================
+
+
+def _set_defaults_for_unsupported_server_args(parser: argparse.ArgumentParser) -> None:
+    flag = "--sglang-enable-prefill-weight-versions"
+    supported = any(flag in action.option_strings for action in parser._actions)
+    parser.set_defaults(miles_supports_prefill_weight_versions=supported)
+    if not supported:
+        parser.add_argument(flag, action="store_true", default=False)
+
+
+def _assert_supported_server_args_are_requested(args: argparse.Namespace) -> None:
+    if args.sglang_enable_prefill_weight_versions and not args.miles_supports_prefill_weight_versions:
+        raise ValueError(
+            "--sglang-enable-prefill-weight-versions is set, but the installed sglang has no "
+            "ServerArgs.enable_prefill_weight_versions; install an sglang that supports it or drop the flag"
+        )
