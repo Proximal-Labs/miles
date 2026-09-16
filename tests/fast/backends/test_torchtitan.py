@@ -1,5 +1,6 @@
 import json
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +25,11 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        fp16=False,
+        lr_decay_style="constant",
+        lr_warmup_fraction=None,
+        lr_wsd_decay_iters=None,
+        lr_decay_iters=None,
     )
     return Namespace(**{**base, **overrides})
 
@@ -61,14 +67,95 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
+def _config_args(**overrides) -> Namespace:
+    base = dict(
+        optimizer="adam",
+        titan_model_name="qwen3",
+        titan_model_flavor="0.6B",
+        titan_seq_len=4096,
+        titan_data_parallel_replicate_degree=1,
+        titan_tensor_parallel_degree=1,
+        titan_pipeline_parallel_degree=1,
+        titan_context_parallel_degree=1,
+        titan_expert_parallel_degree=1,
+        global_batch_size=8,
+        micro_batch_size=1,
+        clip_grad=1.0,
+        lr=1e-6,
+        min_lr=0.0,
+        lr_warmup_iters=0,
+        lr_decay_style="constant",
+        adam_beta1=0.9,
+        adam_beta2=0.98,
+        adam_eps=1e-8,
+        weight_decay=0.1,
+        seed=1,
+        gradient_checkpointing=False,
+        save=None,
+        load=None,
+    )
+    return Namespace(**{**base, **overrides})
+
+
+def _checkpoint_dir(tmp_path, **config) -> str:
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3", **config}))
+    return str(tmp_path)
+
+
+@pytest.fixture
+def single_gpu_dims(monkeypatch):
+    from miles.backends.torchtitan_utils import config as titan_config
+
+    monkeypatch.setattr(
+        titan_config,
+        "parallel_dims_from_config",
+        lambda parallelism: SimpleNamespace(dp_replicate=1, dp_shard=1, pp_enabled=False),
+    )
+
+
 def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import build_trainer_config
 
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3", "tie_word_embeddings": True}))
-    args = Namespace(optimizer="adam", titan_pipeline_parallel_degree=2)
+    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=True)
     with pytest.raises(ValueError, match="pipeline"):
-        build_trainer_config(args, hf_assets_path=str(tmp_path), lr_total_steps=1, dump_subdir="x")
+        build_trainer_config(
+            _config_args(titan_pipeline_parallel_degree=2), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x"
+        )
+
+
+def test_a_tied_checkpoint_ties_the_torchtitan_model(tmp_path, single_gpu_dims):
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=True)
+    for name, flavor in (("qwen3", "0.6B"), ("qwen3_5", "4B")):
+        config = build_trainer_config(
+            _config_args(titan_model_name=name, titan_model_flavor=flavor),
+            hf_assets_path=hf,
+            lr_total_steps=1,
+            dump_subdir="x",
+        )
+        assert config.model_spec.model.enable_weight_tying is True
+
+
+def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, single_gpu_dims):
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=False)
+    constant = build_trainer_config(
+        _config_args(lr_warmup_iters=3), hf_assets_path=hf, lr_total_steps=10, dump_subdir="x"
+    )
+    assert (constant.lr_scheduler.warmup_steps, constant.lr_scheduler.min_lr_factor) == (3, 1.0)
+    cosine = build_trainer_config(
+        _config_args(lr_decay_style="cosine", lr=1e-6, min_lr=1e-7),
+        hf_assets_path=hf,
+        lr_total_steps=10,
+        dump_subdir="x",
+    )
+    assert cosine.lr_scheduler.decay_type == "cosine"
+    assert cosine.lr_scheduler.min_lr_factor == pytest.approx(0.1)
 
 
 class _Mesh:

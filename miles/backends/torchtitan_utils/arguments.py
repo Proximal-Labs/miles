@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import torch
+
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
 
 
@@ -9,12 +11,8 @@ class TorchtitanArgs(FSDPArgs):
     titan_model_name: str = "qwen3"
     titan_model_flavor: str = "0.6B"
 
-    # "flex" | "flex_flash" | "varlen"; the pinned torchtitan has no sdpa for language models
-
     # sizes torchtitan's rotary tables; must cover the longest prompt + response
     titan_seq_len: int = 4096
-
-    # keep only the first N transformer blocks (0 = all), for few-layer cutdown checkpoints
 
     # torchtitan's ParallelismConfig fields, same names, defaults and semantics
     titan_data_parallel_replicate_degree: int = 1
@@ -33,8 +31,6 @@ def load_torchtitan_args(extra_args_provider=None):
 
 
 def validate_torchtitan_args(args) -> None:
-    import torch
-
     torch_version = tuple(int(part) for part in torch.__version__.split(".")[:2])
     if torch_version < (2, 13):
         raise ValueError(f"the torchtitan backend needs torch>=2.13; this environment runs {torch.__version__}")
@@ -56,7 +52,17 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
-    if getattr(args, "ref_update_interval", None) is not None:
+    if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
+    if args.fp16:
+        raise ValueError("the torchtitan backend trains in bf16 mixed precision; --fp16 is not supported")
+    if args.lr_decay_style not in ("constant", "linear", "cosine"):
+        raise ValueError(
+            f"torchtitan's LR schedule has no {args.lr_decay_style!r} decay; use constant, linear or cosine"
+        )
+    if args.lr_warmup_fraction is not None or args.lr_wsd_decay_iters is not None or args.lr_decay_iters is not None:
+        raise ValueError(
+            "torchtitan's LR schedule takes --lr-warmup-iters only; fraction, WSD and decay-iters are unsupported"
+        )
     if args.save_debug_train_data is not None:
         raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")

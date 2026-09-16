@@ -21,7 +21,7 @@ class RLLossAdapter(BaseLoss):
         self.config = config
         self._batches: list | None = None
         self._closure: Callable | None = None
-        self._mode = "train"
+        self._is_training = True
         self._results: dict[int, object] = {}
         self._cp_mesh = None
         self._cp_balancer = "headtail"
@@ -42,8 +42,8 @@ class RLLossAdapter(BaseLoss):
             self._cp_restore[seq_len] = cached
         return cached
 
-    def arm(self, batches: list, closure: Callable, mode: str) -> None:
-        self._batches, self._closure, self._mode = batches, closure, mode
+    def arm(self, batches: list, closure: Callable, *, is_training: bool) -> None:
+        self._batches, self._closure, self._is_training = batches, closure, is_training
         self._results = {}
 
     def collect(self) -> list:
@@ -72,7 +72,7 @@ class RLLossAdapter(BaseLoss):
 
         index = int(target.flatten()[0])
         batch = self._batches[index]
-        if self._mode == "train":
+        if self._is_training:
             loss, log_dict = self._closure(pred, batch)
             self._results[index] = log_dict
             return loss, {}

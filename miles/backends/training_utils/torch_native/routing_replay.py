@@ -10,11 +10,11 @@ REPLAY_BACKWARD = "replay_backward"
 
 
 def uses_rollout_replay(args) -> bool:
-    return bool(getattr(args, "use_rollout_routing_replay", False))
+    return args.use_rollout_routing_replay
 
 
 def enable(args) -> bool:
-    routing_replay_manager.enabled = bool(getattr(args, "use_routing_replay", False))
+    routing_replay_manager.enabled = args.use_routing_replay
     routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
     routing_replay_manager.register_replay_list_func = register_replay_list_sequential
     return routing_replay_manager.enabled

@@ -1,7 +1,6 @@
 import logging
 from dataclasses import dataclass
 
-import torch
 from torchtitan.components import checkpoint as titan_checkpoint
 from torchtitan.components.dataloader import BaseDataLoader
 
@@ -37,21 +36,15 @@ class TiedCheckpointManager(titan_checkpoint.CheckpointManager):
 
         assert self.sd_adapter is not None
         hf_state = self.sd_adapter.to_hf(state_dict)
-        index_mapping = getattr(self.sd_adapter, "fqn_to_index_mapping", None)
-        if index_mapping:
-            available = set(index_mapping)
+        if self.sd_adapter.fqn_to_index_mapping:
+            available = set(self.sd_adapter.fqn_to_index_mapping)
             dropped = sorted(k for k in hf_state if k not in available)
             if dropped:
                 logger.info(
                     f"HF checkpoint lacks {len(dropped)} exported key(s) (e.g. {dropped[:3]}); "
                     "deferring to the adapter's from_hf reconstruction"
                 )
-                lm_head_skeleton = hf_state.get("lm_head.weight")
                 hf_state = {k: v for k, v in hf_state.items() if k in available}
-                if "lm_head.weight" in dropped and lm_head_skeleton is not None:
-                    embed_key = next((k for k in available if k.endswith("embed_tokens.weight")), None)
-                    if embed_key is not None and embed_key not in hf_state:
-                        hf_state[embed_key] = torch.empty_like(lm_head_skeleton)
 
         titan_checkpoint.dcp.load(
             hf_state,

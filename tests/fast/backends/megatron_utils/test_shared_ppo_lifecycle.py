@@ -672,13 +672,16 @@ class _RecordingWeightUpdater:
     def reconnect_if_needed(self, info: Any) -> bool:
         if not self.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
             return False
+        self.reconnect(info)
+        return True
+
+    def reconnect(self, info: Any) -> None:
         self.connect_rollout_engines(
             info.rollout_engines,
             engine_gpu_counts=info.engine_gpu_counts,
             engine_gpu_offsets=info.engine_gpu_offsets,
         )
         self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
-        return True
 
     def verify_engine_version(self, rollout_engines: list[Any]) -> None:
         pass

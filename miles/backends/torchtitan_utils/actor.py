@@ -5,14 +5,17 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
-from miles.backends.torchtitan_utils import routing_replay
+from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
+from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.torchtitan_utils.weight_bridge import TitanHfWeightIterator
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
+from miles.backends.training_utils.torch_native.routing_replay import enable as enable_routing_replay
 from miles.utils.context_utils import with_defer
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer
@@ -35,9 +38,11 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
-        indep_dp_info=None,
+        indep_dp_info: IndepDPInfo | None = None,
     ) -> int | None:  # type: ignore[override]
+        compat.install()
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        assert indep_dp_info is None or indep_dp_info.quorum_id == 0
 
         assert recv_ckpt_src_rank is None, "torchtitan backend does not support checkpoint healing"
         assert not with_opd_teacher, "torchtitan backend does not support on-policy distillation yet"
@@ -49,7 +54,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             dump_subdir="actor",
         )
 
-        routing_replay.enable(args)
+        enable_routing_replay(args)
 
         if args.debug_rollout_only:
             set_parallel_state(create_titan_parallel_state(parallel_dims_from_config(config.parallelism)))
@@ -66,7 +71,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         set_parallel_state(
             create_titan_parallel_state(self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage())
         )
-        routing_replay.install(self.trainer.model_parts)
+        install_routing_replay(self.trainer.model_parts)
 
         cp_mesh = self.trainer.parallel_dims.get_optional_mesh("cp")
         cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
@@ -85,7 +90,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         if args.offload_train:
             self.sleep()
         self.prof.on_init_end()
-        return int(getattr(args, "start_rollout_id", None) or start_rollout_id)
+        return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
 
     def step_runner(self):
         return self.trainer.step_runner()

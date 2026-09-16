@@ -288,16 +288,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         checkpoint.save(self, rollout_id)
 
     @contextmanager
-    def _active_model(self, model_tag: str):
-        """Yield the model that owns this pass.
-
-        The reference model is a separate FSDP2 module, so both cannot be
-        resident at once unless FSDP is already offloading: park the actor on the
-        host for the duration of the reference pass and bring it back after. The
-        barriers keep the ranks from racing each other's device moves.
-        """
-        if model_tag != "ref" or self.ref_model is None:
-            yield self.model
+    def ref_context(self):
+        if self.ref_model is None:
+            yield
             return
 
         if not self.fsdp_cpu_offload:
@@ -306,7 +299,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             dist.barrier(group=get_gloo_group())
         self.ref_model.eval()
         try:
-            yield self.ref_model
+            yield
         finally:
             torch.cuda.empty_cache()
             dist.barrier(group=get_gloo_group())
@@ -323,9 +316,6 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
     def step_runner(self) -> LinearStepRunner:
         return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
-
-    def ref_context(self):
-        return self._active_model("ref")
 
     def after_rollout(self, rollout_id: int, rollout_data) -> None:
         if self.args.save_debug_train_data is not None:
@@ -355,9 +345,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.optimizer.zero_grad(set_to_none=True)
 
     def _apply_step(self) -> StepMetrics:
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-        if hasattr(grad_norm, "full_tensor"):
-            grad_norm = grad_norm.full_tensor()
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad).full_tensor()
         self.optimizer.step()
         self.lr_scheduler.step()
         return StepMetrics(

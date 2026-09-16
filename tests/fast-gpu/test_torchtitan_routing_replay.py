@@ -24,6 +24,7 @@ import torch.nn as nn
 from torchtitan.models.common.moe import TokenChoiceTopKRouter
 
 from miles.backends.torchtitan_utils import routing_replay
+from miles.backends.training_utils.torch_native import routing_replay as shared_replay
 from miles.utils.replay_base import routing_replay_manager
 
 
@@ -66,14 +67,14 @@ class _Part(nn.Module):
 def part():
     routing_replay_manager.enabled = True
     routing_replay_manager.enable_check_replay_result = False
-    routing_replay_manager.stage = routing_replay.REPLAY_FORWARD
+    routing_replay_manager.stage = shared_replay.REPLAY_FORWARD
     routing_replay_manager.replays = []
     part = _Part()
     routing_replay.install([part])
     yield part
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
-    routing_replay_manager.stage = routing_replay.FALLTHROUGH
+    routing_replay_manager.stage = shared_replay.FALLTHROUGH
 
 
 def _queue_microbatches(count):
@@ -128,10 +129,10 @@ def test_the_bypass_ends_at_the_first_real_microbatch(part):
     with routing_replay.consumption_guard([part], 2):
         routing_replay.bypass_schedule_initialization([part])
         part(scores)
-        assert routing_replay_manager.stage == routing_replay.FALLTHROUGH
+        assert routing_replay_manager.stage == shared_replay.FALLTHROUGH
         for expected in range(2):
             assert part(scores).unique().tolist() == [expected]
-        assert routing_replay_manager.stage == routing_replay.REPLAY_FORWARD
+        assert routing_replay_manager.stage == shared_replay.REPLAY_FORWARD
 
 
 def test_a_recompute_pass_that_lost_its_place_is_reported(part):

@@ -1,13 +1,10 @@
 import importlib
 import logging
 import os
+import tempfile
 from argparse import Namespace
 
-from miles.backends.torchtitan_utils import compat
-
-compat.install()
-
-from torchtitan.components.optimizer import ParamGroupConfig  # noqa: E402
+from torchtitan.components.optimizer import ParamGroupConfig
 from torchtitan.distributed.activation_checkpoint import FullAC
 from torchtitan.trainer import Trainer
 
@@ -17,10 +14,6 @@ from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
 from miles.utils.hf_config import load_hf_config
 
 logger = logging.getLogger(__name__)
-
-
-def _checkpoint_ties_embeddings(hf_assets_path: str) -> bool:
-    return bool(getattr(load_hf_config(hf_assets_path), "tie_word_embeddings", False))
 
 
 def resolve_model_spec(args: Namespace):
@@ -42,7 +35,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     if args.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
 
-    ties_embeddings = _checkpoint_ties_embeddings(hf_assets_path)
+    ties_embeddings = load_hf_config(hf_assets_path).tie_word_embeddings
     if ties_embeddings and args.titan_pipeline_parallel_degree > 1:
         raise ValueError(
             "the checkpoint ties lm_head to the embedding, which torchtitan cannot do across pipeline "
@@ -52,12 +45,13 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
 
     config = Trainer.Config()
     config.model_spec = resolve_model_spec(args)
-    if ties_embeddings and hasattr(config.model_spec.model, "enable_weight_tying"):
+    if ties_embeddings:
         config.model_spec.model.enable_weight_tying = True
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
 
     config.hf_assets_path = hf_assets_path
-    config.dump_folder = os.path.join(args.save or "./outputs", "torchtitan", dump_subdir)
+    dump_root = args.load or args.save or tempfile.mkdtemp(prefix="miles-torchtitan-")
+    config.dump_folder = os.path.join(dump_root, "torchtitan", dump_subdir)
 
     config.parallelism.data_parallel_replicate_degree = args.titan_data_parallel_replicate_degree
     config.parallelism.tensor_parallel_degree = args.titan_tensor_parallel_degree
@@ -69,13 +63,16 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     dp_size = parallel_dims.dp_replicate * parallel_dims.dp_shard
 
     config.training.seq_len = args.titan_seq_len
+    if parallel_dims.pp_enabled and args.global_batch_size % (dp_size * args.micro_batch_size):
+        raise ValueError(
+            f"--global-batch-size {args.global_batch_size} must be a multiple of dp * micro_batch_size "
+            f"({dp_size} * {args.micro_batch_size}) under pipeline parallelism"
+        )
     config.training.local_batch_size = max(args.global_batch_size // dp_size // args.micro_batch_size, 1)
     config.training.global_batch_size = config.training.local_batch_size * dp_size
     config.training.steps = max(lr_total_steps, 1)
     config.training.max_norm = args.clip_grad
     config.training.disable_cuda_graphs = True
-    if args.fp16:
-        config.training.dtype = "float16"
 
     config.optimizer.param_groups = [
         ParamGroupConfig(
@@ -90,10 +87,17 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         )
     ]
 
+    config.lr_scheduler.warmup_steps = args.lr_warmup_iters
+    if args.lr_decay_style == "constant":
+        config.lr_scheduler.min_lr_factor = 1.0
+    else:
+        config.lr_scheduler.decay_type = args.lr_decay_style
+        config.lr_scheduler.min_lr_factor = args.min_lr / args.lr
+
     config.loss = RLLossAdapter.Config()
     config.dataloader = EmptyDataLoader.Config()
     config.checkpoint = TiedCheckpointManager.Config()
-    config.activation_checkpoint = FullAC.Config() if getattr(args, "gradient_checkpointing", False) else None
+    config.activation_checkpoint = FullAC.Config() if args.gradient_checkpointing else None
     config.debug.seed = args.seed
 
     config.checkpoint.enable = True

@@ -47,7 +47,7 @@ class WeightUpdater:
         args: Namespace,
         model: Sequence[torch.nn.Module],
         *,
-        weights_getter: Callable[[], Mapping[str, torch.Tensor]],
+        weights_getter: Callable[[], Mapping[str, torch.Tensor] | None],
         model_name: str,
         quantization_config: dict | None,
         iterator_factory: Callable,
@@ -99,6 +99,10 @@ class WeightUpdater:
     def reconnect_if_needed(self, info: "UpdatableEngines") -> bool:
         if not self.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
             return False
+        self.reconnect(info)
+        return True
+
+    def reconnect(self, info: "UpdatableEngines") -> None:
         self.connect_rollout_engines(
             info.rollout_engines,
             engine_gpu_counts=info.engine_gpu_counts,
@@ -106,7 +110,6 @@ class WeightUpdater:
         )
         self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
         dist.barrier(group=get_gloo_group())
-        return True
 
     def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient]) -> None:
         if not rollout_engines or self.weight_version == 0:

@@ -140,7 +140,9 @@ def test_the_iterator_streams_params_without_a_transform_unchanged():
     )
     iterator = object.__new__(hf_weight_iterator.FSDPHfWeightIterator)
     iterator.model = model
-    with patch.object(hf_weight_iterator, "gather_full_param", lambda t: t):
+    iterator.args = SimpleNamespace(update_weight_buffer_size=1 << 30)
+    iterator._sync_dtypes = {}
+    with patch.object(hf_weight_iterator, "gather_full_param", lambda t, async_op=False: t):
         units = list(iterator._iter_hf_param_units(None, materialize=True))
     assert [[name for name, _ in unit] for unit in units] == [
         ["model.embed_tokens.weight"],

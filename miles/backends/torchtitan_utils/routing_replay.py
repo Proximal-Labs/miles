@@ -10,16 +10,9 @@ from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.torch_native.routing_replay import (
     FALLTHROUGH,
-    RECORD,
     REPLAY_BACKWARD,
     REPLAY_FORWARD,
-    enable,
-    fill,
-    log_prob_stage,
-    reset,
-    rewind,
     stage,
-    uses_rollout_replay,
 )
 from miles.utils.replay_base import routing_replay_manager
 
@@ -186,19 +179,3 @@ def _bracket_real_forward(part: nn.Module) -> None:
         return inner(*args, **kwargs)
 
     part.forward = forward
-
-
-__all__ = [
-    "FALLTHROUGH",
-    "RECORD",
-    "REPLAY_BACKWARD",
-    "REPLAY_FORWARD",
-    "enable",
-    "fill",
-    "install",
-    "log_prob_stage",
-    "reset",
-    "rewind",
-    "stage",
-    "uses_rollout_replay",
-]

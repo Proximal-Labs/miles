@@ -78,9 +78,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
     def train_parallel_config(self) -> dict:
         return {"dp_size": get_parallel_state().intra_dp.size}
 
-    def _get_parallel_config(self) -> dict:
-        return self.train_parallel_config
-
     def _build_weight_updater(self, model, iterator_factory: Callable) -> WeightUpdater:
         model_name = self.args.model_name
         if model_name is None:
@@ -147,10 +144,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
     def _train_core(self, rollout_id: int, rollout_data: dict) -> None:
-        replay = routing_replay
         data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
-        replay.fill(
+        routing_replay.fill(
             self.args,
             self.model_parts,
             data_iterators,
@@ -162,18 +158,18 @@ class TorchNativeTrainRayActor(TrainRayActor):
         runner = self.step_runner()
 
         if self.ref_runner is not None:
-            with replay.stage(replay.FALLTHROUGH), self.ref_context():
+            with routing_replay.stage(routing_replay.FALLTHROUGH), self.ref_context():
                 rollout_data.update(self._log_probs(self.ref_runner, data_iterator, num_microbatches, "ref_"))
-        with replay.stage(replay.log_prob_stage(self.args)):
+        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
             rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
-        replay.rewind()
+        routing_replay.rewind()
 
         compute_advantages_and_returns(self.args, rollout_data)
         log_rollout_data(rollout_id, self.args, rollout_data)
 
-        with replay.stage(replay.REPLAY_BACKWARD), timer("actor_train"):
+        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
-        replay.reset()
+        routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
         self.after_rollout(rollout_id, rollout_data)

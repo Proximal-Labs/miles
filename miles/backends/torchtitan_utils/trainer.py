@@ -4,6 +4,8 @@ from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
+from torch.distributed.pipelining.schedules import PipelineScheduleSingle
+from torch.distributed.tensor import DTensor
 from torchtitan.distributed import utils as titan_dist_utils
 from torchtitan.distributed.context_parallel import cp_shard
 from torchtitan.trainer import Trainer
@@ -97,23 +99,17 @@ class TitanTrainer(Trainer):
 
     def _pipeline_will_infer_metadata(self, *, has_backward: bool) -> bool:
         schedule = self.pp_schedule
-        for prefix in ("_stage", "_stages"):
-            forward_attr = f"{prefix}_forward_initialized"
-            backward_attr = f"{prefix}_backward_initialized"
-            if hasattr(schedule, forward_attr) and hasattr(schedule, backward_attr):
-                break
+        if isinstance(schedule, PipelineScheduleSingle):
+            forward_initialized = schedule._stage_forward_initialized
+            backward_initialized = schedule._stage_backward_initialized
         else:
-            raise RuntimeError(
-                f"{type(schedule).__name__} exposes no forward/backward initialization state; "
-                "the pipeline schedule's metadata-inference forward can no longer be anticipated"
-            )
-        if not getattr(schedule, forward_attr):
-            return True
-        return has_backward != getattr(schedule, backward_attr)
+            forward_initialized = schedule._stages_forward_initialized
+            backward_initialized = schedule._stages_backward_initialized
+        return not forward_initialized or has_backward != backward_initialized
 
     def run_forward_backward(self, batches, loss_closure: Callable) -> list[dict]:
         batches = list(batches)
-        self.loss_fn.arm(batches, loss_closure, "train")
+        self.loss_fn.arm(batches, loss_closure, is_training=True)
         input_dicts, labels = self._microbatch_inputs(batches)
         ones = torch.ones((), device=self.device)
         with routing_replay.consumption_guard(self.model_parts, len(batches)):
@@ -127,7 +123,7 @@ class TitanTrainer(Trainer):
 
     def run_forward(self, batches, compute: Callable) -> list:
         batches = list(batches)
-        self.loss_fn.arm(batches, compute, "eval")
+        self.loss_fn.arm(batches, compute, is_training=False)
         input_dicts, labels = self._microbatch_inputs(batches)
         with routing_replay.consumption_guard(self.model_parts, len(batches)):
             if self.parallel_dims.pp_enabled:
@@ -165,7 +161,7 @@ class TitanTrainer(Trainer):
         self.optimizers.step()
         self.lr_schedulers.step()
         self.step += 1
-        if hasattr(grad_norm, "full_tensor"):
+        if isinstance(grad_norm, DTensor):
             grad_norm = grad_norm.full_tensor()
         return StepMetrics(grad_norm=float(grad_norm.item()), extra_metrics=self.lr_schedulers.get_metrics())
 
