@@ -423,7 +423,7 @@ class TrainerController:
             ],
             return_exceptions=True,
         )
-        if cells_and_splitted_infos and all(isinstance(outcome, BaseException) for outcome in outcomes):
+        if cells_and_splitted_infos and not any(c.is_alive for c in alive_cells):
             raise outcomes[0]
 
         outputs = [
