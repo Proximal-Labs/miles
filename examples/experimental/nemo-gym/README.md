@@ -238,3 +238,43 @@ on CPU-only machines, in three independent layers (all three pass as of
 4. A failed episode surfaces as `sample.metadata["eval_report"]["error"]` with
    a traceback from the NeMo Gym server — check there before digging into
    server logs.
+
+
+## Workplace Assistant
+
+`run_nemotron35_workplace.py` trains fresh Nemotron 3.5 Lightning weights with
+one eight-GPU trainer node and one eight-GPU rollout node using `train_async.py`.
+It expects an already joined Ray cluster (`MILES_SCRIPT_EXTERNAL_RAY=1`), matching
+source/model paths, and a separately running Workplace resource service.
+
+Pin the NeMo Gym checkout used to produce and calibrate your native JSONL, and
+put that checkout on the resource service's `PYTHONPATH`. Install the CPU service
+dependencies with `uv pip install -r workplace-requirements.txt` in its environment.
+The main Miles training image already supplies the policy-loop dependencies.
+
+1. Start `workplace_server.py --dataset <native.jsonl> --port 8211`.
+2. Convert with `prepare_workplace.py --source <native.jsonl> --target <miles.jsonl>`.
+3. Set the launcher JSON's `model_dir`, `data_dir`, `data_file`, `output_dir`,
+   `megatron_path`, `verifier_url`, and unique `run_id`.
+4. Run `run_nemotron35_workplace.py --config <launcher.json>` from the Ray head.
+
+The service uses Gym's unmodified tools and `is_correct` state verifier. It checks
+that live tool execution agrees with native replay before returning binary reward.
+Gold actions and synthesis provenance never enter the policy payload. Each episode
+has isolated tool state; completion, failure, and cancellation release it, with a
+three-hour TTL as a fallback. HTTP or verifier failures abort the episode and the
+entire incomplete group is discarded, rather than receiving policy reward zero.
+
+The policy has 24 turns, a shared 65,536-token generation budget, and an 81,920-token
+context. Native tool errors remain visible to the policy. Miles TITO preserves
+sampled tokens and masks tool observations; the adapter checks log-probability and
+routing replay alignment before training. The launcher disables MTP and checks the
+constructed trainer model before every optimizer step. It enables routing replay,
+traces, entropy metrics, the dashboard, and Prometheus. W&B credentials are read
+from the credential store and never inserted into the launch command.
+
+Run `WORKPLACE_TEST_DATASET=<native.jsonl> python -m unittest test_workplace -v`
+with the example, Miles, and pinned Gym paths on `PYTHONPATH`. This exercises real
+native tools, gold/no-op/incomplete rewards, isolation, failure cleanup, dataset
+privacy, and the policy message protocol. A live TITO check is also required for
+the chosen model and serving versions before training a new configuration.

@@ -1,0 +1,8 @@
+# CPU transport for a separately pinned NeMo Gym Workplace checkout.
+fastapi>=0.135
+uvicorn>=0.41
+httpx>=0.28,<1
+pandas>=2
+polars>=1
+pyarrow>=18
+typed-argument-parser>=1.10
