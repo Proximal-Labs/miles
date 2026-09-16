@@ -81,6 +81,7 @@ class RolloutExecutor:
         # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
+        self._rollout_id_being_served: int | None = None
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
         self._train_parallel_configs_of_model_id: dict[str | None, dict[str, Any]] = {}
         self._router_providers = router_providers
@@ -104,7 +105,7 @@ class RolloutExecutor:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
         SampleOwnershipRecorder.install(
-            args=args, data_source=self.data_source, current_rollout_id=lambda: self.rollout_id
+            args=args, data_source=self.data_source, current_rollout_id=self._current_rollout_id
         )
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
@@ -161,6 +162,7 @@ class RolloutExecutor:
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
+        self._rollout_id_being_served = rollout_id
         event_analyzer.run_sample_ownership_analysis(args=self.args)
         replay = self._output_snapshotter.get(trainer_model_id=trainer_model_id, rollout_id=rollout_id)
         if replay is None:
@@ -191,6 +193,12 @@ class RolloutExecutor:
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+
+    def _current_rollout_id(self) -> int:
+        assert (
+            self._rollout_id_being_served is not None
+        ), "the data source issued samples before any rollout was requested"
+        return self._rollout_id_being_served
 
     async def _generate_rollout_data(
         self, *, rollout_id: int, trainer_model_id: str | None
