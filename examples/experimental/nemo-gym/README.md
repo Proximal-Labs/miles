@@ -238,3 +238,6 @@ on CPU-only machines, in three independent layers (all three pass as of
 4. A failed episode surfaces as `sample.metadata["eval_report"]["error"]` with
    a traceback from the NeMo Gym server — check there before digging into
    server logs.
+
+For single-response Sokoban GRPO with the final-answer format penalty, see
+[SOKOBAN.md](SOKOBAN.md) and the two-node Nemotron launcher.
