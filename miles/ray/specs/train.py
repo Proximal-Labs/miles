@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Self
 
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
@@ -20,10 +22,12 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
     MASTER_PORT_NAME,
+    BaseServeSpec,
     HostAndPort,
     PortInfo,
     SchedulingSpec,
     ServeWorkerSpec,
+    WorkerCtorContext,
     WorkerLaunchContext,
 )
 
@@ -40,6 +44,145 @@ _TRAINER_ACTOR_CLASSES = {
 }
 
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
+
+
+@dataclass(kw_only=True)
+class TrainerControllerSpec(BaseServeSpec):
+    worker_type = "trainer_controller"
+    args: TrainerConfig
+    deploy_component: DeployComponent = DeployComponent.TRAINER
+    platform_access: PlatformAccess = PlatformAccess.READ_DELETE
+    worker_class: str = TRAINER_CONTROLLER_WORKER_CLASS
+
+    @property
+    def name(self) -> str:
+        return compute_trainer_controller_pool_id(self.args.trainer_id)
+
+    @classmethod
+    def create(cls, args: Any) -> list[Self]:
+        return [cls(args=compute_trainer_config(args, trainer)) for trainer in compute_trainer_configs(args)]
+
+    def scheduling(self) -> SchedulingSpec:
+        return SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=1,
+        )
+
+    def static_meta(self) -> dict[str, Any]:
+        return {}
+
+    def slice_config(self, args: Any) -> TrainerConfig:
+        return self.args
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        args = ctx.args
+        return dict(
+            deployment_identity=DeploymentIdentity(
+                run_uuid=args.run_uuid,
+                deploy_component=args.deploy_component,
+                deploy_instance_id=args.deploy_instance_id,
+                trainer_id=args.trainer_id,
+            ),
+            expected_num_cells=compute_trainer_num_cells(args, role=args.trainer_role),
+            trainer_id=args.trainer_id,
+            role=args.trainer_role,
+            with_ref=(args.trainer_role != CRITIC_ROLE) and (args.kl_coef != 0 or args.use_kl_loss),
+            with_opd_teacher=(args.trainer_role != CRITIC_ROLE) and args.use_opd and args.opd_type == "megatron",
+            cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(args.trainer_id)]),
+            cell_operations=ctx.capability.cell_operations(),
+        )
+
+
+@dataclass(kw_only=True)
+class TrainerSpec(BaseServeSpec):
+    worker_type = "trainer"
+    args: TrainerConfig
+    pg_slot_offset: int = 0
+    category: str = POOL_CATEGORY_TRAINER_ENGINE
+    deploy_component: DeployComponent = DeployComponent.TRAINER
+
+    @property
+    def name(self) -> str:
+        return compute_trainer_pool_id(self.args.trainer_id)
+
+    @property
+    def worker_class(self) -> str:
+        return _TRAINER_ACTOR_CLASSES[self.args.train_backend]
+
+    @property
+    def concurrency_groups(self) -> dict[str, int] | None:
+        return TRAINER_CONCURRENCY_GROUPS if self.args.use_fault_tolerance else None
+
+    @classmethod
+    def create(cls, args: Any) -> list[Self]:
+        # TODO: support different sizes after the args refactor
+        actor_gpus_per_instance = args.actor_num_nodes * args.actor_num_gpus_per_node
+        specs = []
+        actor_index = 0
+        for trainer in compute_trainer_configs(args):
+            pg_slot_offset = 0
+            if trainer.role != CRITIC_ROLE:
+                pg_slot_offset = actor_index * actor_gpus_per_instance
+                actor_index += 1
+            specs.append(
+                cls(
+                    args=compute_trainer_config(args, trainer),
+                    pg_slot_offset=pg_slot_offset,
+                )
+            )
+        return specs
+
+    def scheduling(self) -> SchedulingSpec:
+        args = self.args
+        num_nodes, num_gpus_per_node = (
+            (args.critic_num_nodes, args.critic_num_gpus_per_node)
+            if args.trainer_role == CRITIC_ROLE
+            else (args.actor_num_nodes, args.actor_num_gpus_per_node)
+        )
+        total_gpus = num_nodes * num_gpus_per_node
+        num_cells = compute_trainer_num_cells(args, role=args.trainer_role)
+        assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
+        return SchedulingSpec(
+            num_cells=num_cells,
+            num_workers_per_cell=total_gpus // num_cells,
+            num_gpus_per_worker=_NUM_GPUS_PER_TRAINER_WORKER,
+            num_cpus_per_worker=_NUM_GPUS_PER_TRAINER_WORKER,
+            num_gpu_slots_per_worker=1,
+            num_gpus_per_node=num_gpus_per_node,
+            pg_name="actor",
+            pg_slot_offset=self.pg_slot_offset,
+        )
+
+    def port_infos(self) -> list[PortInfo]:
+        return [
+            PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True),
+            *super().port_infos(),
+        ]
+
+    def static_meta(self) -> dict[str, Any]:
+        return dict(role=self.args.trainer_role, include_cell_index=True)
+
+    def slice_config(self, args: Any) -> TrainerConfig:
+        return self.args
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        fp8_scales = (
+            x
+            if (x := os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")) is not None
+            else default_fp8_block_scaling_fp32_scales()
+        )
+        return compute_trainer_env_vars(ctx.args, ctx, fp8_scales=fp8_scales)
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return dict(
+            args=ctx.args,
+            world_size=_compute_trainer_world_size(ctx.args),
+            rank=ctx.worker_in_cell_index,
+            role=ctx.args.trainer_role,
+            cell_index=ctx.cell_index,
+        )
 
 
 def specs_trainer_controller(args: AllConfig) -> list[ServeWorkerSpec]:
@@ -229,6 +372,17 @@ def _compute_spec_trainer(
         concurrency_groups=TRAINER_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
         meta=lambda ctx: dict(role=config.role, cell_index=ctx.cell_index),
     )
+
+
+def _compute_trainer_world_size(args: TrainerConfig) -> int:
+    total_gpus = (
+        args.critic_num_nodes * args.critic_num_gpus_per_node
+        if args.trainer_role == CRITIC_ROLE
+        else args.actor_num_nodes * args.actor_num_gpus_per_node
+    )
+    num_cells = compute_trainer_num_cells(args, role=args.trainer_role)
+    assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
+    return total_gpus // num_cells
 
 
 def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
