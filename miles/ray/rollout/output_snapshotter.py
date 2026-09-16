@@ -57,6 +57,14 @@ class _RolloutExecutorOutputSnapshotter:
         self._snapshots[key] = replace(entry, phase=_OutputSnapshotPhase.REPLAYED)
         return copy.deepcopy(entry)
 
+    def take_held_samples(self, *, after_rollout_id: int) -> list[Sample]:
+        keys = [
+            key
+            for key, entry in self._snapshots.items()
+            if entry.phase is not _OutputSnapshotPhase.REPLAYED and key.rollout_id > after_rollout_id
+        ]
+        return [sample for key in keys for sample in self._snapshots.pop(key).data]
+
     def save(self, directory: Path) -> None:
         save_simple_checkpoint(
             directory=directory,

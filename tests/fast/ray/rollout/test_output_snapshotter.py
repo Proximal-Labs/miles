@@ -37,6 +37,35 @@ class TestRolloutExecutorOutputSnapshotter:
         assert restored.get(trainer_model_id=None, rollout_id=3) is None
         restored.capture(trainer_model_id=None, rollout_id=3, data=[Sample(index=8)], metadata={})
 
+    def test_only_the_batches_after_the_last_trained_rollout_are_taken(self) -> None:
+        """Shutdown accounting must not drop a batch the trainer already consumed."""
+        snapshotter = _RolloutExecutorOutputSnapshotter(args=_args())
+        snapshotter.capture(trainer_model_id=None, rollout_id=1, data=[Sample(index=11)], metadata={})
+        snapshotter.capture(trainer_model_id=None, rollout_id=2, data=[Sample(index=22)], metadata={})
+
+        held = snapshotter.take_held_samples(after_rollout_id=1)
+
+        assert [sample.index for sample in held] == [22]
+
+    def test_a_replayed_batch_is_not_taken(self, tmp_path: Path) -> None:
+        """A restored batch the resumed run replayed is trained, so shutdown must not report it as lost."""
+        snapshotter = _RolloutExecutorOutputSnapshotter(args=_args())
+        snapshotter.capture(trainer_model_id=None, rollout_id=3, data=[Sample(index=7)], metadata={})
+        snapshotter.save(tmp_path)
+        restored = _RolloutExecutorOutputSnapshotter(args=_args())
+        restored.load(tmp_path)
+        restored.get(trainer_model_id=None, rollout_id=3)
+
+        assert restored.take_held_samples(after_rollout_id=2) == []
+
+    def test_taking_the_held_batches_twice_reports_them_once(self) -> None:
+        """A repeated shutdown pass must not turn one abandoned batch into a double drop."""
+        snapshotter = _RolloutExecutorOutputSnapshotter(args=_args())
+        snapshotter.capture(trainer_model_id=None, rollout_id=2, data=[Sample(index=22)], metadata={})
+
+        assert [sample.index for sample in snapshotter.take_held_samples(after_rollout_id=1)] == [22]
+        assert snapshotter.take_held_samples(after_rollout_id=1) == []
+
     def test_a_replayed_batch_cannot_be_captured_twice(self, tmp_path: Path) -> None:
         """Re-capturing a key would overwrite the snapshot a replayed rollout still owns."""
         snapshotter = _RolloutExecutorOutputSnapshotter(args=_args())
