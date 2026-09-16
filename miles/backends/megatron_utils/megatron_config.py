@@ -319,6 +319,14 @@ _ROLLOUT_SHARED_ARGS: frozenset[str] = frozenset(
 
 
 def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
+    ans = _compute_trainer_input(args=args, trainer=trainer)
+    # TODO: a --use-critic critic keeps the actor\'s requested_load, so a hot restart reads the actor\'s checkpoint.
+    if args.megatron_config is not None:
+        resolve_args_checkpoint_load(ans)
+    return ans
+
+
+def _compute_trainer_input(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
     # TODO: support policies with different global batch sizes.
     assert "global_batch_size" not in trainer.overrides, (
         f"--megatron-config trainer {trainer.trainer_id!r} overrides global_batch_size; every policy has to "
@@ -349,10 +357,6 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.save = compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
-
-    # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
-    if args.megatron_config is not None:
-        resolve_args_checkpoint_load(ans)
 
     return ans
 
