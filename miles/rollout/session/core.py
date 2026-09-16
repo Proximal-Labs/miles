@@ -17,6 +17,7 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
+from miles.rollout.session.context_budget import fit_completion_budget
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -390,6 +391,24 @@ class SessionCore:
                 tito_tokenizer=tito_tokenizer,
                 message_matcher=self.registry.message_matcher,
             )
+            try:
+                request_body = fit_completion_budget(
+                    request_body,
+                    prompt_length=len(prompt_token_ids),
+                    context_length=self.config.session_context_budget,
+                )
+            except ValueError as error:
+                return Response(
+                    content=_render_json(
+                        {"error": {
+                            "message": str(error),
+                            "type": "invalid_request_error",
+                            "code": "context_length_exceeded",
+                        }}
+                    ),
+                    status_code=400,
+                    media_type=JSON_MEDIA_TYPE,
+                )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 

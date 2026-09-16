@@ -4,6 +4,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
 class SessionServerConfig(FrozenStrictBaseModel):
+    session_context_budget: int | None = None
     host: str
     port: int
     instance_id: str | None
@@ -32,6 +33,7 @@ def compute_session_server_config(
     args, *, host: str, port: int, instance_id: str | None, backend_url: str
 ) -> SessionServerConfig:
     return SessionServerConfig(
+        session_context_budget=getattr(args, "session_context_budget", None),
         host=host,
         port=port,
         instance_id=instance_id,

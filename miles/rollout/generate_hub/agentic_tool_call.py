@@ -169,6 +169,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
     parser.add_argument(
+        "--session-context-budget",
+        type=int,
+        default=None,
+        help="Exact-token context budget; shrink completion allowance as history grows.",
+    )
+    parser.add_argument(
         "--max-seq-len",
         type=int,
         default=None,

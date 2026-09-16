@@ -132,3 +132,20 @@ are written by the trainer itself and are the authoritative progress signal.
 
 The synchronous launcher uses GLM-4.7 tool-call and reasoning parsers, TITO,
 the Miles session server, and the Megatron backend.
+
+
+### Nemotron 3.5 Lightning with Terminal-Bench and E2B
+
+The `run_nemotron35_tb21.py` recipe uses two joined eight-GPU Ray nodes:
+one trainer and one rollout node. It loads fresh BF16 HF weights through
+Megatron Bridge, disables MTP, and enables rollout routing replay.
+Supply its JSON configuration with `--config`; configure the external Harbor
+server with native Terminus 2, the JSON parser, and the E2B backend.
+
+The default batch is eight tasks with sixteen attempts each, learning rate
+3e-7, 1,000 updates, and checkpoint interval 200. The response ceiling is
+65,536 tokens and the full context/trajectory ceiling is 81,920. The opt-in
+`--session-context-budget` clamps each completion to the actual remaining
+context space using TITO's exact prompt tokens; input tokens are never removed.
+Task rewards come from Harbor's native verifier. Model, task, output, coordinator,
+and advertised session-host paths are explicit configuration fields.
