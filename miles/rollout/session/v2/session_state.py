@@ -20,27 +20,29 @@ from typing import Any
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
 from miles.rollout.session.types import SessionRecord
+from miles.rollout.session.v2.lifecycle import SessionLifecycle
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
+FINISHED_SESSION_RETENTION_SECONDS = 900
 
 
 @dataclass
 class SessionStateV2:
-    """Per-session concurrency container plus the trajectory forest.
+    """Own the forest, active history view, and generation lifecycle for one session."""
 
-    ``active_leaf`` is the head of the single-chain view: the path root ->
-    active_leaf is what GET /sessions, judgment, and sample assembly see.
-    ``None`` means no committed generation yet (empty view, first-turn
-    semantics — a failed first turn leaves the session fully retryable).
-    """
-
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    lifecycle: SessionLifecycle = field(default_factory=SessionLifecycle, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     active_leaf: TrajectoryNode | None = None
+    sample_export: tuple[str, bytes] | None = field(default=None, repr=False)
+    expiry: asyncio.TimerHandle | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        return self.lifecycle.lock
 
     def active_path(self) -> list[TrajectoryNode]:
         return self.active_leaf.path_nodes() if self.active_leaf is not None else []
@@ -174,15 +176,23 @@ def commit_generation(
 
 
 class SessionRegistryV2(SessionRegistry):
-    """Session ID -> session state mapping with shared tokenizer resources.
-
-    The v1 registry shell (CRUD + tokenizer resources) with the session type
-    swapped to ``SessionStateV2``; all session mutations go through the
-    module-level serving functions, called by the route handler under
-    ``SessionStateV2.lock``.
-    """
+    """Session lookup, tokenizer resources, and bounded retention for collection."""
 
     sessions: dict[str, SessionStateV2]
+
+    def retain_for_collection(self, session_id: str) -> None:
+        session = self.get_session(session_id)
+        if session.expiry is None:
+            session.expiry = asyncio.get_running_loop().call_later(
+                FINISHED_SESSION_RETENTION_SECONDS, self.remove_session, session_id
+            )
+
+    def remove_session(self, session_id: str) -> None:
+        session = self.sessions.pop(session_id, None)
+        if session is not None:
+            session.closing = True
+            if session.expiry is not None:
+                session.expiry.cancel()
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex

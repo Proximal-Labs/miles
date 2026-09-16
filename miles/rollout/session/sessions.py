@@ -9,6 +9,7 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
 from starlette.responses import Response
@@ -51,6 +52,11 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
+
+
+class _FinishSessionRequest(BaseModel):
+    producer_finished: bool
+    timeout: float = Field(default=60, ge=0, le=90)
 
 
 def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addition_r3: bool = False):
@@ -110,6 +116,14 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str):
         return await core.delete_session(session_id)
+
+    if use_v2:
+
+        @app.post("/sessions/{session_id}/finish")
+        async def finish_session(session_id: str, params: _FinishSessionRequest):
+            return await core.finish_session(
+                session_id, producer_finished=params.producer_finished, timeout=params.timeout
+            )
 
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):
@@ -221,7 +235,10 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         params = json.loads(body) if body else {}
         if use_v2:
             return await core.collect_samples(
-                session_id, max_seq_len=params.get("max_seq_len"), agent_metadata=params.get("metadata")
+                session_id,
+                max_seq_len=params.get("max_seq_len"),
+                agent_metadata=params.get("metadata"),
+                snapshot_id=params.get("snapshot_id"),
             )
         return await core.collect_samples(session_id, max_seq_len=params.get("max_seq_len"))
 

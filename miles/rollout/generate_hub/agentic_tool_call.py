@@ -71,6 +71,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
+    producer_finished = False
     collect_failed = False
     t_start = time.monotonic()
     try:
@@ -82,6 +83,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
+        producer_finished = True
     except Exception as e:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
 
@@ -91,6 +93,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         collect_kwargs = {"max_seq_len": max_seq_len}
         if use_v2:
             collect_kwargs["agent_metadata"] = agent_metadata
+            collect_kwargs["producer_finished"] = producer_finished
         try:
             result = await tracer.collect_samples(input.sample, **collect_kwargs)
         # Costs this sample, not the run; a non-2xx still raises RuntimeError.
@@ -113,6 +116,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if not result.samples:
         if result.empty_reason == "all_truncated":
             logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
+        elif result.empty_reason == "incomplete":
+            logger.warning("Session finalized with an incomplete trace: %s", tracer.base_url)
         else:
             logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)

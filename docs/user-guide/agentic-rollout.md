@@ -224,6 +224,39 @@ The matcher only decides whether the message a client replays and the message st
 
 Miles does not reconcile tool-call IDs across that boundary: deployments choosing `role_content_only` must themselves keep a stored call ID `A` followed by a replayed tool result referencing `B` protocol-compatible.
 
+## Finalize a v2 episode
+
+V2 keeps every trajectory leaf by default and masks shared completions so they
+contribute to the loss once. Sibling order cannot distinguish a retry from valid
+parallel work. Existing experiments can opt into the previous heuristic with
+`--session-sample-picker-path miles.rollout.session.v2.picker_hub.drop_retries`.
+
+**The agent function must join its child agents and tool work before returning.**
+An idle model endpoint does not imply that a child running a tool has finished.
+Miles then closes admission, waits for already-admitted model requests, and
+exports a sealed snapshot. Agent exceptions, unresolved generations, and drain
+timeouts produce an incomplete trace and an aborted rollout.
+
+Custom clients use:
+
+1. `POST /sessions/{id}/finish` with `{"producer_finished": true, "timeout": 60}`.
+   Use `producer_finished: false` when the agent did not finish. The timeout is
+   in seconds (0–90). Repeated calls with the same parameters return the same
+   `snapshot_id`, completeness flag, and failed/unfinished request counts.
+2. `POST /sessions/{id}/samples` with that `snapshot_id`, `max_seq_len`, and
+   optional agent `metadata`. The first successful export is cached; retries
+   must use the same export parameters. Incomplete sessions return no training
+   samples and `empty_reason: "incomplete"`.
+3. Decode the reply successfully, then `DELETE /sessions/{id}`.
+
+The built-in v2 tracer retries transport failures once and retains sessions on
+collection/decode failure. Sessions expire 15 minutes after finalization starts;
+successful collections release them immediately. Inspect incomplete sessions
+through `GET /sessions/{id}` before expiry. Snapshots are in memory and do not
+survive a server restart. Timeout fencing prevents late commits; it does not
+cancel upstream GPU work. Active-session collection without a snapshot remains
+a live preview for existing clients. V1 keeps its existing lifecycle.
+
 ## Example
 
 [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker)

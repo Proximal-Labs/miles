@@ -110,6 +110,7 @@ async def _run_and_collect(
                 *,
                 max_seq_len: int | None,
                 agent_metadata: dict | None = None,
+                producer_finished: bool = True,
             ) -> SamplesReply:
                 response = await client.get(tracer.base_url)
                 assert response.status_code == 200, response.text
@@ -118,6 +119,7 @@ async def _run_and_collect(
                     collected_input_sample,
                     max_seq_len=max_seq_len,
                     agent_metadata=agent_metadata,
+                    producer_finished=producer_finished,
                 )
                 collected[id(collected_input_sample)] = (response.json(), reply)
                 return reply
@@ -197,7 +199,10 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
         assert v2.samples[0].metadata[key] == value
     assert v1.samples[0].metadata["max_trim_tokens"] == v2.session_metadata["max_trim_tokens"]
 
-    v2_linear_metadata = {key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree")}
+    assert v2.session_metadata["finalization"]["complete"] is True
+    v2_linear_metadata = {
+        key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree", "finalization")
+    }
     _assert_bits_equal(v1.session_metadata, v2_linear_metadata, path="session_metadata")
     assert_sample_bitwise_equal(
         v1.samples[0],

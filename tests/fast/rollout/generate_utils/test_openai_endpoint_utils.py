@@ -6,13 +6,15 @@ test_samples_codec.py (wire codec), next to the functions.
 The collect_samples tests here lock the client's HTTP behavior deltas vs the
 old collect_records path: single POST with no retries, non-2xx raises with the
 body text, timeout raises (instead of silently ABORTing), and the session
-DELETE is attempted on every path.
+DELETE is attempted on every v1 path; v2 retains failed or incomplete exports.
 """
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
+import httpx
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
@@ -300,6 +302,9 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
     seen = []
 
     async def fake_post_bytes(url, body, *, timeout):
+        if url.endswith("/finish"):
+            assert body == {"producer_finished": True}
+            return b'{"snapshot_id":"snapshot-1","complete":true}'
         seen.append(body)
         return payload
 
@@ -317,10 +322,71 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
     input_sample.metadata = {"env": "keep-me"}
     result = await tracer.collect_samples(input_sample, max_seq_len=7, agent_metadata={"reward": 0.75})
 
-    assert seen == [{"max_seq_len": 7, "metadata": {"reward": 0.75}}]
+    assert seen == [{"max_seq_len": 7, "metadata": {"reward": 0.75}, "snapshot_id": "snapshot-1"}]
     (decoded,) = result.samples
     assert decoded.reward == 0.75
     assert decoded.metadata == {"env": "keep-me", "leaf": {"node_id": 1}}
+
+
+@pytest.mark.parametrize("failure_stage", ["finish", "samples", "decode", "incomplete"])
+async def test_v2_preserves_session_when_collection_is_not_usable(monkeypatch, failure_stage):
+    calls = []
+
+    async def post_bytes(url, body, *, timeout):
+        operation = url.rsplit("/", 1)[1]
+        calls.append(operation)
+        if operation == failure_stage:
+            raise httpx.ReadError("connection lost")
+        if operation == "finish":
+            return json.dumps({"snapshot_id": "snapshot-1", "complete": failure_stage != "incomplete"}).encode()
+        if failure_stage == "decode":
+            return b"not safetensors"
+        return encode_samples([], {}, "incomplete", fields=COMPUTED_FIELDS_V2)
+
+    async def delete(*args, **kwargs):
+        pytest.fail("unusable collection must not delete the session")
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", delete)
+    tracer = OpenAIEndpointTracer("http://server", "session", samples_wire_fields=COMPUTED_FIELDS_V2)
+    if failure_stage == "incomplete":
+        reply = await tracer.collect_samples(Sample(), max_seq_len=None, producer_finished=False)
+        assert reply.empty_reason == "incomplete"
+    elif failure_stage == "decode":
+        from safetensors import SafetensorError
+
+        with pytest.raises(SafetensorError):
+            await tracer.collect_samples(Sample(), max_seq_len=None)
+    else:
+        with pytest.raises(httpx.ReadError):
+            await tracer.collect_samples(Sample(), max_seq_len=None)
+        assert calls.count(failure_stage) == 2
+
+
+async def test_v2_retries_lost_export_before_releasing(monkeypatch):
+    calls = []
+    sample = Sample(tokens=[1, 2], response_length=1, loss_mask=[1], rollout_log_probs=[-0.5], reward=1)
+    payload = encode_samples([sample], {}, fields=COMPUTED_FIELDS_V2)
+
+    async def post_bytes(url, body, *, timeout):
+        operation = url.rsplit("/", 1)[1]
+        calls.append(operation)
+        if operation == "finish":
+            return b'{"snapshot_id":"snapshot-1","complete":true}'
+        assert body["snapshot_id"] == "snapshot-1"
+        if calls.count("samples") == 1:
+            raise httpx.ReadError("lost export")
+        return payload
+
+    async def delete(url, body, action):
+        calls.append(action)
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", delete)
+    tracer = OpenAIEndpointTracer("http://server", "session", samples_wire_fields=COMPUTED_FIELDS_V2)
+    reply = await tracer.collect_samples(Sample(), max_seq_len=None)
+    assert reply.samples[0].tokens == [1, 2]
+    assert calls == ["finish", "samples", "samples", "delete"]
 
 
 @pytest.mark.asyncio

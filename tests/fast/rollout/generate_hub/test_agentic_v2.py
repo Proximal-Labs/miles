@@ -20,9 +20,11 @@ class _Tracer:
         self.reply = reply
         self.error = error
         self.agent_metadata = None
+        self.producer_finished = None
 
-    async def collect_samples(self, input_sample, *, max_seq_len, agent_metadata=None):
+    async def collect_samples(self, input_sample, *, max_seq_len, agent_metadata=None, producer_finished=True):
         self.agent_metadata = agent_metadata
+        self.producer_finished = producer_finished
         if self.error is not None:
             raise self.error
         return self.reply
@@ -83,6 +85,7 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
     assert output.samples == [sample]
     assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
+    assert tracer.producer_finished is True
 
 
 @pytest.mark.asyncio
@@ -238,3 +241,16 @@ async def test_collection_error_propagates(monkeypatch):
 
     with pytest.raises(RuntimeError, match="samples unavailable"):
         await agentic_tool_call.generate(_generate_input())
+
+
+async def test_agent_failure_does_not_assert_producer_completion(monkeypatch):
+    tracer = _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="incomplete"))
+    _patch_agent(monkeypatch, tracer)
+
+    async def failed_agent(**kwargs):
+        raise RuntimeError("agent failed before joining children")
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: failed_agent)
+    output = await agentic_tool_call.generate(_generate_input())
+    assert tracer.producer_finished is False
+    assert output.samples[0].status == Sample.Status.ABORTED

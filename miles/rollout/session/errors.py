@@ -6,6 +6,7 @@ SessionError (base)
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
 ├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
+├── SessionConflictError       → 409  admission or finalization conflicts (v2)
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 └── UpstreamResponseError      → 502  SGLang response invalid or unexpected
 """
@@ -21,6 +22,12 @@ class SessionNotFoundError(SessionError):
     """Raised when the requested session ID does not exist."""
 
     status_code: int = 404
+
+
+class SessionConflictError(SessionError):
+    """Raised when an operation conflicts with the session lifecycle."""
+
+    status_code: int = 409
 
 
 class MessageValidationError(SessionError):

@@ -720,7 +720,7 @@ class TestAgentCollectionFailure:
     def test_collect_transient_failure_aborts_sample_but_other_errors_propagate(
         self, variant, generation_env, monkeypatch, caplog, collect_error
     ):
-        async def fail_collect(_tracer, _input_sample, *, max_seq_len, agent_metadata=None):
+        async def fail_collect(_tracer, _input_sample, *, max_seq_len, agent_metadata=None, producer_finished=True):
             raise collect_error
 
         monkeypatch.setattr(
