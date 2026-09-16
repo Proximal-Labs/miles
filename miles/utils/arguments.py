@@ -67,6 +67,10 @@ def driver_owns_generation_pause(args) -> bool:
     return args.fully_async and args.colocate
 
 
+def supports_partial_target_weight_update(args) -> bool:
+    return not args.colocate and args.update_weight_transfer_mode == "p2p"
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
