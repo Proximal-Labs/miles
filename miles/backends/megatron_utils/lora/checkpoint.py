@@ -7,13 +7,12 @@ free slot."""
 from collections.abc import Sequence
 from pathlib import Path
 
-from megatron.core.dist_checkpointing.strategies.torch import get_async_strategy
-from torch.distributed.checkpoint.api import CheckpointException
-
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
+from megatron.core.dist_checkpointing.strategies.torch import get_async_strategy
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.utils import unwrap_model
+from torch.distributed.checkpoint.api import CheckpointException
 
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.training_utils.checkpoint_io import CheckpointIOError, CheckpointPublication, write_checkpoint_dir

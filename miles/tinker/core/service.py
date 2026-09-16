@@ -92,7 +92,9 @@ class TinkerService:
                             raise RuntimeError("the trainer workers died; exiting so clients get refused connections")
                         continue
                 try:
-                    await asyncio.wait_for(self._wake.wait(), timeout=0.1 if self._checkpoint_save is not None else None)
+                    await asyncio.wait_for(
+                        self._wake.wait(), timeout=0.1 if self._checkpoint_save is not None else None
+                    )
                 except TimeoutError:
                     pass
                 self._wake.clear()
