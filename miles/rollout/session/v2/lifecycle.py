@@ -70,7 +70,9 @@ class SessionLifecycle:
                 if not self._pending:
                     self._idle.set()
                 self._finish_args = finish_args
-                self._finish_task = asyncio.create_task(self._drain(producer_finished=producer_finished, timeout=timeout))
+                self._finish_task = asyncio.create_task(
+                    self._drain(producer_finished=producer_finished, timeout=timeout)
+                )
             elif finish_args != self._finish_args:
                 raise SessionConflictError("Finish parameters changed; retry with the original parameters.")
             finish_task = self._finish_task

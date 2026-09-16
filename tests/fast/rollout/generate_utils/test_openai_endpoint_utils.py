@@ -13,8 +13,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import pytest
 import httpx
+import pytest
+from safetensors import SafetensorError
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
@@ -353,8 +354,6 @@ async def test_v2_preserves_session_when_collection_is_not_usable(monkeypatch, f
         reply = await tracer.collect_samples(Sample(), max_seq_len=None, producer_finished=False)
         assert reply.empty_reason == "incomplete"
     elif failure_stage == "decode":
-        from safetensors import SafetensorError
-
         with pytest.raises(SafetensorError):
             await tracer.collect_samples(Sample(), max_seq_len=None)
     else:

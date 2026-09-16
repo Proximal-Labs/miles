@@ -37,7 +37,9 @@ class _ControlledBackend:
 
 @pytest.fixture
 def core():
-    return _build_core(_ARGS.model_copy(update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.keep_all"}))
+    return _build_core(
+        _ARGS.model_copy(update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.keep_all"})
+    )
 
 
 def _chat(core, sid):
