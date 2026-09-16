@@ -58,6 +58,7 @@ class InferenceController:
         self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
+        self._pool_ids: set[str] = set()
         self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._ticker: SimpleTicker | None = None
@@ -329,6 +330,10 @@ class InferenceController:
 
     # -------------------------- misc APIs -----------------------------
 
+    @with_lock
+    async def get_runtime_topology(self) -> dict[str, list[int]]:
+        return {name: srv.engine_gpu_counts for name, srv in self.servers.items()}
+
     @lock_exempt
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {
@@ -336,6 +341,10 @@ class InferenceController:
             for srv in list(self.servers.values())
             for cell_id, cell in list(srv.server_cells.items())
         }
+
+    @lock_exempt
+    async def get_pool_ids(self) -> list[str]:
+        return sorted(self._pool_ids)
 
     @with_lock
     async def check_weights(
@@ -371,6 +380,8 @@ class InferenceController:
 
     @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        if observed is not None:
+            self._pool_ids.add(observed.pool_id)
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():
