@@ -155,9 +155,7 @@ class TestShutdownAccounting:
         assert [(event.source_sample_indices, event.reason) for event in drops] == [([22], "shutdown_prefetched")]
 
 
-def _make_shutdown_executor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[RolloutExecutor, Path]:
+def _make_shutdown_executor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[RolloutExecutor, Path]:
     event_dir = tmp_path / "events"
     executor = _make_executor(tmp_path, _CountingRolloutFn())
     executor.args = make_args(
