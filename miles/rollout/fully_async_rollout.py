@@ -85,6 +85,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
+        self._disposed: bool = False
         self._worker_error_cancel_targets: set[asyncio.Task] = set()
         self._eval_prompt_dataset_cache: dict = {}
         self._curr_kv_cache_namespace: str | None = None
@@ -115,9 +116,24 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return await self._drain(input)
 
     async def dispose(self) -> None:
-        if (worker := self._worker) is None:
+        if self._disposed:
             return
-        await _end_worker(worker)
+        self._disposed = True
+        if self._worker is not None:
+            await _end_worker(self._worker)
+        self._log_held_groups_as_dropped()
+
+    def _log_held_groups_as_dropped(self) -> None:
+        held = [
+            *(x.prompt_group for x in self._running_tasks),
+            *self._retry_buffer,
+            *self._output.held_prompt_groups(),
+        ]
+        SampleOwnershipRecorder.log_dropped_samples(
+            args=self.args,
+            samples=SampleOwnershipRecorder.flatten_samples(held),
+            reason="shutdown_in_flight",
+        )
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:
