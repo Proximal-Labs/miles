@@ -33,7 +33,7 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.object_store import _MooncakeStoreObjectRef
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -119,6 +119,33 @@ class TestDispose:
 
 
 class TestShutdownAccounting:
+    @pytest.mark.parametrize("with_lineage", [False, True])
+    async def test_shutdown_does_not_drop_a_trimmed_source_twice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_lineage: bool
+    ) -> None:
+        """A raw prefetched snapshot retains sources already dropped during DP scheduling."""
+        executor, event_dir = _make_shutdown_executor(tmp_path, monkeypatch)
+        samples = [Sample(index=index) for index in (22, 23)]
+        if with_lineage:
+            for sample in samples:
+                sample.lineage = SampleLineage(source_sample_index=sample.index, output_index=0, output_count=1)
+                sample.index += 100
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=2, data=samples, metadata={})
+        event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor"))
+        event_logger.log(
+            ExplicitlyDroppedSamplesEvent,
+            dict(source_sample_indices=[23], reason="dp_schedule_trim"),
+            print_log=False,
+        )
+
+        await _dispose_with_one_trained_step(executor, event_dir)
+
+        drops = [event for event in read_events(event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)]
+        assert [(event.source_sample_indices, event.reason) for event in drops] == [
+            ([23], "dp_schedule_trim"),
+            ([22], "shutdown_prefetched"),
+        ]
+
     async def test_a_prefetched_batch_no_trainer_consumed_is_recorded_as_dropped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

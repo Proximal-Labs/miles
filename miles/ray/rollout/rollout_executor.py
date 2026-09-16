@@ -39,6 +39,7 @@ from miles.utils.audit_utils.event_logger.logger import (
     is_event_logger_initialized,
     read_events,
 )
+from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import RolloutDataPack
@@ -170,9 +171,21 @@ class RolloutExecutor:
 
         events = read_events(get_event_logger().log_dir, strict=True)
         latest_trained_rollout_id = max((step.rollout_id for step in completed_actor_steps(events)), default=-1)
+        dropped_sources = {
+            index
+            for event in events
+            if isinstance(event, ExplicitlyDroppedSamplesEvent)
+            for index in event.source_sample_indices
+        }
+        held_samples = self._output_snapshotter.take_held_samples(after_rollout_id=latest_trained_rollout_id)
         SampleOwnershipRecorder.log_dropped_samples(
             args=self.args,
-            samples=self._output_snapshotter.take_held_samples(after_rollout_id=latest_trained_rollout_id),
+            samples=[
+                sample
+                for sample in held_samples
+                if (sample.lineage.source_sample_index if sample.lineage is not None else sample.index)
+                not in dropped_sources
+            ],
             reason="shutdown_prefetched",
         )
 
