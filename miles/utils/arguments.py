@@ -1123,7 +1123,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--update-weights-timeout",
                 type=float,
-                default=300.0,
+                default=600.0,
                 help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up.",
             )
             return parser
