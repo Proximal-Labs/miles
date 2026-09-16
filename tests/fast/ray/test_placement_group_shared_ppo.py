@@ -263,6 +263,7 @@ def _training_models_args(**overrides):
         "trainer_model_id": None,
         "load": "/ckpt/run",
         "save": "/ckpt/run",
+        "save_debug_event_data": None,
         "lr": 1e-6,
         "lr_warmup_iters": 10,
         "critic_load": "/ckpt/critic",
