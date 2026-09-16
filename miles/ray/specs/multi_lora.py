@@ -1,33 +1,48 @@
+from dataclasses import dataclass
+from typing import Any, Self
+
 from miles.ray.specs.inference import compute_router_providers
+from miles.utils.args.runtime import MultiLoraConfig
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.worker_spec import SchedulingSpec, BaseServeSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, SchedulingSpec, WorkerCtorContext
 
 MULTI_LORA_CONTROLLER_POOL_ID = "multi-lora-controller"
 MULTI_LORA_CONTROLLER_WORKER_CLASS = "miles.ray.multi_lora.controller.MultiLoRAController"
 
 
-def spec_multi_lora_controller(args) -> BaseServeSpec:
-    return BaseServeSpec(
-        name=MULTI_LORA_CONTROLLER_POOL_ID,
-        port_infos=[],
-        env_var=lambda _ctx: {},
-        scheduling=SchedulingSpec(
-            num_cells=1 if is_multi_lora_enabled(args) else 0,
-            num_workers_per_cell=1,
-            num_gpus_per_worker=0,
-            num_cpus_per_worker=0,
-            # Pinned to the head node so the API sits at a port-forwardable address.
-            pin_to_head=True,
-        ),
-        worker_class=MULTI_LORA_CONTROLLER_WORKER_CLASS,
-        ctor_kwargs=lambda ctx: dict(
-            args=args,
-            router_providers=compute_router_providers(args, capability=ctx.capability),
-        ),
-    )
+@dataclass(kw_only=True)
+class MultiLoraControllerSpec(BaseServeSpec):
+    worker_type = "multi_lora"
+    args: MultiLoraConfig
+    name: str = MULTI_LORA_CONTROLLER_POOL_ID
+    worker_class: str = MULTI_LORA_CONTROLLER_WORKER_CLASS
+
+    @classmethod
+    def slice_configs(cls, args: Any) -> list[MultiLoraConfig]:
+        return [MultiLoraConfig.from_config(args)]
+
+    @classmethod
+    def create(cls, config: MultiLoraConfig) -> Self:
+        return cls(
+            args=config,
+            scheduling=SchedulingSpec(
+                num_cells=1 if is_multi_lora_enabled(config) else 0,
+                num_workers_per_cell=1,
+                num_gpus_per_worker=0,
+                num_cpus_per_worker=0,
+                # Pinned to the head node so the API sits at a port-forwardable address.
+                pin_to_head=True,
+            ),
+        )
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return dict(
+            args=ctx.args,
+            router_providers=compute_router_providers(ctx.args, capability=ctx.capability),
+        )
 
 
 def create_multi_lora_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:

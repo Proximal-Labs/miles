@@ -1,4 +1,4 @@
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 from pydantic import ConfigDict
 
@@ -8,6 +8,10 @@ from miles.utils.pydantic_utils import StrictBaseModel
 class BaseLeafConfig(StrictBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
     _mutable_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def from_config(cls, source: "BaseLeafConfig") -> Self:
+        return cls.model_validate({name: value for name, value in source if name in cls.model_fields})
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:

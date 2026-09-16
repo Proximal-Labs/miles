@@ -21,3 +21,4 @@ class TrainerOnlyConfig(BaseConfig):
         Discriminator(_backend_name),
     ]
     trainer_role: str
+    trainer_pg_slot_offset: int
