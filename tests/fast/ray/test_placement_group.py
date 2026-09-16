@@ -590,20 +590,21 @@ class TestCreateTrainingModels:
 
         rollout_executor.load.assert_not_awaited()
 
+    @pytest.mark.parametrize("start_rollout_id", [1, 101])
     async def test_a_trainer_that_restored_a_trained_iteration_reloads_the_rollout_it_saved(
-        self, tmp_path, monkeypatch
-    ):
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start_rollout_id: int
+    ) -> None:
         """A real resume saved rollout state beside the checkpoint, and dropping it would retrain seen prompts."""
         self._patched(
             monkeypatch,
             [],
-            load_states=[TrainerLoadState(start_rollout_id=101, restored_trained_iteration=True)],
+            load_states=[TrainerLoadState(start_rollout_id=start_rollout_id, restored_trained_iteration=True)],
         )
         rollout_executor = self._rollout_executor()
 
         await create_training_models(self._args(tmp_path, megatron_config=None), rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(100)
+        rollout_executor.load.assert_awaited_once_with(start_rollout_id - 1)
 
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""

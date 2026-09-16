@@ -131,9 +131,9 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
     model_module = importlib.import_module("miles.backends.megatron_utils.model")
     seen: dict[str, Any] = {}
 
-    def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> tuple[int, int]:
+    def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> tuple[int, bool]:
         seen["args_during_load"] = vars(args).copy()
-        return iteration, 0
+        return iteration, not args.finetune or iteration > 0
 
     monkeypatch.setattr(model_module, "load_checkpoint", fake_load_checkpoint)
     monkeypatch.setattr(model_module, "clear_memory", lambda *a, **k: None)
