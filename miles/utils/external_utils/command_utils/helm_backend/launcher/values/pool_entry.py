@@ -25,6 +25,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
 )
 from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.naming import compute_port_name
+from miles.utils.workers.serving.runtime_config import RuntimeConfig
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
@@ -176,18 +177,20 @@ def _command_of_spec(spec: BaseSpec, context: LaunchCommandContext, plan: Launch
         case BaseCommandSpec():
             return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
         case BaseServeSpec():
-            return _serve_command(spec, plan)
+            return _serve_command(spec, plan, args=context.args)
         case _:
             raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
 
 
-def _serve_command(spec: BaseServeSpec, plan: LaunchPlan) -> list[str]:
+def _serve_command(spec: BaseServeSpec, plan: LaunchPlan, *, args: Any) -> list[str]:
     interpreter_prefix = python_argv_prefix()
     workers_per_pod = spec.scheduling().workers_per_pod()
     serve = [
         *interpreter_prefix,
         "-m",
         _SERVE_MODULE,
+        "--config",
+        RuntimeConfig(worker={"kind": spec.worker_type, "args": args}).model_dump_json(),
         "--specs",
         _SPECS_FN,
         "--pool-id",

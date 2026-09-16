@@ -151,6 +151,7 @@ def compute_spec_meta(spec: BaseSpec, *, cell_index: int) -> dict[str, Any]:
 
 
 class BaseServeSpec(BaseSpec):
+    worker_type: str
     worker_class: str
     concurrency_groups: dict[str, int] | None = None
 
