@@ -438,7 +438,10 @@ class TrainerController:
             if len(s.engine_cell_ids) >= 2 and set(output.failed_cell_ids) == set(s.engine_cell_ids):
                 logger.error(f"trainer cell {c.cell_id} reached none of its {len(s.engine_cell_ids)} targets")
                 await c.mark_errored_and_kill()
-        return WeightUpdateOutput.merge(outputs)
+        output = WeightUpdateOutput.merge(outputs)
+        if info.engine_cell_ids and set(output.failed_cell_ids) == set(info.engine_cell_ids):
+            raise NonRetryableError("No inference cell received the weights")
+        return output
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity
