@@ -30,6 +30,13 @@ TRAINER_CHECKPOINT_DIRNAME = "trainers"
 MODEL_ID_PATTERN = re.compile(rf"\A{DNS_LABEL_PATTERN}\Z")
 RESERVED_MODEL_ID = "eval"
 
+_CRITIC_FINAL_OVERRIDES = {
+    "loss_type": "value_loss",
+    "kl_coef": 0,
+    "use_opd": False,
+    "disable_param_buffers_cpu_backup": False,
+}
+
 PER_POLICY_ARGS: frozenset[str] = frozenset(
     {
         "hf_checkpoint",
@@ -62,6 +69,7 @@ PER_POLICY_ARGS: frozenset[str] = frozenset(
         "entropy_coef",
         "eps_clip",
         "eps_clip_high",
+        "loss_type",
     }
 )
 
@@ -210,6 +218,10 @@ class MegatronConfig(FrozenStrictBaseModel):
     trainers: list[MegatronTrainerConfig]
 
     @classmethod
+    def parse_topology(cls, args: Namespace) -> "MegatronConfig":
+        return cls(trainers=_compute_trainers(args))
+
+    @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         from megatron.training.arguments import add_megatron_arguments
 
@@ -282,11 +294,9 @@ def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronT
     )
 
 
-def _compute_critic_overrides(args) -> dict[str, Any]:
+def _compute_critic_overrides(args: Namespace) -> dict[str, Any]:
     return {
-        "kl_coef": 0,
-        "use_opd": False,
-        "disable_param_buffers_cpu_backup": False,
+        **_CRITIC_FINAL_OVERRIDES,
         "load": args.critic_load,
         "save": args.critic_save,
         "lr": args.critic_lr,
@@ -326,7 +336,40 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     return ans
 
 
-def _compute_trainer_input(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
+def _compute_trainer_namespace(
+    args: Namespace, trainer: MegatronTrainerConfig, *, raw_args: Namespace
+) -> Namespace:
+    ans = _compute_trainer_input(args=args, trainer=trainer, raw_args=raw_args)
+    requested_load = ans.load
+    if trainer.overrides:
+        from miles.utils.arguments import _normalize_parsed_args
+
+        overrides = {
+            name: vars(ans)[name]
+            for name in trainer.overrides
+            if trainer.role != CRITIC_ROLE or name not in _CRITIC_FINAL_OVERRIDES
+        }
+        overrides.update(load=ans.load, save=ans.save, save_hf=ans.save_hf)
+        ans = _normalize_parsed_args(ans, backend=args.train_backend, overrides=overrides)
+
+    if trainer.role == CRITIC_ROLE:
+        vars(ans).update(_CRITIC_FINAL_OVERRIDES)
+
+    # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
+    ans.load = requested_load
+    ans.requested_load = requested_load
+    if args.train_backend == "megatron":
+        resolve_args_checkpoint_load(ans)
+
+    return ans
+
+
+def _compute_trainer_input(
+    args: Namespace,
+    trainer: MegatronTrainerConfig,
+    *,
+    raw_args: Namespace | None = None,
+) -> Namespace:
     # TODO: support policies with different global batch sizes.
     assert "global_batch_size" not in trainer.overrides, (
         f"--megatron-config trainer {trainer.trainer_id!r} overrides global_batch_size; every policy has to "
@@ -340,11 +383,19 @@ def _compute_trainer_input(args: Namespace, trainer: MegatronTrainerConfig) -> N
         f"share the run's rollout arguments"
     )
 
-    ans = copy.deepcopy(args)
+    ans = copy.deepcopy(raw_args if raw_args is not None and trainer.overrides else args)
+    if raw_args is not None and trainer.overrides:
+        from miles.utils.arguments import _apply_custom_config
+
+        _apply_custom_config(ans)
     ans.trainer_id = trainer.trainer_id
     ans.trainer_model_id = trainer.model_id
+    if raw_args is not None:
+        ans.load = args.requested_load
 
     for key, value in trainer.overrides.items():
+        if raw_args is not None and trainer.role == CRITIC_ROLE and key in _CRITIC_FINAL_OVERRIDES:
+            continue
         assert hasattr(ans, key), (
             f"--megatron-config trainer {trainer.trainer_id!r} overrides {key!r}, which this run's argument "
             f"parser does not know"
