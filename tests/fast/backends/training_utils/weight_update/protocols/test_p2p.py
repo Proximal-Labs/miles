@@ -1,6 +1,8 @@
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import pytest
+
 
 def _server_args(rl_quant_profile: str | None = None) -> Any:
     return SimpleNamespace(rl_quant_profile=rl_quant_profile)
@@ -142,3 +144,48 @@ class TestGetOrCreateReplica:
 
         assert manager.replicas == [first, second]
         assert created == [True, False]
+
+
+class TestAssertOneShardLayout:
+    """The guard protecting the CPU replica shared by the targets of one rollout engine rank."""
+
+    def test_targets_holding_the_same_shard_agree(self, p2p_protocol: ModuleType) -> None:
+        """Two engines whose rank 0 holds the same slice can be written from one replica."""
+        p2p_protocol._assert_one_shard_layout(
+            rollout_engine_rank=0,
+            session_ids=["session-a", "session-b"],
+            remote_weight_infos_by_session_id={
+                "session-a": ({}, {"tp_rank": 0, "global_rank": 0}),
+                "session-b": ({}, {"tp_rank": 0, "global_rank": 8}),
+            },
+            session_id_to_server_args={"session-a": _server_args(), "session-b": _server_args()},
+        )
+
+    def test_targets_holding_different_shards_are_rejected(self, p2p_protocol: ModuleType) -> None:
+        """One replica can only hold one slice, so a mismatch would send the wrong weights."""
+        with pytest.raises(AssertionError, match="rollout engine rank 1 hold different shard layouts"):
+            p2p_protocol._assert_one_shard_layout(
+                rollout_engine_rank=1,
+                session_ids=["session-a", "session-b"],
+                remote_weight_infos_by_session_id={
+                    "session-a": ({}, {"tp_rank": 1}),
+                    "session-b": ({}, {"tp_rank": 2}),
+                },
+                session_id_to_server_args={"session-a": _server_args(), "session-b": _server_args()},
+            )
+
+    def test_targets_quantized_differently_are_rejected(self, p2p_protocol: ModuleType) -> None:
+        """The same slice in another quantization profile still needs its own replica."""
+        with pytest.raises(AssertionError, match="cannot share one CPU replica"):
+            p2p_protocol._assert_one_shard_layout(
+                rollout_engine_rank=0,
+                session_ids=["session-a", "session-b"],
+                remote_weight_infos_by_session_id={
+                    "session-a": ({}, {"tp_rank": 0}),
+                    "session-b": ({}, {"tp_rank": 0}),
+                },
+                session_id_to_server_args={
+                    "session-a": _server_args(),
+                    "session-b": _server_args(rl_quant_profile="fp8"),
+                },
+            )
