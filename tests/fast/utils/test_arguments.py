@@ -11,8 +11,9 @@ from unittest.mock import patch
 import pytest
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
+from miles.backends.sglang_utils.sglang_config import collect_eval_sglang_overrides
 from miles.utils.arguments import (
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,

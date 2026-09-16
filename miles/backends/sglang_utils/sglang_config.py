@@ -14,13 +14,19 @@ from miles.backends.sglang_utils.arguments import (
     _SKIPPED_SERVER_ARGS,
     _add_prefixed_server_args,
     add_sglang_router_arguments,
-    collect_eval_sglang_overrides,
 )
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def collect_eval_sglang_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    """``ServerArgs`` fields set via ``--eval-sglang-*``; absent means inherit ``--sglang-*``."""
+    return {
+        key.removeprefix("eval_sglang_"): value for key, value in vars(args).items() if key.startswith("eval_sglang_")
+    }
 
 
 # ---------------------------- raw config -----------------------------

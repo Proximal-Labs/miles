@@ -9,7 +9,8 @@ pytest.importorskip("sglang")
 
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.sglang_config import collect_eval_sglang_overrides
 
 
 def _sglang_flags() -> set[str]:
