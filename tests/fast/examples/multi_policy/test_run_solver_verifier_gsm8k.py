@@ -88,6 +88,7 @@ class TestBuildTrainArgs:
             "--sglang-enable-prefill-weight-versions": None,
             "--ci-test": None,
             "--no-enable-sample-ownership-checker": None,
+            "--max-weight-staleness": "1",
             "--ci-assert-prefill-lag-max": "1",
             "--save-debug-event-data": str(compute_events_dir(args)),
             "--save-debug-rollout-data": compute_rollout_data_path_template(args),
