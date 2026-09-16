@@ -45,6 +45,8 @@ class WeightUpdateOutput:
     def merge(cls, outputs: list["WeightUpdateOutput"]) -> "WeightUpdateOutput":
         if not outputs:
             return cls(weight_version=None, failed_cell_ids=())
+        weight_versions = {output.weight_version for output in outputs if output.weight_version is not None}
+        assert len(weight_versions) <= 1, f"trainer cells disagree on the weight version: {weight_versions}"
         failed_cell_ids = [cell_id for output in outputs for cell_id in output.failed_cell_ids]
         assert len(failed_cell_ids) == len(
             set(failed_cell_ids)
