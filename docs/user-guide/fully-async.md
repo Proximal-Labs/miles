@@ -99,6 +99,11 @@ different weight versions. The gap between a group's oldest weight version and t
 engines' current one is its **staleness**, and it is the reason a group that finished
 long ago may no longer be worth training on.
 
+Staleness uses the oldest recorded version across both generated tokens and prompt
+KV. With prefill weight tracking enabled, cached prompt KV from an older model can
+therefore make a group stale even when every generated token used current weights.
+Without prefill version metadata, the filter uses the generated-token versions.
+
 ### Arguments: Scheduling options
 
 Three flags control how much generation stays in flight:
