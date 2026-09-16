@@ -159,9 +159,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         }
 
         targets = self.transfer_plan.plan_p2p(engine_gpu_counts)
-        self.is_sender = bool(targets)
 
-        if self.is_sender:
+        if targets:
             self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
             (
                 self.remote_weight_infos_by_session_id,
@@ -174,6 +173,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 if not self.cell_updaters_of_cell_id[engine_cell_ids[t.rollout_engine_ind]].is_errored
             ]
 
+        self.is_sender = bool(targets)
+
+        if self.is_sender:
             targets_grouped_by_rollout_engine_rank: dict[int, list] = {}
             for target in targets:
                 targets_grouped_by_rollout_engine_rank.setdefault(target.rollout_engine_rank, []).append(target)
