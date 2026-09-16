@@ -220,8 +220,9 @@ class RolloutServer:
     def _count_startable_cells(self) -> int:
         return sum(
             1
-            for cell in self.normal_server_cells.values()
-            if (self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving
+            for cell in self.all_server_cells.values()
+            if not cell.is_errored
+            and ((self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving)
         )
 
     @property
