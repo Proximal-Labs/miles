@@ -3389,6 +3389,7 @@ def _resolve_event_directory(args: argparse.Namespace) -> None:
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     if args.sample_ownership_grace_steps is None:
         args.sample_ownership_grace_steps = 2 if args.ci_test else 10
+    was_requested_explicitly = args.enable_sample_ownership_checker is True
     if args.enable_sample_ownership_checker is None:
         args.enable_sample_ownership_checker = args.ci_test
     if not args.enable_sample_ownership_checker:
@@ -3418,6 +3419,9 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         if condition
     ]
     if unsupported:
+        if not was_requested_explicitly:
+            args.enable_sample_ownership_checker = False
+            return
         raise ValueError(f"--enable-sample-ownership-checker is not supported here: {'; '.join(unsupported)}")
 
     if args.sample_ownership_grace_steps < 0:
