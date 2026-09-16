@@ -229,7 +229,7 @@ class InferenceController:
             engine_gpu_offsets=srv.engine_gpu_offsets,
             engine_cell_ids=srv.engine_cell_ids,
             snapshot_cell_id_to_hashes={
-                cell_id: cell.meta.workers_hash for cell_id, cell in srv.all_server_cells.items()
+                cell_id: cell.meta.workers_hash for cell_id, cell in srv.normal_server_cells.items()
             },
         )
 
