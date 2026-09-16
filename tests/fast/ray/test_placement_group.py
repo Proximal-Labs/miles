@@ -754,9 +754,7 @@ class TestTakeOverTrainers:
         assert await take_over_trainers(args, handles={"alpha-actor": handle}) is initialized
 
         [trash] = list(tmp_path.glob(".trash_*"))
-        assert (trash / "trainer.jsonl").read_text() == (
-            "old step\nfinished step\n" if initialized else "old step\n"
-        )
+        assert (trash / "trainer.jsonl").read_text() == ("old step\nfinished step\n" if initialized else "old step\n")
         assert event_dir.is_dir() and list(event_dir.iterdir()) == []
         with log_path.open("a") as stream:
             stream.write("new step\n")
