@@ -7,6 +7,7 @@ import pytest
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
@@ -24,10 +25,14 @@ from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    ExplicitlyDroppedSamplesEvent,
+    TrainGroupStepEndEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -77,7 +82,7 @@ class TestDispose:
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
         executor.eval_generate_rollout = _SynchronousDisposable(disposed, "eval")
         executor.data_source = object()
-        executor.args = Namespace()
+        executor.args = Namespace(enable_sample_ownership_checker=False)
         executor._metric_checker = None
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
@@ -97,7 +102,7 @@ class TestDispose:
         executor.generate_rollout = None
         executor.eval_generate_rollout = None
         executor.data_source = object()
-        executor.args = Namespace()
+        executor.args = Namespace(enable_sample_ownership_checker=False)
         executor._metric_checker = None
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
@@ -110,6 +115,103 @@ class TestDispose:
         await executor.dispose()
 
         assert checked == [executor.args]
+
+
+class TestShutdownAccounting:
+    @pytest.mark.parametrize("with_lineage", [False, True])
+    async def test_shutdown_does_not_drop_a_trimmed_source_twice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_lineage: bool
+    ) -> None:
+        """A raw prefetched snapshot retains sources already dropped during DP scheduling."""
+        executor, event_dir = _make_shutdown_executor(tmp_path, monkeypatch)
+        samples = [Sample(index=index) for index in (22, 23)]
+        if with_lineage:
+            for sample in samples:
+                sample.lineage = SampleLineage(source_sample_index=sample.index, output_index=0, output_count=1)
+                sample.index += 100
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=2, data=samples, metadata={})
+        event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor"))
+        event_logger.log(
+            ExplicitlyDroppedSamplesEvent,
+            dict(source_sample_indices=[23], reason="dp_schedule_trim"),
+            print_log=False,
+        )
+
+        await _dispose_with_one_trained_step(executor, event_dir)
+
+        drops = [event for event in read_events(event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)]
+        assert [(event.source_sample_indices, event.reason) for event in drops] == [
+            ([23], "dp_schedule_trim"),
+            ([22], "shutdown_prefetched"),
+        ]
+
+    async def test_a_prefetched_batch_no_trainer_consumed_is_recorded_as_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the snapshotter holds the batch generated ahead of a shutdown, so nothing else records its loss."""
+        executor, event_dir = _make_shutdown_executor(tmp_path, monkeypatch)
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=1, data=[Sample(index=11)], metadata={})
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=2, data=[Sample(index=22)], metadata={})
+
+        await _dispose_with_one_trained_step(executor, event_dir)
+
+        drops = [event for event in read_events(event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)]
+        assert [(event.source_sample_indices, event.reason) for event in drops] == [([22], "shutdown_prefetched")]
+
+    async def test_a_dispose_without_a_pending_batch_records_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clean shutdown owes the ownership log no drops at all."""
+        executor, event_dir = _make_shutdown_executor(tmp_path, monkeypatch)
+
+        await _dispose_with_one_trained_step(executor, event_dir)
+
+        assert [event for event in read_events(event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)] == []
+
+    async def test_disposing_twice_records_the_abandoned_batch_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second drop of one source would itself be an ownership violation."""
+        executor, event_dir = _make_shutdown_executor(tmp_path, monkeypatch)
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=2, data=[Sample(index=22)], metadata={})
+
+        await _dispose_with_one_trained_step(executor, event_dir, times=2)
+
+        drops = [event for event in read_events(event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)]
+        assert [(event.source_sample_indices, event.reason) for event in drops] == [([22], "shutdown_prefetched")]
+
+
+def _make_shutdown_executor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[RolloutExecutor, Path]:
+    event_dir = tmp_path / "events"
+    executor = _make_executor(tmp_path, _CountingRolloutFn())
+    executor.args = make_args(
+        load=str(tmp_path),
+        save=str(tmp_path),
+        save_debug_event_data=str(event_dir),
+        enable_sample_ownership_checker=True,
+    )
+    executor._metric_checker = None
+    executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
+    monkeypatch.setattr(
+        rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
+    return executor, event_dir
+
+
+async def _dispose_with_one_trained_step(executor: RolloutExecutor, event_dir: Path, *, times: int = 1) -> None:
+    event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor"))
+    set_event_logger(event_logger)
+    try:
+        event_logger.log(
+            TrainGroupStepEndEvent,
+            dict(rollout_id=1, attempt=0, role="actor", cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            print_log=False,
+        )
+        for _ in range(times):
+            await executor.dispose()
+    finally:
+        set_event_logger(None)
 
 
 class TestSetEvalFleetInfo:
