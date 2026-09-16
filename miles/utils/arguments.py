@@ -291,9 +291,11 @@ def parse_args_and_get_parser(
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
     parser: argparse.ArgumentParser | None = None
+    training_backend_arg_names: set[str] = set()
 
     def add_miles_arguments_and_capture_parser(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
         nonlocal parser
+        training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
         return parser
 
@@ -307,8 +309,9 @@ def parse_args_and_get_parser(
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments_and_capture_parser)
 
-    args = _normalize_parsed_args(args, backend=backend)
-    values = vars(args) | {"sglang": SglangConfig.parse_args(args)}
+    megatron = MegatronConfig.parse_args(args, training_backend_arg_names=training_backend_arg_names)
+    sglang = SglangConfig.parse_args(args)
+    values = vars(args) | {"megatron": megatron, "sglang": sglang}
     values.update(RouterConfig.from_args(args))
 
     assert parser is not None
@@ -316,12 +319,17 @@ def parse_args_and_get_parser(
 
 
 def _normalize_parsed_args(
-    args: argparse.Namespace, *, backend: str, overrides: dict[str, Any] | None = None
+    args: argparse.Namespace,
+    *,
+    backend: str,
+    overrides: dict[str, Any] | None = None,
+    training_backend_arg_names: set[str] | None = None,
 ) -> argparse.Namespace:
     if backend == "megatron":
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
+        previous_names = set(vars(args))
         args.compress_ratios = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
@@ -336,6 +344,8 @@ def _normalize_parsed_args(
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
+        if training_backend_arg_names is not None:
+            training_backend_arg_names.update(vars(args).keys() - previous_names)
     else:
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
@@ -353,7 +363,10 @@ def _normalize_parsed_args(
     miles_validate_args(args, overrides=overrides)
 
     if backend == "megatron":
+        previous_names = set(vars(args))
         megatron_validate_args(args)
+        if training_backend_arg_names is not None:
+            training_backend_arg_names.update(vars(args).keys() - previous_names)
 
         # always use varlen
         args.variable_seq_lengths = True

@@ -1,12 +1,12 @@
 import argparse
-import copy
 import argparse
+import copy
 import logging
 import os
 import re
 from argparse import Namespace
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import pydantic
 import yaml
@@ -19,6 +19,9 @@ from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import MilesConfig
+
 
 # ---------------------------- constants -----------------------------
 
@@ -29,7 +32,9 @@ TrainerRole = Literal["actor", "critic"]
 TRAINER_CHECKPOINT_DIRNAME = "trainers"
 MODEL_ID_PATTERN = re.compile(rf"\A{DNS_LABEL_PATTERN}\Z")
 RESERVED_MODEL_ID = "eval"
-
+_CHECKPOINT_INPUT_NAMES = frozenset(
+    {"load", "requested_load", "finetune", "no_load_optim", "no_load_rng", "ckpt_step"}
+)
 _CRITIC_FINAL_OVERRIDES = {
     "loss_type": "value_loss",
     "kl_coef": 0,
@@ -203,6 +208,10 @@ class MegatronTrainerConfig(FrozenStrictBaseModel):
     model_id: str | None
     role: TrainerRole
     overrides: dict[str, Any]
+    raw_megatron: MegatronArgsNamespace = pydantic.Field(default_factory=MegatronArgsNamespace)
+    load: str | None = None
+    requested_load: str | None = None
+    resume_from_ckpt: bool = False
 
     @classmethod
     def resolve(cls, raw: _RawMegatronTrainerConfig) -> "MegatronTrainerConfig":
@@ -218,15 +227,61 @@ class MegatronConfig(FrozenStrictBaseModel):
     trainers: list[MegatronTrainerConfig]
 
     @classmethod
-    def parse_topology(cls, args: Namespace) -> "MegatronConfig":
-        return cls(trainers=_compute_trainers(args))
-
-    @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         from megatron.training.arguments import add_megatron_arguments
 
         add_megatron_arguments(parser)
 
+
+
+    @classmethod
+    def parse_topology(cls, args: Namespace) -> "MegatronConfig":
+        return cls(trainers=_compute_trainers(args))
+
+    @classmethod
+    def parse_args(
+        cls,
+        args: Namespace,
+        *,
+        training_backend_arg_names: set[str],
+    ) -> "MegatronConfig":
+        from miles.utils.arguments import _normalize_parsed_args
+
+        raw_args = copy.deepcopy(args)
+        args = _normalize_parsed_args(args, backend=args.train_backend, training_backend_arg_names=training_backend_arg_names)
+        raw_args.run_uuid = args.run_uuid
+
+        trainers = []
+        for trainer in _compute_trainers(args):
+            resolved = _compute_trainer_namespace(
+                args=args, trainer=trainer, raw_args=raw_args, training_backend_arg_names=training_backend_arg_names
+            )
+            values = vars(resolved)
+            trainer_backend_arg_names = training_backend_arg_names
+            trainers.append(
+                MegatronTrainerConfig(
+                    trainer_id=trainer.trainer_id,
+                    model_id=trainer.model_id,
+                    role=trainer.role,
+                    load=resolved.load,
+                    requested_load=resolved.requested_load,
+                    resume_from_ckpt=(
+                        has_megatron_checkpoint(resolved.requested_load) and not resolved.finetune
+                        if args.train_backend == "megatron"
+                        else resolved.requested_load is not None and Path(resolved.requested_load).is_dir()
+                    ),
+                    raw_megatron=MegatronArgsNamespace.from_args(
+                        resolved, names=trainer_backend_arg_names - _CHECKPOINT_INPUT_NAMES
+                    ),
+                    overrides={
+                        name: value
+                        for name, value in values.items()
+                        if (name not in trainer_backend_arg_names or name in _CHECKPOINT_INPUT_NAMES)
+                        and value != vars(args).get(name)
+                    },
+                )
+            )
+        return cls(trainers=trainers)
 
     @pydantic.model_validator(mode="after")
     def _validate_ids(self) -> "MegatronConfig":
@@ -263,11 +318,7 @@ class MegatronConfig(FrozenStrictBaseModel):
         raise KeyError(f"Unknown trainer model id {model_id!r}, known ids: {self.model_ids}")
 
 
-def resolve_megatron_config(args) -> MegatronConfig:
-    return MegatronConfig(trainers=_compute_trainers(args))
-
-
-def _compute_trainers(args) -> list[MegatronTrainerConfig]:
+def _compute_trainers(args: Namespace) -> list[MegatronTrainerConfig]:
     if (raw := _resolve_raw_megatron_config(args.megatron_config)) is None:
         trainers = [MegatronTrainerConfig(trainer_id=ACTOR_ROLE, model_id=None, role=ACTOR_ROLE, overrides={})]
     else:
@@ -275,7 +326,7 @@ def _compute_trainers(args) -> list[MegatronTrainerConfig]:
         trainers = [MegatronTrainerConfig.resolve(raw=t) for t in raw.trainers]
         assert trainers, "--megatron-config must declare at least one trainer"
 
-    if getattr(args, "use_critic", False):
+    if args.use_critic:
         assert (
             len({trainer.model_id for trainer in trainers}) == 1
         ), "training several policy models does not support --use-critic"
@@ -284,7 +335,7 @@ def _compute_trainers(args) -> list[MegatronTrainerConfig]:
     return trainers
 
 
-def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
+def _compute_critic_trainer(args: Namespace, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
     model_id = policy.model_id
     return MegatronTrainerConfig(
         trainer_id=CRITIC_ROLE if model_id is None else f"{model_id}-{CRITIC_ROLE}",
@@ -328,16 +379,24 @@ _ROLLOUT_SHARED_ARGS: frozenset[str] = frozenset(
 )
 
 
-def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
-    ans = _compute_trainer_input(args=args, trainer=trainer)
-    # TODO: a --use-critic critic keeps the actor\'s requested_load, so a hot restart reads the actor\'s checkpoint.
-    if args.megatron_config is not None:
-        resolve_args_checkpoint_load(ans)
-    return ans
+def compute_trainer_args(args: "MilesConfig", trainer: MegatronTrainerConfig) -> "MilesConfig":
+    from miles.utils.args.runtime import MilesConfig
+    from miles.utils.args.utils import config_values
+
+    values = copy.deepcopy(config_values(args))
+    values.update(vars(trainer.raw_megatron))
+    values.update(trainer.overrides)
+    values.update(
+        trainer_id=trainer.trainer_id,
+        trainer_model_id=trainer.model_id,
+        load=trainer.load,
+        requested_load=trainer.requested_load,
+    )
+    return MilesConfig.model_validate(values)
 
 
 def _compute_trainer_namespace(
-    args: Namespace, trainer: MegatronTrainerConfig, *, raw_args: Namespace
+    args: Namespace, trainer: MegatronTrainerConfig, *, raw_args: Namespace, training_backend_arg_names: set[str]
 ) -> Namespace:
     ans = _compute_trainer_input(args=args, trainer=trainer, raw_args=raw_args)
     requested_load = ans.load
@@ -350,7 +409,9 @@ def _compute_trainer_namespace(
             if trainer.role != CRITIC_ROLE or name not in _CRITIC_FINAL_OVERRIDES
         }
         overrides.update(load=ans.load, save=ans.save, save_hf=ans.save_hf)
-        ans = _normalize_parsed_args(ans, backend=args.train_backend, overrides=overrides)
+        ans = _normalize_parsed_args(
+            ans, backend=args.train_backend, overrides=overrides, training_backend_arg_names=training_backend_arg_names
+        )
 
     if trainer.role == CRITIC_ROLE:
         vars(ans).update(_CRITIC_FINAL_OVERRIDES)
