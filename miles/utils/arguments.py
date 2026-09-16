@@ -15,9 +15,8 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
-from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.backends.sglang_utils.sglang_config import SglangConfig, collect_eval_sglang_overrides
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -363,7 +362,9 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    values = vars(args) | {"sglang": SglangConfig.parse_args(args)}
+    sglang = SglangConfig.parse_args(args)
+    values = {name: value for name, value in vars(args).items() if not name.startswith("eval_sglang_")}
+    values["sglang"] = sglang
     values.update(RouterConfig.from_args(args))
     return MilesConfig.model_validate(values), parser
 

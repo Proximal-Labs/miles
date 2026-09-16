@@ -46,7 +46,8 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
     )
     router_addrs = {model_cfg.name: addr for model_cfg, addr in zip(config.models, ready, strict=True)}
 
-    primary = router_addrs[config.models[0].name]
+    primary_model = next(model for model in config.models if not model.eval_only)
+    primary = router_addrs[primary_model.name]
     args.sglang_router_ip = primary.host
     args.sglang_router_port = primary.port
     args.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in router_addrs.items()}

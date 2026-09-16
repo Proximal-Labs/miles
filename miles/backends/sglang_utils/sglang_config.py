@@ -14,13 +14,19 @@ from miles.backends.sglang_utils.arguments import (
     _SKIPPED_SERVER_ARGS,
     _add_prefixed_server_args,
     add_sglang_router_arguments,
-    collect_eval_sglang_overrides,
 )
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def collect_eval_sglang_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    """``ServerArgs`` fields set via ``--eval-sglang-*``; absent means inherit ``--sglang-*``."""
+    return {
+        key.removeprefix("eval_sglang_"): value for key, value in vars(args).items() if key.startswith("eval_sglang_")
+    }
 
 
 # ---------------------------- raw config -----------------------------
@@ -71,6 +77,7 @@ class _RawModelConfig(FrozenStrictBaseModel):
         validation_alias=pydantic.AliasChoices("server_groups", "engine_groups"),
     )
     update_weights: bool | None = None
+    eval_only: bool = False
 
     @property
     def total_num_gpus(self) -> int:
@@ -212,6 +219,7 @@ class ModelConfig(FrozenStrictBaseModel):
     model_path: str | None
     server_groups: list[ServerGroupConfig]
     update_weights: bool
+    eval_only: bool = False
 
     @classmethod
     def resolve(cls, raw: _RawModelConfig, args, offset_cursor: "_OffsetCursor") -> "ModelConfig":
@@ -241,7 +249,9 @@ class ModelConfig(FrozenStrictBaseModel):
 
         update_weights = raw.update_weights
         if update_weights is None:
-            if effective_model_path != args.hf_checkpoint:
+            if raw.eval_only:
+                update_weights = False
+            elif effective_model_path != args.hf_checkpoint:
                 logger.warning(
                     f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
                     f"from hf_checkpoint='{args.hf_checkpoint}'. Defaulting update_weights to False. "
@@ -251,11 +261,14 @@ class ModelConfig(FrozenStrictBaseModel):
             else:
                 update_weights = True
 
+        assert not (raw.eval_only and update_weights), "Eval-only models must not receive training weight updates"
+
         return cls(
             name=raw.name,
             model_path=raw.model_path,
             server_groups=server_groups,
             update_weights=update_weights,
+            eval_only=raw.eval_only,
         )
 
     @property
@@ -274,6 +287,7 @@ class ModelConfig(FrozenStrictBaseModel):
 class SglangConfig(FrozenStrictBaseModel):
     models: list[ModelConfig]
     base_server_arg_values: dict[str, Any]
+    evaluation: bool = False
 
     @classmethod
     def parse_args(cls, args: Namespace) -> "SglangConfig":
@@ -288,6 +302,7 @@ class SglangConfig(FrozenStrictBaseModel):
         values = [
             self.base_server_arg_values | group.overrides
             for model in self.models
+            if model.eval_only == self.evaluation
             for group in model.server_groups
             if group.worker_type != WorkerType.PLACEHOLDER
         ]
@@ -442,6 +457,7 @@ def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
     overrides = _eval_sglang_overrides(args)
     return raw.model_copy(
         update=dict(
+            eval_only=True,
             # Never joins the training broadcast group; the fleet is synced by snapshot only.
             update_weights=False if raw.update_weights is None else raw.update_weights,
             server_groups=[

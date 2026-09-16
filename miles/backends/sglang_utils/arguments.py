@@ -1,7 +1,6 @@
 import argparse
 
 from sglang.srt.server_args import ServerArgs
-from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
 
 
@@ -137,13 +136,6 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
     parser.add_argument = new_add_argument_wrapper
     ServerArgs.add_cli_args(parser)
     parser.add_argument = old_add_argument
-
-
-def collect_eval_sglang_overrides(args) -> dict:
-    """``ServerArgs`` fields set via ``--eval-sglang-*``; absent means inherit ``--sglang-*``."""
-    return {
-        key.removeprefix("eval_sglang_"): value for key, value in config_values(args).items() if key.startswith("eval_sglang_")
-    }
 
 
 def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
