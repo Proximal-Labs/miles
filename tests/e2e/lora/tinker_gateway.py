@@ -1,9 +1,11 @@
 """Shared gateway setup for Tinker GPU acceptance tests."""
 
+import os
+import signal
 import subprocess
 import time
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 import miles.utils.external_utils.command_utils as U
 
@@ -41,10 +43,18 @@ def running_gateway():
         "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
         f'--extra-args "--tinker-base-model {BASE_MODEL}"'
     )
-    server = subprocess.Popen(["bash", "-c", serve_cmd])
+    server = subprocess.Popen(["bash", "-c", serve_cmd], start_new_session=True)
     try:
         _wait_for_gateway(server)
         yield f"http://127.0.0.1:{GATEWAY_PORT}"
     finally:
-        server.terminate()
-        server.wait(timeout=120)
+        try:
+            with suppress(ProcessLookupError):
+                os.killpg(server.pid, signal.SIGTERM)
+            server.wait(timeout=30)
+        finally:
+            # Descendants can retain CI stdout after the launcher has exited.
+            with suppress(ProcessLookupError):
+                os.killpg(server.pid, signal.SIGKILL)
+            server.wait(timeout=30)
+            subprocess.run(["ray", "stop", "--force"], check=True, timeout=120)
