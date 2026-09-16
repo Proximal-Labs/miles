@@ -640,6 +640,7 @@ class TestCreateTrainingModels:
             critic_lr=None,
             critic_lr_warmup_iters=None,
             trainer_controller_addrs=None,
+            save_debug_event_data=None,
         )
 
         await create_training_models(args, self._rollout_executor())
