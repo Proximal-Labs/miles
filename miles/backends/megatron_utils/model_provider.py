@@ -19,7 +19,6 @@ from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
-from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
@@ -97,6 +96,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
         provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
     if getattr(args, "moe_aux_loss_coeff", None) is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
+
+    # Imported here on purpose: tests/fast/.../test_bridge_mtp_detachment.py exec()s this function's AST in
+    # a bare namespace (to avoid GPU-only Megatron imports), so module-level names are not available to it.
+    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 
     apply_dsa_backend_args(provider, args)
 
