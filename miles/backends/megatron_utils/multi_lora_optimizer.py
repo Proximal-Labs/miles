@@ -2,7 +2,6 @@
 requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
-from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
 
@@ -13,6 +12,8 @@ from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOpt
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
+
+from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
 
 
 def build_multi_lora_optimizer(
-    args: Namespace,
+    args: TrainerConfig,
     config: OptimizerConfig,
     model_chunks: Sequence,
 ) -> MegatronOptimizer:
