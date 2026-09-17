@@ -105,6 +105,7 @@ over at rollout 0 with the run.
 
 - **Entry**: the E2E module forwards to `tests.utils.soak.deploy.scenario`; injection, observation and recovery checks live in `tests/utils/soak/`.
 - **Training**: synchronous GSM8K training recipe, 250 rollouts by default, disaggregated P2P weight transfer; no accuracy threshold or tail evaluation requirement.
+- **Weight checks**: same-version consistency and per-tensor adjacent-version movement. Checks run in the soak package, never as production publication gates.
 - **Takeovers**: exponential mean interval 600 seconds; at least two applied takeovers; each must preserve non-orchestration workloads and resume from checkpoints within `SAVE_INTERVAL + 1` steps.
 - **Recovery**: a takeover is eligible only with a checkpoint; the next action waits for a new checkpoint and training beyond the pre-takeover rollout. Launcher lifetime is tracked separately from recovery.
 - **Mixed mode**: `run --mix-ft` adds trainer and rollout faults to the same runner, with mean intervals 120 and 240 seconds. Each FT kind needs its own effects, replacement/reconfiguration and recovery evidence; deployment success cannot satisfy FT coverage.

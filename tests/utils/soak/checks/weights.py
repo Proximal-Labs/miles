@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from tests.utils.soak.checks import inference_engine_weight_checksum_consistency
+from tests.utils.soak.checks.inference_engine_weight_movement import check as check_weight_movement
 
 from miles.utils.audit_utils.event_logger.models import (
     Event,
@@ -54,7 +55,19 @@ def assert_published_weight_checksums(
     ), f"Expected at least {minimum_publications} successful weight publications"
     assert checksums == publications, "Checksum versions or engine incarnations do not cover every publication"
     assert_weight_checksum_history(events)
+    movement_versions = {
+        (event.trainer_model_id, event.version_epoch, event.weight_version)
+        for event in events
+        if isinstance(event, InferenceEngineWeightChecksumEvent)
+        and (event.trainer_model_id, event.version_epoch, event.weight_version, event.update_id) in publications
+    }
+    if movement_versions:
+        counts: dict[tuple[str | None, str | None], int] = {}
+        for model_id, epoch, _ in movement_versions:
+            counts[(model_id, epoch)] = counts.get((model_id, epoch), 0) + 1
+        assert any(count >= 2 for count in counts.values()), "Movement requires at least two observed versions"
 
 
 def assert_weight_checksum_history(events: Sequence[Event]) -> None:
     assert not inference_engine_weight_checksum_consistency.check(list(events)), "Same-version engine weights differ"
+    assert not (issues := check_weight_movement(events)), f"Weight movement failed: {issues}"
