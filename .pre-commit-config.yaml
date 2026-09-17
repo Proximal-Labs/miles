@@ -11,6 +11,13 @@ ci:
   autoupdate_schedule: quarterly
 
 repos:
+  - repo: local
+    hooks:
+      - id: config-attribute-access
+        name: config attribute access
+        entry: uv run --no-project python tools/lint_config_attribute_access.py
+        language: system
+        pass_filenames: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
