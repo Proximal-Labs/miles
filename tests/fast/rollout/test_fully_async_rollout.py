@@ -334,16 +334,20 @@ class TestRetryBuffer:
 
 
 async def test_aborted_group_recycled(monkeypatch):
+    """An aborted prompt is submitted again before its retry can count as successful."""
     aborted = make_group(1, status=Sample.Status.ABORTED)
     for sample in aborted:
         sample.reward = None
     data_source = FakeDataSource(scripted=[aborted])
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     calls = 0
+    retried = asyncio.Event()
 
     async def abort_once(state, group, **kwargs):
         nonlocal calls
         calls += 1
+        if calls > 1 and group is aborted:
+            retried.set()
         for sample in group:
             sample.status = Sample.Status.ABORTED if calls == 1 else Sample.Status.COMPLETED
             if calls > 1:
@@ -353,6 +357,7 @@ async def test_aborted_group_recycled(monkeypatch):
     fn = make_fn(monkeypatch, args, data_source, generate=abort_once)
 
     output = await fn(train_input(rollout_id=0))
+    await asyncio.wait_for(retried.wait(), timeout=5)
 
     assert calls >= 2
     assert not fn._retry_buffer
@@ -488,13 +493,17 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     prompt_group = make_group(1)
     data_source = FakeDataSource(scripted=[prompt_group])
     submitted = []
+    retried = asyncio.Event()
 
     async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
+            if group is prompt_group:
+                retried.set()
             for sample in group:
                 sample.status = Sample.Status.COMPLETED
+                sample.reward = 1
             return group
         expanded = []
         for sample in group:
@@ -505,6 +514,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
     output = await fn(train_input(rollout_id=0))
+    await asyncio.wait_for(retried.wait(), timeout=5)
 
     assert data_source.num_get_calls >= 1
     assert not fn._retry_buffer
