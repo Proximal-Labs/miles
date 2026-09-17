@@ -72,8 +72,7 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
-    if precise_all_gather or precise_p2p:
-        assert not ft_mode.colocate, "Precise fault soaks require disaggregated trainers and rollout engines"
+    assert not ft_mode.colocate, "Random fault soaks require disaggregated trainers and rollout engines"
     assert not (precise_all_gather and precise_p2p), "Select one precise hook scenario"
     if mix_wall_clock:
         assert precise_all_gather or precise_p2p, "Mixed injection requires a precise hook scenario"
@@ -117,7 +116,7 @@ def run_ci(
         )
         + "--mini-ft-controller-enable "
     )
-    if precise_all_gather or precise_p2p:
+    if ft_mode.has_real_rollout:
         train_args += "--update-weight-transfer-mode p2p "
     if precise_all_gather or precise_p2p:
         train_args += "--update-weights-timeout 600 "

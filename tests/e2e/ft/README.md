@@ -28,6 +28,7 @@
 - **Kubernetes**: the same random FT scenario accepts a Kubernetes backend through the launch configuration. Kubernetes execution requires shared storage, worker images and release-management credentials; the Ray CI lane does not provide those resources. Hot restart remains Kubernetes-only.
 - **Validation status**: registration is not execution evidence. This implementation has not run the scenarios, calibrated durations, or verified convergence on the CI machines.
 
+- **Random transfer coverage**: all real-rollout random soaks use P2P and reject colocation; fake-rollout modes retain trainer-only coverage and do not exercise weight transfer.
 - **Precise all-gather entry**: `test_precise_all_gather__kill_train__dp2_tp2.py` calls the shared random-crash runner with `precise_all_gather=True`.
 - **Precise topology**: real rollout engines, disaggregated TP2 trainers, and p2p weight transfer.
 - **Precise faults**: trainer all-gather hooks inject `sigkill`, `sigstop`, and training-thread deadlock; every enabled form must produce an independently observed effect and matching worker dispatch evidence.
