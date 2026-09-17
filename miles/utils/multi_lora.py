@@ -32,7 +32,7 @@ class EmptyBatchTimeoutError(RuntimeError):
 
 
 def is_multi_lora_enabled(args: Any) -> bool:
-    return getattr(args, "multi_lora", False)
+    return args.multi_lora
 
 
 def define_new_adapter_metrics(snapshot: dict) -> None:
@@ -66,7 +66,7 @@ def targets_expert_leaves(target_modules: Any) -> bool:
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
     surface. Called from ``miles_validate_args``; a no-op for normal runs."""
-    args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
+    args.multi_lora = args.multi_lora_n_adapters > 0
     if not args.multi_lora:
         return
 
@@ -82,23 +82,23 @@ def validate_multi_lora_args(args: Any) -> None:
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
     # Adapter routing is only recompute-safe without pipelining; enforce at launch.
-    assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
+    assert args.pipeline_model_parallel_size == 1, (
         "Multi-LoRA requires --pipeline-model-parallel-size 1: no single rank holds a "
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
-    assert getattr(args, "qkv_format", "thd") == "thd", (
+    assert args.qkv_format == "thd", (
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
         f"micro-batch packs samples contiguously, which bshd does not (got {args.qkv_format!r})."
     )
-    assert not getattr(args, "experts_shared_outer_loras", False), (
+    assert not args.experts_shared_outer_loras, (
         "Multi-LoRA does not support --experts-shared-outer-loras; MoE expert adapters "
         "use the per-expert layout. Drop the flag (and --sglang-experts-shared-outer-loras)."
     )
     # Expert-parallel sizes are checked post-finalize in _validate_multi_lora_moe_support:
     # --expert-tensor-parallel-size stays None until Megatron's own validate_args resolves it.
-    assert "muon" not in str(getattr(args, "optimizer", "")).lower(), (
+    assert "muon" not in str(args.optimizer).lower(), (
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
         "implemented for Adam-family per-slot optimizers"
     )
@@ -107,17 +107,17 @@ def validate_multi_lora_args(args: Any) -> None:
         "implemented for the distributed path, not the colocated tensor path."
     )
     assert (
-        not getattr(args, "indep_dp", False) and "train" not in args.ft_components
+        not args.indep_dp and "train" not in args.ft_components
     ), "Multi-LoRA does not support independent-DP training; remove 'train' from --ft-components"
     assert not args.offload_train, (
         "Multi-LoRA retains per-adapter gradient accumulation in GPU buffers between "
         "train calls; --offload-train would destroy it. Disable offload for multi-LoRA."
     )
-    assert not getattr(args, "enable_witness", False), (
+    assert not args.enable_witness, (
         "Multi-LoRA runs without the distributed optimizer (per-slot LayerWise "
         "optimizers); the witness module assumes use_distributed_optimizer"
     )
-    assert getattr(args, "sglang_tokenizer_worker_num", 1) == 1, (
+    assert args.sglang_tokenizer_worker_num == 1, (
         "Multi-LoRA requires --sglang-tokenizer-worker-num 1: each tokenizer "
         "worker process holds its own LoRA registry, so per-step adapter "
         "upserts resolve against whichever worker the router picks and fail "
@@ -130,14 +130,14 @@ def validate_multi_lora_args(args: Any) -> None:
         "depend on batch contents. Drop --calculate-per-token-loss."
     )
     assert args.multi_lora_max_coalesce_wait_s >= 0, "--multi-lora-max-coalesce-wait-s must be non-negative"
-    assert (getattr(args, "optimizer", "adam") or "adam").lower() == "adam", (
+    assert (args.optimizer or "adam").lower() == "adam", (
         "Multi-LoRA requires --optimizer adam: the per-slot optimizer isolation "
         "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
         f"Adam semantics; got --optimizer {args.optimizer}"
     )
     # --global-batch-size may legitimately be unset (Megatron derives it later);
     # leave the adapter cap unset too rather than multiplying None.
-    if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:
+    if args.multi_lora_max_adapter_global_batch_size is None and args.global_batch_size is not None:
         args.multi_lora_max_adapter_global_batch_size = 4 * args.global_batch_size
     if args.multi_lora_max_adapter_global_batch_size is not None:
         assert (

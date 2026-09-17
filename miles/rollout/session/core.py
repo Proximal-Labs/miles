@@ -180,9 +180,9 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # setdefault) so agent-side overrides cannot break token accumulation.
     request_body["logprobs"] = True
     request_body["return_meta_info"] = True
-    if getattr(args, "use_rollout_routing_replay", False):
+    if args.use_rollout_routing_replay:
         request_body["return_routed_experts"] = True
-    if getattr(args, "use_rollout_indexer_replay", False):
+    if args.use_rollout_indexer_replay:
         request_body["return_indexer_topk"] = True
     # Must be False so stop-token text is trimmed from assistant content;
     # token IDs still come from logprobs below.

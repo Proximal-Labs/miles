@@ -26,7 +26,7 @@ def create_multi_lora_instance(args: Namespace):
 
     from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_megatron
 
-    lora_type_name = getattr(args, "lora_type", "lora").lower()
+    lora_type_name = args.lora_type.lower()
     if lora_type_name == "canonical_lora":
         from megatron.bridge.peft.canonical_lora import CanonicalLoRA
 
@@ -42,9 +42,9 @@ def create_multi_lora_instance(args: Namespace):
         n_adapters=args.multi_lora_n_adapters,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
-        dropout=getattr(args, "lora_dropout", 0.0),
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
-        lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
+        dropout=args.lora_dropout,
+        lora_A_init_method=args.lora_A_init_method,
+        lora_B_init_method=args.lora_B_init_method,
     )
 
 
@@ -271,7 +271,7 @@ def save_multi_lora_checkpoints(
                 "r": config.rank,
                 "lora_alpha": config.alpha,
                 "target_modules": target_modules_hf,
-                "lora_dropout": getattr(args, "lora_dropout", 0.0),
+                "lora_dropout": args.lora_dropout,
                 "bias": "none",
                 "task_type": "CAUSAL_LM",
             }

@@ -37,7 +37,7 @@ def get_param_transform(name: str, param, model_type: str):
 
 # batched-expert archs (qwen3_moe, glm4_moe_lite, ...): unfuse into the per-expert names SGLang expects.
 def _batched_experts_matches(name: str, param) -> bool:
-    return getattr(param, "dim", lambda: 0)() == 3 and (
+    return param.dim() == 3 and (
         name.endswith(".experts.gate_up_proj") or name.endswith(".experts.down_proj")
     )
 

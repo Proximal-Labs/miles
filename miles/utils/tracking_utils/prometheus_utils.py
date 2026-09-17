@@ -80,7 +80,7 @@ class _PrometheusCollector:
         self._Gauge = Gauge
         self._gauges: dict = {}
         self._run_name = (
-            getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
+            args.prometheus_run_name or args.wandb_group or "miles_training"
         )
         self._label_keys = ["run_name"]
         self._label_vals = [self._run_name]
