@@ -127,7 +127,8 @@ async def _run_and_collect(
             async def generate_one(input_sample: Sample):
                 if args.use_session_server == V2:
                     input_sample.metadata["session_headers"] = {
-                        "X-Miles-Agent-Run-Id": "parity-agent", "X-Miles-Context-Id": "parity-context"
+                        "X-Miles-Agent-Run-Id": "parity-agent",
+                        "X-Miles-Context-Id": "parity-context",
                     }
                 input_sample.metadata.update(
                     {
@@ -205,7 +206,9 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
 
     assert v2.session_metadata["finalization"]["complete"] is True
     v2_linear_metadata = {
-        key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree", "finalization", "contexts")
+        key: value
+        for key, value in v2.session_metadata.items()
+        if key not in ("agent", "tree", "finalization", "contexts")
     }
     _assert_bits_equal(v1.session_metadata, v2_linear_metadata, path="session_metadata")
     assert_sample_bitwise_equal(

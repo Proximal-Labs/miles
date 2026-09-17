@@ -9,8 +9,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.errors import SessionConflictError
+from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
@@ -127,7 +127,8 @@ class SessionTree:
         matcher = message_matcher if message_matcher is not None else strict_message_matches
         if previous_response_id is not None:
             candidates = [
-                node for node in self.nodes
+                node
+                for node in self.nodes
                 if node.context_id == context_id and node.response_id == previous_response_id
             ]
             if len(candidates) != 1:

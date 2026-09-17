@@ -19,8 +19,8 @@ from miles.rollout.session.core import (
 from miles.rollout.session.errors import SessionConflictError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.contexts import SessionContext, split_context_headers
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     SessionStateV2,
@@ -76,7 +76,9 @@ class SessionCoreV2(SessionCore):
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
         if session.contexts.contexts:
-            metadata["contexts"] = [context.model_dump(exclude_none=True) for context in session.contexts.contexts.values()]
+            metadata["contexts"] = [
+                context.model_dump(exclude_none=True) for context in session.contexts.contexts.values()
+            ]
         if session.lifecycle.finished is not None:
             metadata["finalization"] = asdict(session.lifecycle.finished)
         return metadata
@@ -248,8 +250,11 @@ class SessionCoreV2(SessionCore):
                 session.lifecycle.resolve(generation.ticket, failed=failed)
 
     def _prepare_generation(
-        self, session: SessionStateV2, body: bytes,
-        context: SessionContext | None, previous_response_id: str | None,
+        self,
+        session: SessionStateV2,
+        body: bytes,
+        context: SessionContext | None,
+        previous_response_id: str | None,
     ) -> _PreparedGeneration:
         session.lifecycle.check_open()
         if len(session.tree.nodes) + session.lifecycle.pending_count >= MAX_NODES:
@@ -261,8 +266,11 @@ class SessionCoreV2(SessionCore):
             session.contexts.bind_rendering(context_id, request_body)
         request_messages = request_body.get("messages", [])
         position_for_request(
-            session, request_messages, message_matcher=self.registry.message_matcher,
-            context_id=context_id, previous_response_id=previous_response_id,
+            session,
+            request_messages,
+            message_matcher=self.registry.message_matcher,
+            context_id=context_id,
+            previous_response_id=previous_response_id,
         )
         prompt_token_ids = prepare_pretokenized(
             session, request_messages, tools=request_body.get("tools"), tito_tokenizer=tokenizer

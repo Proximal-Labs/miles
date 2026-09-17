@@ -38,9 +38,7 @@ class SessionContext(BaseModel):
 
     def headers(self) -> dict[str, str]:
         return {
-            header: value
-            for header, name in _CONTEXT_HEADERS.items()
-            if (value := getattr(self, name)) is not None
+            header: value for header, name in _CONTEXT_HEADERS.items() if (value := getattr(self, name)) is not None
         }
 
 
@@ -99,5 +97,7 @@ class SessionContexts:
         )
         existing = self._rendering.get(context_id)
         if existing is not None and existing != contract:
-            raise SessionConflictError("Context rendering changed; start a new context for model/template/tool changes.")
+            raise SessionConflictError(
+                "Context rendering changed; start a new context for model/template/tool changes."
+            )
         self._rendering[context_id] = contract

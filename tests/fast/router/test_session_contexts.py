@@ -25,20 +25,29 @@ class RecordingBackend:
         record.response["id"] = f"response-{len(self.requests)}"
         record.response["model"] = "test"
         record.response["choices"][0]["index"] = 0
-        record.response["usage"] = {"prompt_tokens": len(payload["input_ids"]), "completion_tokens": 1, "total_tokens": len(payload["input_ids"]) + 1}
+        record.response["usage"] = {
+            "prompt_tokens": len(payload["input_ids"]),
+            "completion_tokens": 1,
+            "total_tokens": len(payload["input_ids"]) + 1,
+        }
         return {"status_code": 200, "headers": {}, "response_body": json.dumps(record.response).encode()}
 
 
 @pytest.fixture
 def context_core():
-    core = _build_core(_ARGS.model_copy(update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.keep_all"}))
+    core = _build_core(
+        _ARGS.model_copy(update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.keep_all"})
+    )
     core.backend = RecordingBackend()
     return core
 
 
 async def chat(core, sid, context, messages, **extra):
     return await core.chat_completions(
-        sid, method="POST", query="", headers=context.headers(),
+        sid,
+        method="POST",
+        query="",
+        headers=context.headers(),
         body=json.dumps({"messages": messages, **extra}).encode(),
     )
 
@@ -72,7 +81,9 @@ async def test_compaction_keeps_execution_link_and_starts_token_root(context_cor
     assert state.contexts.contexts["compacted"].derived_from_context_id == "first"
 
 
-@pytest.mark.parametrize("change", [{"tools": []}, {"model": "another"}, {"chat_template_kwargs": {"enable_thinking": True}}])
+@pytest.mark.parametrize(
+    "change", [{"tools": []}, {"model": "another"}, {"chat_template_kwargs": {"enable_thinking": True}}]
+)
 async def test_context_rejects_rendering_changes_before_inference(context_core, change):
     core = context_core
     sid, state = await _fresh_state(core)
@@ -96,7 +107,11 @@ def test_context_registration_rejects_unknown_and_changing_relationships():
     with pytest.raises(SessionConflictError, match="parent changed"):
         contexts.register(SessionContext(agent_run_id="child", context_id="new"))
     with pytest.raises(SessionConflictError, match="same agent"):
-        contexts.register(SessionContext(agent_run_id="child", context_id="new", parent_agent_run_id="main", derived_from_context_id="main"))
+        contexts.register(
+            SessionContext(
+                agent_run_id="child", context_id="new", parent_agent_run_id="main", derived_from_context_id="main"
+            )
+        )
 
 
 @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
@@ -120,10 +135,15 @@ def test_routes_preserve_identity_and_reject_invalid_predecessors(context_core, 
         invalid["X-Miles-Previous-Response-Id"] = response.json()["id"]
         assert client.post(f"{endpoint}/{path}", json=payload, headers=invalid).status_code == 409
         assert len(context_core.backend.requests) == 1
-        assert client.post(f"{endpoint}/{path}", json=payload, headers={"X-Miles-Context-Id": "first"}).status_code == 400
+        assert (
+            client.post(f"{endpoint}/{path}", json=payload, headers={"X-Miles-Context-Id": "first"}).status_code == 400
+        )
         records = client.get(endpoint).json()["records"]
         payload["messages"] += [records[0]["response"]["choices"][0]["message"], {"role": "user", "content": "next"}]
-        foreign = {**SessionContext(agent_run_id="other", context_id="other").headers(), "X-Miles-Previous-Response-Id": response.json()["id"]}
+        foreign = {
+            **SessionContext(agent_run_id="other", context_id="other").headers(),
+            "X-Miles-Previous-Response-Id": response.json()["id"],
+        }
         assert client.post(f"{endpoint}/{path}", json=payload, headers=foreign).status_code == 409
         assert client.post(f"{endpoint}/{path}", json=payload, headers=invalid).status_code == 200
         assert client.get(endpoint).json()["metadata"]["tree"]["nodes"][1]["parent"] == 0

@@ -69,8 +69,10 @@ def position_for_request(
 ) -> None:
     """Move the view (``active_leaf``) to the attach point for *request_messages*."""
     attach = state.tree.find_attach_point(
-        request_messages, message_matcher=message_matcher,
-        context_id=context_id, previous_response_id=previous_response_id,
+        request_messages,
+        message_matcher=message_matcher,
+        context_id=context_id,
+        previous_response_id=previous_response_id,
     )
 
     if attach.node is not None and attach.node.truncated:

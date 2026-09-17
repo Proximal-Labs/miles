@@ -423,7 +423,14 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
             if "X-Miles-Context-Id" in session_headers:
-                previous = next((generated_messages[id(message)][1] for message in reversed(messages) if id(message) in generated_messages), None)
+                previous = next(
+                    (
+                        generated_messages[id(message)][1]
+                        for message in reversed(messages)
+                        if id(message) in generated_messages
+                    ),
+                    None,
+                )
                 if previous is not None:
                     client.headers["X-Miles-Previous-Response-Id"] = previous
                 else:
