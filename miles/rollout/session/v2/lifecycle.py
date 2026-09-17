@@ -82,7 +82,7 @@ class SessionLifecycle:
     async def _drain(self, *, producer_finished: bool, timeout: float) -> FinishedSession:
         try:
             await asyncio.wait_for(self._idle.wait(), timeout=timeout)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             pass
         async with self.lock:
             self.finished = FinishedSession(
