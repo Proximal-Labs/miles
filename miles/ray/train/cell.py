@@ -234,7 +234,7 @@ class TrainerCell:
         start = time.monotonic()
         try:
             result = await asyncio.gather(
-                *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]
+                *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]  # config-access-exempt: attribute selected at runtime from fn_name
             )
             log_structured(
                 logger.info,

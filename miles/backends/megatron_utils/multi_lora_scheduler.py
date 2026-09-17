@@ -66,14 +66,14 @@ def build_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) 
 
 def install_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) -> None:
     """Attach the adapter's scheduler to the optimizer, keyed by slot."""
-    if not hasattr(optimizer, "miles_slot_schedulers"):
+    if not hasattr(optimizer, "miles_slot_schedulers"):  # config-access-exempt: slot schedulers are attached lazily to optimizers
         optimizer.miles_slot_schedulers = {}
     optimizer.miles_slot_schedulers[adapter.slot] = build_slot_scheduler(args, optimizer, adapter, resume_step)
 
 
 def drop_slot_scheduler(optimizer, slot: int) -> None:
     """Detach a retired slot's scheduler (the next tenant installs its own)."""
-    getattr(optimizer, "miles_slot_schedulers", {}).pop(slot, None)
+    getattr(optimizer, "miles_slot_schedulers", {}).pop(slot, None)  # config-access-exempt: slot schedulers are attached lazily to optimizers
 
 
 def step_slot_schedulers(optimizer, step_batch_sizes: dict[int, int]) -> dict[int, float]:

@@ -124,12 +124,12 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
             continue
         adapter = module.adapters[idx]
         for param in adapter.parameters():
-            main = getattr(param, "main_param", None)
+            main = getattr(param, "main_param", None)  # config-access-exempt: main_param is optional backend-attached tensor metadata
             target_main_params.add(id(main if main is not None else param))
 
-    chained = getattr(optimizer, "chained_optimizers", [optimizer])
+    chained = getattr(optimizer, "chained_optimizers", [optimizer])  # config-access-exempt: optimizer wrappers differ in chained_optimizers support
     for chained_optimizer in chained:
-        inner = getattr(chained_optimizer, "optimizer", chained_optimizer)
+        inner = getattr(chained_optimizer, "optimizer", chained_optimizer)  # config-access-exempt: optimizer wrappers differ in optimizer support
         if inner is None:
             continue
         # TE/apex FusedAdam tracks the Adam step per param GROUP, not per param;

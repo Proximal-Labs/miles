@@ -75,7 +75,7 @@ class _TensorBackuperNormal(TensorBackuper):
                 target=backup_dict[name],
                 source=param.detach(),
                 non_blocking=True,
-                allow_resize=getattr(param, "miles_dynamic_shape", False),
+                allow_resize=getattr(param, "miles_dynamic_shape", False),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
         torch.cuda.synchronize()
 
@@ -87,7 +87,7 @@ class _TensorBackuperNormal(TensorBackuper):
                 target=self._backups[dst_tag][name],
                 source=self._backups[src_tag][name],
                 non_blocking=False,
-                allow_resize=getattr(model_tensors[name], "miles_dynamic_shape", False),
+                allow_resize=getattr(model_tensors[name], "miles_dynamic_shape", False),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
 
     @torch.no_grad()
@@ -99,7 +99,7 @@ class _TensorBackuperNormal(TensorBackuper):
                 target=param,
                 source=backup_dict[name],
                 non_blocking=True,
-                allow_resize=getattr(param, "miles_dynamic_shape", False),
+                allow_resize=getattr(param, "miles_dynamic_shape", False),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
         torch.cuda.synchronize()
 
@@ -141,7 +141,7 @@ class _TensorBackuperMainCast(TensorBackuper):
                 target=self._extras_backup[name],
                 source=tensor.detach(),
                 non_blocking=True,
-                allow_resize=getattr(tensor, "miles_dynamic_shape", False),
+                allow_resize=getattr(tensor, "miles_dynamic_shape", False),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
@@ -163,7 +163,7 @@ class _TensorBackuperMainCast(TensorBackuper):
                 target=tensor,
                 source=self._extras_backup[name],
                 non_blocking=True,
-                allow_resize=getattr(tensor, "miles_dynamic_shape", False),
+                allow_resize=getattr(tensor, "miles_dynamic_shape", False),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
         torch.cuda.synchronize()
         if self._expected_hashes is not None:
