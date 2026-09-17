@@ -9,6 +9,7 @@ engines.
 import json
 import os
 import socket
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -237,7 +238,9 @@ def write_manifest(args: ScriptArgs, rendered_train_args: str) -> None:
 def execute(args: ScriptArgs) -> None:
     rendered_train_args = train_args(args)
     write_manifest(args, rendered_train_args)
+    dependency_site_packages = Path(U.repo_base_dir).parents[1] / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     python_paths = [
+        str(dependency_site_packages),
         args.megatron_path,
         str(HARBOR_EXAMPLE_DIR),
         str(HARBOR_DOCKER_EXAMPLE_DIR),
@@ -263,6 +266,8 @@ def execute(args: ScriptArgs) -> None:
         "E2B_API_URL": args.e2b_api_url,
         "E2B_SANDBOX_URL": args.e2b_sandbox_url,
     }
+    if e2b_api_key := os.environ.get("E2B_API_KEY"):
+        extra_env_vars["E2B_API_KEY"] = e2b_api_key
     U.execute_train(
         train_args=rendered_train_args,
         config=args,
