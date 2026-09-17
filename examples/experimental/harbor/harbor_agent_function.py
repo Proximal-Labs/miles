@@ -31,6 +31,9 @@ Env vars (read on the rollout worker):
                          -- it decides whose quota a run spends)
   HARBOR_ENV_KWARGS      JSON object passed as ``EnvironmentConfig.kwargs``
                          (backend-specific, e.g. Daytona's auto_snapshot)
+  metadata.harbor_environment_kwargs
+                         per-sample environment kwargs merged over the global
+                         object (for example an E2B prebuilt template ID)
   E2B_API_KEY_FILE / DAYTONA_API_KEY_FILE / ...
                          the launcher forwards the provider key by file PATH;
                          the worker resolves it into the SDK's env var here
@@ -131,9 +134,7 @@ class HarnessBinding:
     model_name: Callable[[str], str] = lambda model: model
 
 
-def _terminus_kwargs(
-    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
-) -> dict[str, Any]:
+def _terminus_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "parser_name": "xml",
         "interleaved_thinking": True,
@@ -161,9 +162,7 @@ def _openai_env(session_url: str, api_key: str) -> dict[str, str]:
     return {"OPENAI_API_KEY": api_key, "OPENAI_API_BASE": session_url}
 
 
-def _claude_code_kwargs(
-    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
-) -> dict[str, Any]:
+def _claude_code_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None) -> dict[str, Any]:
     # WebSearch / WebFetch are Anthropic server-side tools; the session server
     # translates client-side tools onto an OpenAI-compatible backend only.
     kwargs: dict[str, Any] = {"disallowed_tools": "WebSearch,WebFetch"}
@@ -191,9 +190,7 @@ def _mini_swe_agent_env(session_url: str, api_key: str) -> dict[str, str]:
     return {**_openai_env(session_url, api_key), "MSWEA_COST_TRACKING": "ignore_errors"}
 
 
-def _no_kwargs(
-    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
-) -> dict[str, Any]:
+def _no_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None) -> dict[str, Any]:
     return {}
 
 
@@ -229,9 +226,7 @@ def _opencode_model_entry(sampling_params: dict[str, Any], max_seq_len: int | No
     return {"limit": limit} if limit else {}
 
 
-def _opencode_kwargs(
-    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
-) -> dict[str, Any]:
+def _opencode_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None) -> dict[str, Any]:
     provider, model_id = _opencode_provider_model(model)
     # Deliberately no max_turns: the OpenCode agent exposes no turn-cap flag,
     # so honouring HARBOR_AGENT_MAX_ITERATIONS would be a silent no-op.
@@ -297,7 +292,7 @@ def _ensure_provider_key() -> None:
         os.environ[key_env] = resolve_provider_api_key(key_env, spec["file_env_var"], spec["default_path"])
 
 
-def _environment_config():
+def _environment_config(metadata: dict[str, Any] | None = None):
     """``HARBOR_ENV_TYPE`` straight through to Harbor's ``EnvironmentType``: adding a
     backend is Harbor's job, not a branch here. Backend-specific settings ride in
     ``HARBOR_ENV_KWARGS`` (a JSON object) as ``EnvironmentConfig.kwargs``."""
@@ -309,6 +304,10 @@ def _environment_config():
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
     kwargs = json.loads(os.getenv("HARBOR_ENV_KWARGS", "{}") or "{}")
+    task_kwargs = (metadata or {}).get("harbor_environment_kwargs", {})
+    if not isinstance(task_kwargs, dict):
+        raise TypeError("metadata.harbor_environment_kwargs must be an object")
+    kwargs.update(task_kwargs)
     if env_type == EnvironmentType.DAYTONA:
         # a killed worker never reaches Harbor's teardown, and Harbor's Daytona defaults (0) never reclaim;
         # the stop timer outlasts the trial cap because an in-sandbox agent looks idle to Daytona
@@ -316,10 +315,7 @@ def _environment_config():
         kwargs.setdefault("auto_stop_interval_mins", trial_min + 30)
         kwargs.setdefault("auto_delete_interval_mins", 1440)
         if int(kwargs["auto_stop_interval_mins"]) <= trial_min:
-            raise ValueError(
-                f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox "
-                f"mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes"
-            )
+            raise ValueError(f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes")
     overrides = {}
     for field, var in (
         ("override_memory_mb", "HARBOR_OVERRIDE_MEMORY_MB"),
@@ -370,7 +366,7 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
             kwargs=agent_kwargs,
             extra_allowed_hosts=_allowed_hosts("HARBOR_AGENT_ALLOWED_HOSTS"),
         ),
-        environment=_environment_config(),
+        environment=_environment_config(metadata),
         trials_dir=Path(os.getenv("HARBOR_TRIALS_DIR", "/tmp/harbor_trials")),
         timeout_multiplier=float(os.getenv("HARBOR_TIMEOUT_MULTIPLIER", "2.0")),
         **extra,
