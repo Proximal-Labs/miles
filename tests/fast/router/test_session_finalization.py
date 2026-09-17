@@ -19,6 +19,7 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_sampl
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2 import core as core_module
 from miles.rollout.session.v2 import session_state
+from miles.rollout.session.v2.postprocessor_hub import default_postprocess
 from miles.utils.types import Sample
 
 
@@ -206,3 +207,21 @@ def test_finish_route_validates_input_and_sealed_snapshot(core):
         reply = client.post(f"{endpoint}/samples", json={"snapshot_id": finished.json()["snapshot_id"]})
         assert reply.status_code == 200
         assert client.delete(endpoint).status_code == 204
+
+
+def test_capped_occurrence_cannot_own_tokens_it_does_not_contain():
+    metadata = {"tree": {"nodes": [{"id": 0, "completion_span": [1, 3]}, {"id": 1, "completion_span": [3, 4]}]}}
+    short = Sample(
+        tokens=[0, 10], response_length=1, loss_mask=[1], metadata={"leaf": {"node_id": 0, "path_node_ids": [0]}}
+    )
+    full = Sample(
+        tokens=[0, 10, 11, 20],
+        response_length=3,
+        loss_mask=[1, 1, 1],
+        metadata={"leaf": {"node_id": 1, "path_node_ids": [0, 1]}},
+    )
+    samples = default_postprocess([full, short], metadata)
+    assert samples == [full, short]
+    assert short.loss_mask == [1]
+    assert full.loss_mask == [0, 1, 1]
+
