@@ -3383,7 +3383,7 @@ def _resolve_event_directory(args: argparse.Namespace) -> None:
         args.save_debug_event_data = os.path.join(tempfile.gettempdir(), "miles-ci", args.run_uuid, EVENTS_DIRNAME)
 
     if args.log_inference_engine_weight_checksums is None:
-        args.log_inference_engine_weight_checksums = event_directory_was_requested
+        args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
 
 
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:

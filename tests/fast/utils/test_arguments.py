@@ -365,6 +365,14 @@ class TestEventDirectoryDefaults:
         assert args.save_debug_event_data is not None
         assert args.log_inference_engine_weight_checksums is False
 
+    def test_ci_with_an_event_analyzer_collects_engine_weight_checksums(self) -> None:
+        """Enabling analysis preserves checksum evidence even with an implicit CI directory."""
+        args = self._parse(["--ci-test", "--enable-event-analyzer"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
     def test_engine_weight_checksums_can_be_requested_explicitly_in_ci(self) -> None:
         """The explicit flag overrides the directory-derived default."""
         args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef", "--log-inference-engine-weight-checksums"])
