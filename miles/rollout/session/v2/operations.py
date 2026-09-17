@@ -41,13 +41,26 @@ def split_generation_headers(headers: dict) -> tuple[GenerationIntent, dict]:
 
 
 def request_fingerprint(
-    body: bytes, *, method: str, query: str, context: SessionContext | None,
-    previous_response_id: str | None, intent: GenerationIntent,
+    body: bytes,
+    *,
+    method: str,
+    query: str,
+    context: SessionContext | None,
+    previous_response_id: str | None,
+    intent: GenerationIntent,
 ) -> str:
     try:
         canonical = json.dumps(
-            [json.loads(body), method, query, context.model_dump() if context else None,
-             previous_response_id, intent.model_dump()], sort_keys=True, allow_nan=False,
+            [
+                json.loads(body),
+                method,
+                query,
+                context.model_dump() if context else None,
+                previous_response_id,
+                intent.model_dump(),
+            ],
+            sort_keys=True,
+            allow_nan=False,
         )
     except (ValueError, UnicodeDecodeError) as exc:
         raise MessageValidationError("Invalid generation request; use a finite JSON payload.") from exc

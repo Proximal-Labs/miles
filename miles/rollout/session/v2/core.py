@@ -204,10 +204,18 @@ class SessionCoreV2(SessionCore):
         context, previous_response_id, headers = split_context_headers(headers)
         intent, headers = split_generation_headers(headers)
         key = intent.idempotency_key
-        fingerprint = request_fingerprint(
-            body, method=method, query=query, context=context,
-            previous_response_id=previous_response_id, intent=intent,
-        ) if key is not None else None
+        fingerprint = (
+            request_fingerprint(
+                body,
+                method=method,
+                query=query,
+                context=context,
+                previous_response_id=previous_response_id,
+                intent=intent,
+            )
+            if key is not None
+            else None
+        )
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -215,18 +223,33 @@ class SessionCoreV2(SessionCore):
             if operation is None:
                 generation = self._prepare_generation(session, body, context, previous_response_id, intent)
                 if key is not None:
-                    operation = asyncio.create_task(self._execute_generation(
-                        session_id, session, generation, method=method, query=query, headers=headers,
-                    ))
+                    operation = asyncio.create_task(
+                        self._execute_generation(
+                            session_id,
+                            session,
+                            generation,
+                            method=method,
+                            query=query,
+                            headers=headers,
+                        )
+                    )
                     session.operations.remember(key, fingerprint, operation)
         if operation is not None:
             response = await asyncio.shield(operation)
             return Response(content=response.body, status_code=response.status_code, headers=dict(response.headers))
-        return await self._execute_generation(session_id, session, generation, method=method, query=query, headers=headers)
+        return await self._execute_generation(
+            session_id, session, generation, method=method, query=query, headers=headers
+        )
 
     async def _execute_generation(
-        self, session_id: str, session: SessionStateV2, generation: _PreparedGeneration,
-        *, method: str, query: str, headers: dict,
+        self,
+        session_id: str,
+        session: SessionStateV2,
+        generation: _PreparedGeneration,
+        *,
+        method: str,
+        query: str,
+        headers: dict,
     ) -> Response:
         failed = True
         try:
@@ -297,7 +320,9 @@ class SessionCoreV2(SessionCore):
             if reference is not None and not any(
                 node.generation_id == reference and node.context_id == context_id for node in session.tree.nodes
             ):
-                raise SessionConflictError("Retry references must identify a committed generation in the same context.")
+                raise SessionConflictError(
+                    "Retry references must identify a committed generation in the same context."
+                )
         request_messages = request_body.get("messages", [])
         position_for_request(
             session,

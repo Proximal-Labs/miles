@@ -230,7 +230,12 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
                     media_type="text/event-stream",
                 )
             envelope = convert_response(openai_response).model_copy(update={"id": openai_response.id})
-            return Response(content=_anthropic_wire_json(envelope), status_code=200, headers=generation_headers, media_type=JSON_MEDIA_TYPE)
+            return Response(
+                content=_anthropic_wire_json(envelope),
+                status_code=200,
+                headers=generation_headers,
+                media_type=JSON_MEDIA_TYPE,
+            )
         except Exception:
             # Post-commit failures keep the record and return JSON 500, never partial SSE.
             logger.exception("Anthropic response conversion failed for session %s", session_id)
