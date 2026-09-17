@@ -176,6 +176,7 @@ def train_args(args: ScriptArgs) -> str:
         "--use-rollout-routing-replay "
     )
     agent_args = (
+        "--pin-rollout-manager-to-head "
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path harbor_agent_function.run "
         "--custom-rm-path generate.reward_func "
