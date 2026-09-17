@@ -179,7 +179,6 @@ def train_args(args: ScriptArgs) -> str:
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path harbor_agent_function.run "
         "--custom-rm-path generate.reward_func "
-        "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model qwen36 --use-session-server v2 "
         "--session-server-port 30000 --session-server-workers 64 "
