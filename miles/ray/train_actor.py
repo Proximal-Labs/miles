@@ -118,14 +118,13 @@ class TrainRayActor(NodeProbeMixin):
 
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
-            args.distributed_backend = DET_NCCL_BACKEND_NAME
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
-        backend = args.distributed_backend
-        if getattr(args, "fsdp_cpu_offload", False) and getattr(args, "fsdp_cpu_backend", None):
-            cpu_backend = args.fsdp_cpu_backend
-            backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
+        backend = DET_NCCL_BACKEND_NAME if args.debug_deterministic_collective else args.distributed_backend
+        if args.train_backend == "fsdp" and args.trainer_backend.fsdp_cpu_offload and args.trainer_backend.fsdp_cpu_backend:
+            cpu_backend = args.trainer_backend.fsdp_cpu_backend
+            backend = f"cpu:{cpu_backend},cuda:{backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         dist.init_process_group(
@@ -134,8 +133,10 @@ class TrainRayActor(NodeProbeMixin):
         )
         init_gloo_group()
 
-        args.rank = dist.get_rank()
-        args.world_size = dist.get_world_size()
+        backend_args = args.trainer_backend
+        with backend_args.mutable():
+            backend_args.rank = dist.get_rank()
+            backend_args.world_size = dist.get_world_size()
         rebind_env_reporting(args)
 
         try:

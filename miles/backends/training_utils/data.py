@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     if args.true_on_policy_mode:
-        if args.bf16:
+        if args.trainer_backend.bf16:
             return torch.bfloat16
-        if args.fp16:
+        if args.trainer_backend.fp16:
             return torch.float16
     return torch.float32
 

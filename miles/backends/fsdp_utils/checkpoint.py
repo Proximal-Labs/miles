@@ -120,7 +120,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
+    load_optimizer = not actor.args.trainer_backend.no_load_optim and hasattr(actor, "optimizer")
     if load_optimizer and optimizer_dir.exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
@@ -164,7 +164,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         dist.barrier()
         return
 
-    if checkpoint_payload.get("rng") is not None and not getattr(actor.args, "no_load_rng", False):
+    if checkpoint_payload.get("rng") is not None and not actor.args.trainer_backend.no_load_rng:
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
@@ -215,7 +215,7 @@ def save(actor: Any, iteration: int) -> None:
     dcp.save(state_dict, checkpoint_id=str(model_dir))
 
     # Save optimizer state (skip if --no-save-optim is set)
-    save_optimizer_state = not getattr(actor.args, "no_save_optim", False)
+    save_optimizer_state = not actor.args.trainer_backend.no_save_optim
     if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}

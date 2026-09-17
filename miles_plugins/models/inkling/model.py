@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
 import transformer_engine.pytorch as te
@@ -22,6 +23,9 @@ from miles_plugins.models.inkling.layers import (
     InklingSelfAttention,
     InklingSharedExperts,
 )
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,7 @@ class InklingExtra:
         self.hidden_size = t["hidden_size"]
         self.num_hidden_layers = t["num_hidden_layers"]
         self.vocab_size = t["vocab_size"]
+        self.unpadded_vocab_size = t.get("unpadded_vocab_size")
         self.rms_norm_eps = t["rms_norm_eps"]
         self.dense_mlp_idx = int(t.get("dense_mlp_idx", 0))
         self.dense_intermediate_size = int(t.get("dense_intermediate_size", t["intermediate_size"]))
@@ -174,7 +179,7 @@ def get_inkling_block_spec(config, vp_stage=None):
     return TransformerBlockSubmodules(layer_specs=local, layer_norm=base.layer_norm)
 
 
-def get_inkling_spec(args, config, vp_stage=None):
+def get_inkling_spec(args: TrainerConfig, config: TransformerConfig, vp_stage: int | None = None) -> ModuleSpec:
     """--spec entry for the miles standard provider path."""
     import json
 
@@ -252,35 +257,39 @@ class InklingGPTModel(GPTModel):
             )
 
 
-def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *, mm_towers=False):
+def inkling_model_provider(
+    pre_process: bool = True,
+    post_process: bool = True,
+    vp_stage: int | None = None,
+    *,
+    args: TrainerConfig,
+    mm_towers: bool = False,
+) -> InklingGPTModel:
     import json
 
-    from megatron.training import get_args
-
-    args = get_args()
-    if getattr(args, "context_parallel_size", 1) > 1:
-        assert getattr(args, "allgather_cp", False), "Inkling CP requires --allgather-cp (zigzag CP not supported)"
+    if args.trainer_backend.context_parallel_size > 1:
+        assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
     config = build_inkling_config(
         text_cfg,
-        tp=args.tensor_model_parallel_size,
-        ep=args.expert_model_parallel_size,
-        pp=args.pipeline_model_parallel_size,
-        bf16=args.bf16,
-        sp=args.sequence_parallel,
-        etp=getattr(args, "expert_tensor_parallel_size", 1) or 1,
-        cp=getattr(args, "context_parallel_size", 1) or 1,
-        varlen=getattr(args, "variable_seq_lengths", True),
-        permute_fusion=getattr(args, "moe_permute_fusion", False),
-        fp32_residual=getattr(args, "fp32_residual_connection", False),
-        pp_first_stage_layers=getattr(args, "decoder_first_pipeline_num_layers", None),
-        pp_last_stage_layers=getattr(args, "decoder_last_pipeline_num_layers", None),
+        tp=args.trainer_backend.tensor_model_parallel_size,
+        ep=args.trainer_backend.expert_model_parallel_size,
+        pp=args.trainer_backend.pipeline_model_parallel_size,
+        bf16=args.trainer_backend.bf16,
+        sp=args.trainer_backend.sequence_parallel,
+        etp=args.trainer_backend.expert_tensor_parallel_size or 1,
+        cp=args.trainer_backend.context_parallel_size or 1,
+        varlen=args.trainer_backend.variable_seq_lengths,
+        permute_fusion=args.trainer_backend.moe_permute_fusion,
+        fp32_residual=args.trainer_backend.fp32_residual_connection,
+        pp_first_stage_layers=args.trainer_backend.decoder_first_pipeline_num_layers,
+        pp_last_stage_layers=args.trainer_backend.decoder_last_pipeline_num_layers,
     )
     model = InklingGPTModel(
         config=config,
         transformer_layer_spec=get_inkling_block_spec(config, vp_stage=vp_stage),
         vocab_size=text_cfg["vocab_size"],
-        max_sequence_length=args.max_position_embeddings,
+        max_sequence_length=args.trainer_backend.max_position_embeddings,
         pre_process=pre_process,
         post_process=post_process,
         position_embedding_type="none",
@@ -294,10 +303,18 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
     return model
 
 
-def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None):
+def inkling_mm_model_provider(
+    pre_process: bool = True,
+    post_process: bool = True,
+    vp_stage: int | None = None,
+    *,
+    args: TrainerConfig,
+) -> InklingGPTModel:
     """Multimodal provider: the text model plus the frozen HF vision/audio towers.
 
     A separate entry point instead of a CLI switch -- multimodal launch scripts pass
     this as --custom-model-provider-path.
     """
-    return inkling_model_provider(pre_process, post_process, vp_stage, mm_towers=True)
+    return inkling_model_provider(
+        pre_process=pre_process, post_process=post_process, vp_stage=vp_stage, args=args, mm_towers=True
+    )

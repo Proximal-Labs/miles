@@ -82,7 +82,7 @@ def save_model_hashes(args, model: Sequence[DDP], iteration: int, hashes: dict[s
 def check_model_hashes(args, model: Sequence[DDP], iteration: int) -> None:
     if not args.ci_test or not args.ci_check_model_hash:
         return
-    path = _hash_file_path(args.load, iteration)
+    path = _hash_file_path(args.trainer_backend.load, iteration)
     if not path.is_file():
         raise AssertionError(f"[CI hash] Hash file missing: {path}")
     with path.open("r", encoding="utf-8") as f:

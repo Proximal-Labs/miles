@@ -495,7 +495,7 @@ def save_lora_checkpoint(
 
     # ---- Training state (iteration + scheduler, and the optimizer unless opted out) ----
     if optimizer is not None:
-        save_optimizer = not getattr(args, "no_save_optim", False)
+        save_optimizer = not args.trainer_backend.no_save_optim
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
             {

@@ -23,7 +23,7 @@ def _uses_formal_contract(hf_config, args) -> bool:
 
 
 def _resolve_precision(base_policy, hf_config, args):
-    if getattr(args, "fp16", False):
+    if getattr(args.trainer_backend, "fp16", False):
         raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
     if not base_policy.keep_fp32_master:
         raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires fp32 master weights")
@@ -42,7 +42,7 @@ def _resolve_sync_dtype(name, checkpoint_dtype):
 
 
 def _instance_patch_applies(hf_config, args) -> bool:
-    return _uses_formal_contract(hf_config, args) and not getattr(args, "fp16", False)
+    return _uses_formal_contract(hf_config, args) and not getattr(args.trainer_backend, "fp16", False)
 
 
 def _apply_model_patch(model) -> None:

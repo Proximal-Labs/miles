@@ -1,12 +1,16 @@
 import logging
 import os
 from copy import deepcopy
+from typing import TYPE_CHECKING
 
 import wandb
 from wandb.sdk.lib.runid import generate_id
 
 from miles.utils.args.utils import config_values
 from miles.utils.env_report.launcher_report import read_launcher_report
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import AllConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +31,7 @@ def _wandb_settings(**kwargs):
     return wandb.Settings(init_timeout=300.0, **kwargs)
 
 
-def init_wandb_primary(args):
+def init_wandb_primary(args: "AllConfig") -> None:
     if not args.use_wandb:
         args.wandb_run_id = None
         return
@@ -52,7 +56,8 @@ def init_wandb_primary(args):
     # add random 6 length string with characters
     if args.wandb_random_suffix:
         group = args.wandb_group + "_" + generate_id()
-        run_name = f"{group}-RANK_{args.rank}"
+        rank = args.megatron.base_args["rank"] if args.train_backend == "megatron" else args.fsdp.rank
+        run_name = f"{group}-RANK_{rank}"
     else:
         group = args.wandb_group
         run_name = args.wandb_group

@@ -1,5 +1,4 @@
 # Adapt from https://github.com/NVIDIA/Megatron-LM/blob/b1efb3c7126ef7615e8c333432d76e08038e17ff/pretrain_gpt.py
-import argparse
 import inspect
 import logging
 from contextlib import nullcontext
@@ -18,6 +17,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -25,7 +25,7 @@ from miles.utils.replay_base import routing_replay_manager
 logger = logging.getLogger(__name__)
 
 
-def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
+def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     """Copy the runtime config from args onto a bridge-built provider.
 
     Bridge mode builds the model from the HF checkpoint and skips
@@ -39,64 +39,64 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     new training flags here, not spread across the code.
     """
     # parallelism / sharding
-    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-    provider.expert_model_parallel_size = args.expert_model_parallel_size
-    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-    provider.sequence_parallel = args.sequence_parallel
-    provider.context_parallel_size = args.context_parallel_size
+    provider.tensor_model_parallel_size = args.trainer_backend.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = args.trainer_backend.pipeline_model_parallel_size
+    provider.expert_model_parallel_size = args.trainer_backend.expert_model_parallel_size
+    provider.expert_tensor_parallel_size = args.trainer_backend.expert_tensor_parallel_size
+    provider.sequence_parallel = args.trainer_backend.sequence_parallel
+    provider.context_parallel_size = args.trainer_backend.context_parallel_size
 
     # loss / sequence handling
-    provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
-    provider.variable_seq_lengths = args.variable_seq_lengths
+    provider.calculate_per_token_loss = args.trainer_backend.calculate_per_token_loss  # CP>1 VL models assert this
+    provider.variable_seq_lengths = args.trainer_backend.variable_seq_lengths
 
     # Match the non-bridge path: MTP must only train its own draft parameters.
     if getattr(args, "enable_mtp_training", False):
         provider.mtp_detach_heads = True
 
     # numerics (training infra, not model-defining)
-    provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
-    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
-    provider.fp32_residual_connection = args.fp32_residual_connection
-    provider.deterministic_mode = args.deterministic_mode
+    provider.attention_softmax_in_fp32 = args.trainer_backend.attention_softmax_in_fp32
+    provider.gradient_accumulation_fusion = args.trainer_backend.gradient_accumulation_fusion
+    provider.fp32_residual_connection = args.trainer_backend.fp32_residual_connection
+    provider.deterministic_mode = args.trainer_backend.deterministic_mode
 
     # activation recompute (silently dropped before -> no checkpointing -> OOM at long context)
-    provider.recompute_granularity = args.recompute_granularity
-    provider.recompute_method = args.recompute_method
-    provider.recompute_num_layers = args.recompute_num_layers
-    provider.recompute_modules = args.recompute_modules
+    provider.recompute_granularity = args.trainer_backend.recompute_granularity
+    provider.recompute_method = args.trainer_backend.recompute_method
+    provider.recompute_num_layers = args.trainer_backend.recompute_num_layers
+    provider.recompute_modules = args.trainer_backend.recompute_modules
 
     # activation / memory offload
-    provider.cpu_offloading_num_layers = args.cpu_offloading_num_layers
-    provider.distribute_saved_activations = args.distribute_saved_activations
+    provider.cpu_offloading_num_layers = args.trainer_backend.cpu_offloading_num_layers
+    provider.distribute_saved_activations = args.trainer_backend.distribute_saved_activations
     # cpu_offloading is derived, set only when cpu_offloading_num_layers>0; guard its presence.
-    if hasattr(args, "cpu_offloading"):
-        provider.cpu_offloading = args.cpu_offloading
+    if hasattr(args.trainer_backend, "cpu_offloading"):
+        provider.cpu_offloading = args.trainer_backend.cpu_offloading
 
     # communication overlap
-    provider.tp_comm_overlap = args.tp_comm_overlap
+    provider.tp_comm_overlap = args.trainer_backend.tp_comm_overlap
 
     # fp8
-    provider.fp8 = args.fp8
-    provider.fp8_recipe = args.fp8_recipe
+    provider.fp8 = args.trainer_backend.fp8
+    provider.fp8_recipe = args.trainer_backend.fp8_recipe
 
     # attention kernel selection
-    provider.attention_backend = args.attention_backend
+    provider.attention_backend = args.trainer_backend.attention_backend
 
     # MoE token dispatcher (same-name, always present)
-    provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
+    provider.moe_token_dispatcher_type = args.trainer_backend.moe_token_dispatcher_type
 
     # arg name != provider field; arg default None, so propagate only when the user set it
-    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
-        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
-        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    if getattr(args.trainer_backend, "decoder_first_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_first_pipeline_stage = args.trainer_backend.decoder_first_pipeline_num_layers
+    if getattr(args.trainer_backend, "decoder_last_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_last_pipeline_stage = args.trainer_backend.decoder_last_pipeline_num_layers
 
     # MoE training knobs: override only when explicitly set, else keep the provider's value
-    if getattr(args, "moe_router_bias_update_rate", None) is not None:
-        provider.moe_router_bias_update_rate = args.moe_router_bias_update_rate
-    if getattr(args, "moe_aux_loss_coeff", None) is not None:
-        provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
+    if getattr(args.trainer_backend, "moe_router_bias_update_rate", None) is not None:
+        provider.moe_router_bias_update_rate = args.trainer_backend.moe_router_bias_update_rate
+    if getattr(args.trainer_backend, "moe_aux_loss_coeff", None) is not None:
+        provider.moe_aux_loss_coeff = args.trainer_backend.moe_aux_loss_coeff
 
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
@@ -135,7 +135,7 @@ class LinearForLastLayer(torch.nn.Linear):
 
 
 def get_model_provider_func(
-    args: argparse.Namespace,
+    args: TrainerConfig,
     role: Literal["actor", "critic"] = "actor",
 ):
     # Support custom model provider path (similar to --custom-rm-path for reward models)
@@ -151,11 +151,15 @@ def get_model_provider_func(
             assert config is None, "miles builds the config from args, so it expects config to be None"
             custom_model_provider = load_function(args.custom_model_provider_path)
             # Check if the custom provider supports vp_stage parameter
-            has_vp_stage = "vp_stage" in inspect.signature(custom_model_provider).parameters
+            parameters = inspect.signature(custom_model_provider).parameters
+            provider_kwargs = {"args": args} if "args" in parameters else {}
+            has_vp_stage = "vp_stage" in parameters
             if has_vp_stage:
-                model = custom_model_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+                model = custom_model_provider(
+                    pre_process=pre_process, post_process=post_process, vp_stage=vp_stage, **provider_kwargs
+                )
             else:
-                model = custom_model_provider(pre_process=pre_process, post_process=post_process)
+                model = custom_model_provider(pre_process=pre_process, post_process=post_process, **provider_kwargs)
             # Apply critic output layer if needed
             if post_process and role == "critic":
                 model.output_layer = LinearForLastLayer(
@@ -227,11 +231,11 @@ def get_model_provider_func(
         Returns:
             Union[GPTModel, megatron.legacy.model.GPTModel]: The returned model
         """
-        use_te = args.transformer_impl == "transformer_engine"
+        use_te = args.trainer_backend.transformer_impl == "transformer_engine"
 
         # Experimental loading arguments from yaml
         assert config is None, "miles builds the config from args, so it expects config to be None"
-        config = core_transformer_config_from_args(args)
+        config = core_transformer_config_from_args(args.trainer_backend)
 
         # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
         # (e.g. the run_megatron debug worker) won't have it, so default to False.
@@ -240,13 +244,13 @@ def get_model_provider_func(
             # output layer / embedding.
             config.mtp_detach_heads = True
 
-        if args.spec is not None:
-            transformer_layer_spec = import_module(args.spec)
+        if args.trainer_backend.spec is not None:
+            transformer_layer_spec = import_module(args.trainer_backend.spec)
             # Allow the spec to be a function so that user can use customized Megatron easier.
             if callable(transformer_layer_spec):
                 transformer_layer_spec = transformer_layer_spec(args, config, vp_stage)
         else:
-            if args.num_experts:
+            if args.trainer_backend.num_experts:
                 # Define the decoder block spec
                 kwargs = {
                     "use_transformer_engine": use_te,
@@ -258,18 +262,18 @@ def get_model_provider_func(
                 # Define the decoder layer spec
                 if use_te:
                     transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
-                        num_experts=args.num_experts,
-                        moe_grouped_gemm=args.moe_grouped_gemm,
-                        qk_layernorm=args.qk_layernorm,
-                        multi_latent_attention=args.multi_latent_attention,
+                        num_experts=args.trainer_backend.num_experts,
+                        moe_grouped_gemm=args.trainer_backend.moe_grouped_gemm,
+                        qk_layernorm=args.trainer_backend.qk_layernorm,
+                        multi_latent_attention=args.trainer_backend.multi_latent_attention,
                     )
                 else:
                     transformer_layer_spec = get_gpt_layer_local_spec(
-                        num_experts=args.num_experts,
-                        moe_grouped_gemm=args.moe_grouped_gemm,
-                        qk_layernorm=args.qk_layernorm,
-                        multi_latent_attention=args.multi_latent_attention,
-                        normalization=args.normalization,
+                        num_experts=args.trainer_backend.num_experts,
+                        moe_grouped_gemm=args.trainer_backend.moe_grouped_gemm,
+                        qk_layernorm=args.trainer_backend.qk_layernorm,
+                        multi_latent_attention=args.trainer_backend.multi_latent_attention,
+                        normalization=args.trainer_backend.normalization,
                         use_kitchen=config.use_kitchen,
                         use_kitchen_attention=config.use_kitchen_attention,
                         kitchen_attention_backend=config.kitchen_attention_backend,
@@ -277,7 +281,7 @@ def get_model_provider_func(
 
         build_model_context = nullcontext
         build_model_context_args = {}
-        if args.fp8_param_gather:
+        if args.trainer_backend.fp8_param_gather:
             try:
                 from transformer_engine.pytorch import fp8_model_init
 
@@ -295,23 +299,24 @@ def get_model_provider_func(
         kwargs = {
             "config": config,
             "transformer_layer_spec": transformer_layer_spec,
-            "vocab_size": args.padded_vocab_size,
-            "max_sequence_length": args.max_position_embeddings,
+            "vocab_size": args.trainer_backend.padded_vocab_size,
+            "max_sequence_length": args.trainer_backend.max_position_embeddings,
             "pre_process": pre_process,
             "post_process": post_process,
-            "fp16_lm_cross_entropy": args.fp16_lm_cross_entropy,
+            "fp16_lm_cross_entropy": args.trainer_backend.fp16_lm_cross_entropy,
             "parallel_output": True,
-            "share_embeddings_and_output_weights": role != "critic" and not args.untie_embeddings_and_output_weights,
-            "position_embedding_type": args.position_embedding_type,
-            "rotary_percent": args.rotary_percent,
-            "rotary_base": args.rotary_base,
-            "rope_scaling": args.use_rope_scaling,
+            "share_embeddings_and_output_weights": role != "critic"
+            and not args.trainer_backend.untie_embeddings_and_output_weights,
+            "position_embedding_type": args.trainer_backend.position_embedding_type,
+            "rotary_percent": args.trainer_backend.rotary_percent,
+            "rotary_base": args.trainer_backend.rotary_base,
+            "rope_scaling": args.trainer_backend.use_rope_scaling,
         }
 
         if vp_stage is not None:
             kwargs["vp_stage"] = vp_stage
 
-        if args.mtp_num_layers:
+        if args.trainer_backend.mtp_num_layers:
             from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 
             mtp_kwargs = {
@@ -348,7 +353,7 @@ def get_model_provider_func(
 
 
 def _maybe_install_witness(
-    args: argparse.Namespace,
+    args: TrainerConfig,
     model: GPTModel,
     *,
     vp_stage: int | None,

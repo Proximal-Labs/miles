@@ -10,10 +10,12 @@ from megatron.core.utils import unwrap_model
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
-from megatron.training.global_vars import get_args
+from torch.serialization import safe_globals
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.utils import megatron_bridge_utils
+from miles.utils.args.runtime import TrainerConfig
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
@@ -102,11 +104,18 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
-def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
+def load_checkpoint(
+    ddp_model,
+    optimizer,
+    opt_param_scheduler,
+    checkpointing_context,
+    skip_load_to_model_and_opt,
+    *,
+    args: TrainerConfig,
+):
     # ref: how megatron `load_checkpoint` gets directory
-    args = get_args()
 
-    load_path = args.load
+    load_path = args.trainer_backend.load
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
     if has_local_checkpoint_manager:
@@ -114,18 +123,19 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     else:
         assert Path(load_path).exists() and _is_dir_nonempty(
             load_path
-        ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
+        ), f"{args.trainer_backend.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
-        result = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-        )
+        with safe_globals([MegatronArgsNamespace]), args.trainer_backend.mutable():
+            result = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     else:
         result = _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -143,7 +153,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                 adapter_path,
                 optimizer=optimizer,
                 opt_param_scheduler=opt_param_scheduler,
-                load_optimizer=not args.no_load_optim,
+                load_optimizer=not args.trainer_backend.no_load_optim,
             )
             if loaded:
                 logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
@@ -156,14 +166,13 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
-    ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args)
+    ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args.trainer_backend)
 
     return result
 
 
-def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
+def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler, *, args: TrainerConfig):
     """Extended save that handles LoRA adapters separately."""
-    args = get_args()
 
     if is_lora_model(model):
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
@@ -214,8 +223,8 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
         bridge.load_hf_weights(ddp_model)
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
-    if (args.fp16 or args.bf16) and optimizer is not None:
-        assert not args.load_main_params_from_ckpt
+    if (args.trainer_backend.fp16 or args.trainer_backend.bf16) and optimizer is not None:
+        assert not args.trainer_backend.load_main_params_from_ckpt
         optimizer.reload_model_params()
 
     # We can see `successfully loaded checkpoint from ... [ t 1/2, p 1/1 ] at iteration 0`

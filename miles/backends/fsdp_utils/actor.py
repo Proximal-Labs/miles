@@ -8,6 +8,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.ci_utils import check_grad_norm
 from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
@@ -68,6 +69,7 @@ class FSDPTrainRayActor(TrainRayActor):
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert isinstance(args.trainer_backend, FsdpArgsNamespace)
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
@@ -90,10 +92,9 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
-        self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
+        self.fsdp_cpu_offload = getattr(self.args.trainer_backend, "fsdp_cpu_offload", False)
         # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
-        if self.args.offload_train and self.fsdp_cpu_offload:
-            self.args.offload_train = False
+        assert not (self.args.offload_train and self.fsdp_cpu_offload)
 
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
@@ -168,19 +169,19 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.model = model
 
-        if args.gradient_checkpointing:
+        if args.trainer_backend.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        if args.optimizer == "adam":
+        if args.trainer_backend.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(),
-                lr=args.lr,
-                betas=(args.adam_beta1, args.adam_beta2),
-                eps=args.adam_eps,
-                weight_decay=args.weight_decay,
+                lr=args.trainer_backend.lr,
+                betas=(args.trainer_backend.adam_beta1, args.trainer_backend.adam_beta2),
+                eps=args.trainer_backend.adam_eps,
+                weight_decay=args.trainer_backend.weight_decay,
             )
         else:
-            raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")
+            raise ValueError(f"Unsupported optimizer: {args.trainer_backend.optimizer}. Supported options: 'adam'")
 
         # Initialize LR scheduler
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
@@ -234,8 +235,8 @@ class FSDPTrainRayActor(TrainRayActor):
         """Build HF model and optionally apply Triton attention bridge patch."""
         # ROCm-only: on other platforms "triton" falls through to from_pretrained, which rejects
         # it exactly as it did before this path existed.
-        use_triton_bridge = self.args.attn_implementation == "triton" and torch.version.hip is not None
-        effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
+        use_triton_bridge = self.args.trainer_backend.attn_implementation == "triton" and torch.version.hip is not None
+        effective_attn = "eager" if use_triton_bridge else self.args.trainer_backend.attn_implementation
 
         with init_context():
             model = self._get_model_cls().from_pretrained(
@@ -540,7 +541,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     )
                     losses_reduced.append(log_dict)
 
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.trainer_backend.clip_grad)
                 grad_norm = grad_norm.full_tensor().item()
 
                 self.optimizer.step()
@@ -722,7 +723,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
 
     ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).
     ``param_dtype``/``reduce_dtype`` are the MixedPrecisionPolicy dtypes; None falls back to the
-    args-based default (bf16 / fp32, or fp16 param when args.fp16).
+    args-based default (bf16 / fp32, or fp16 param when args.trainer_backend.fp16).
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -741,7 +742,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
     ]
 
     if param_dtype is None:
-        param_dtype = torch.float16 if args.fp16 else torch.bfloat16
+        param_dtype = torch.float16 if args.trainer_backend.fp16 else torch.bfloat16
     if reduce_dtype is None:
         reduce_dtype = torch.float32
 

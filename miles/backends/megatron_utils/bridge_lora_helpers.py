@@ -7,7 +7,6 @@ forward / backward / optimizer logic.
 from __future__ import annotations
 
 import logging
-from argparse import Namespace
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -15,6 +14,7 @@ import torch
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_config import load_hf_config
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
@@ -77,7 +77,7 @@ def _get_model_config_from_wrapped(model):
     return get_attr_wrapped_model(model, "config", allow_none=False)
 
 
-def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
+def _validate_multi_lora_moe_support(args: TrainerConfig, provider) -> None:
     """Reject MoE configs the multi-slot grouped-expert adapter cannot serve (checked
     post-finalize because they depend on the resolved provider, not the CLI)."""
     if not getattr(provider, "num_moe_experts", None):
@@ -117,7 +117,7 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
-def _setup_lora_model_via_bridge(args: Namespace) -> list:
+def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
     This handles:
@@ -139,20 +139,20 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
-    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-    provider.expert_model_parallel_size = args.expert_model_parallel_size
-    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-    provider.sequence_parallel = args.sequence_parallel
-    provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
-    provider.context_parallel_size = args.context_parallel_size
-    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
-    provider.recompute_granularity = args.recompute_granularity
-    provider.recompute_method = args.recompute_method
-    provider.recompute_num_layers = args.recompute_num_layers
-    provider.recompute_modules = args.recompute_modules
-    provider.distribute_saved_activations = args.distribute_saved_activations
-    provider.attention_backend = args.attention_backend
+    provider.tensor_model_parallel_size = args.trainer_backend.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = args.trainer_backend.pipeline_model_parallel_size
+    provider.expert_model_parallel_size = args.trainer_backend.expert_model_parallel_size
+    provider.expert_tensor_parallel_size = args.trainer_backend.expert_tensor_parallel_size
+    provider.sequence_parallel = args.trainer_backend.sequence_parallel
+    provider.virtual_pipeline_model_parallel_size = args.trainer_backend.virtual_pipeline_model_parallel_size
+    provider.context_parallel_size = args.trainer_backend.context_parallel_size
+    provider.gradient_accumulation_fusion = args.trainer_backend.gradient_accumulation_fusion
+    provider.recompute_granularity = args.trainer_backend.recompute_granularity
+    provider.recompute_method = args.trainer_backend.recompute_method
+    provider.recompute_num_layers = args.trainer_backend.recompute_num_layers
+    provider.recompute_modules = args.trainer_backend.recompute_modules
+    provider.distribute_saved_activations = args.trainer_backend.distribute_saved_activations
+    provider.attention_backend = args.trainer_backend.attention_backend
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
@@ -165,10 +165,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
                 "dispatcher's permutation, which the fused kernel does not expose"
             )
         provider.moe_permute_fusion = False
-    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
-        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
-        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    if getattr(args.trainer_backend, "decoder_first_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_first_pipeline_stage = args.trainer_backend.decoder_first_pipeline_num_layers
+    if getattr(args.trainer_backend, "decoder_last_pipeline_num_layers", None) is not None:
+        provider.num_layers_in_last_pipeline_stage = args.trainer_backend.decoder_last_pipeline_num_layers
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
     provider.finalize()
@@ -200,14 +200,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
 
-    use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
+    use_distributed_optimizer = "muon" not in (args.trainer_backend.optimizer or "").lower()
     if is_multi_lora_enabled(args):
         # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
         # every rank (whole-param sharding + retained-gradient idempotency).
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
-        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+        grad_reduce_in_fp32=args.trainer_backend.accumulate_allreduce_grads_in_fp32,
     )
     ddp_config.finalize()
 

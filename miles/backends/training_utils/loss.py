@@ -154,7 +154,7 @@ def loss_function(
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
         - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
         - `normalizer` is `num_tokens` (scalar tensor) if
-          `args.calculate_per_token_loss` is True, else `1` (int).
+          `args.trainer_backend.calculate_per_token_loss` is True, else `1` (int).
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
@@ -166,7 +166,7 @@ def loss_function(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.trainer_backend.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
         denominators=batch.get("rollout_mask_sums", None),
@@ -201,7 +201,7 @@ def loss_function(
     # is applied to the accumulated slot gradient at optimizer-step time.
     if is_multi_lora_enabled(args):
         global_batch_size = 1
-    if not args.calculate_per_token_loss:
+    if not args.trainer_backend.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
             loss_parallel_size = (
                 parallel_state.intra_dp.size
@@ -217,11 +217,11 @@ def loss_function(
 
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
+        torch.tensor(num_tokens if args.trainer_backend.calculate_per_token_loss else 1, device=logits.device),
         {
             "keys": list(log.keys()),
             "values": torch.tensor(
-                [num_samples if not args.calculate_per_token_loss else num_tokens] + list(log.values()),
+                [num_samples if not args.trainer_backend.calculate_per_token_loss else num_tokens] + list(log.values()),
                 device=logits.device,
             ),
         },

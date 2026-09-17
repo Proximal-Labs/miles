@@ -13,9 +13,12 @@ import logging
 import os
 import re
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from miles.utils.args.utils import config_values
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import AllConfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ def init_mlflow(args, *, primary: bool = True, **kwargs) -> None:
         _init_mlflow_secondary(args)
 
 
-def _init_mlflow_primary(args, experiment_name: str) -> None:
+def _init_mlflow_primary(args: AllConfig, experiment_name: str) -> None:
     import mlflow
 
     run_name = args.mlflow_run_name or args.wandb_group
@@ -77,7 +80,8 @@ def _init_mlflow_primary(args, experiment_name: str) -> None:
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     if slurm_job_id:
         tags["slurm_job_id"] = slurm_job_id
-    tags["rank"] = str(args.rank)
+    rank = args.megatron.base_args["rank"] if args.train_backend == "megatron" else args.fsdp.rank
+    tags["rank"] = str(rank)
 
     run = mlflow.start_run(run_name=run_name, tags=tags)
     mlflow.log_params(_compute_config_for_logging(args))

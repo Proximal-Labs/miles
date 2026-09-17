@@ -1,25 +1,33 @@
 import logging
 import time
 import traceback
+from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 
 from miles.utils.memory_utils import print_memory
 
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
+
+_T = TypeVar("_T")
+
 logger = logging.getLogger(__name__)
 
 
 class TrainProfiler:
-    def __init__(self, args):
+    def __init__(self, args: "TrainerConfig") -> None:
         self.args = args
         self._torch_profiler_overall = None
         self._memory_profiler_overall = None
 
-        if args.use_pytorch_profiler and ("train_overall" in args.profile_target):
+        backend_args = args.trainer_backend
+        if backend_args.use_pytorch_profiler and ("train_overall" in args.profile_target):
             self._torch_profiler_overall = _create_torch_profiler(args, name="train_overall")
 
-        if args.record_memory_history and ("train_overall" in args.profile_target):
+        if backend_args.record_memory_history and ("train_overall" in args.profile_target):
             self._memory_profiler_overall = _BaseMemoryProfiler.create(args)
             self._memory_profiler_overall.start()
 
@@ -45,8 +53,9 @@ class TrainProfiler:
         return _profile_simple_loop(iterator, self.args, name="train_log_probs")
 
 
-def _profile_simple_loop(iterator, args, name):
-    if not (args.use_pytorch_profiler and (name in args.profile_target)):
+def _profile_simple_loop(iterator: Iterable[_T], args: "TrainerConfig", name: str) -> Iterator[_T]:
+    backend_args = args.trainer_backend
+    if not (backend_args.use_pytorch_profiler and (name in args.profile_target)):
         yield from iterator
         return
 
@@ -57,17 +66,18 @@ def _profile_simple_loop(iterator, args, name):
         torch_profiler.step()
 
 
-def _create_torch_profiler(args, name):
+def _create_torch_profiler(args: "TrainerConfig", name: str) -> torch.profiler.profile:
+    backend_args = args.trainer_backend
     return torch.profiler.profile(
         schedule=torch.profiler.schedule(
             # TODO the train_actor and train_log_probs ones may need to have different args to control step
-            wait=max(args.profile_step_start - 1, 0),
-            warmup=1 if args.profile_step_start > 0 else 0,
-            active=args.profile_step_end - args.profile_step_start,
+            wait=max(backend_args.profile_step_start - 1, 0),
+            warmup=1 if backend_args.profile_step_start > 0 else 0,
+            active=backend_args.profile_step_end - backend_args.profile_step_start,
             repeat=1,
         ),
         on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            args.tensorboard_dir,
+            backend_args.tensorboard_dir,
             worker_name=f"{name}_rank_{torch.distributed.get_rank()}",
             use_gzip=True,
         ),
@@ -87,10 +97,11 @@ class _BaseMemoryProfiler:
         }[args.memory_recorder]
         return c(args)
 
-    def __init__(self, args):
+    def __init__(self, args: "TrainerConfig") -> None:
+        backend_args = args.trainer_backend
         self._path_dump = (
             Path(args.memory_snapshot_dir)
-            / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
+            / f"memory_snapshot_time{time.time()}_rank{torch.distributed.get_rank()}_{backend_args.memory_snapshot_path}"
         )
 
     def start(self):

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-import os
 import time
 from collections.abc import Callable
 
@@ -16,10 +14,11 @@ logger = logging.getLogger(__name__)
 class InklingLoRAAdapter(nn.Module):
     """One module's LoRA params keyed for HF export; invisible to Megatron dist-checkpointing."""
 
-    def __init__(self, kind: str, hf_prefix: str) -> None:
+    def __init__(self, kind: str, hf_prefix: str, *, unpadded_vocab_size: int | None = None) -> None:
         super().__init__()
         self.kind = kind
         self.hf_prefix = hf_prefix
+        self.unpadded_vocab_size = unpadded_vocab_size
         self.load_meta: dict[str, int] = {}
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
@@ -353,7 +352,9 @@ def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: st
     mup = getattr(config.inkling, "logits_mup_width_multiplier", None)
     mup = float(mup) if mup else None
 
-    adapter = InklingLoRAAdapter("lm_head", "language_model.lm_head.")
+    adapter = InklingLoRAAdapter(
+        "lm_head", "language_model.lm_head.", unpadded_vocab_size=config.inkling.unpadded_vocab_size
+    )
     _register_param(adapter, "head_A", output_layer.weight, (rank, hidden_size), init=a_init, grad_sum_group="tp")
     _register_param(adapter, "head_B", output_layer.weight, (vocab_local, rank))
     adapter.load_meta = dict(vocab_local=vocab_local, tp_rank=parallel_state.get_tensor_model_parallel_rank())
@@ -629,25 +630,6 @@ class _GatherBatch:
         return n_calls
 
 
-_UNPADDED_VOCAB_CACHE: list = []
-
-
-def _hf_unpadded_vocab_size():
-    """True (unpadded) vocab size from the HF config, or None if absent."""
-    if not _UNPADDED_VOCAB_CACHE:
-        value = None
-        try:
-            from megatron.training import get_args
-
-            with open(os.path.join(get_args().hf_checkpoint, "config.json"), encoding="utf-8") as f:
-                config = json.load(f)
-            value = (config.get("text_config") or config).get("unpadded_vocab_size")
-        except Exception:
-            value = None
-        _UNPADDED_VOCAB_CACHE.append(value)
-    return _UNPADDED_VOCAB_CACHE[0]
-
-
 _ExportPlan = list[tuple[str, torch.Tensor | Callable[[], torch.Tensor]]]
 
 
@@ -714,7 +696,7 @@ def _export_lm_head(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Export
 
     def head_b() -> torch.Tensor:
         full = head_b_token.get()
-        unpadded = _hf_unpadded_vocab_size()
+        unpadded = adapter.unpadded_vocab_size
         if unpadded and unpadded < full.shape[0]:
             full = full[:unpadded]
         return full

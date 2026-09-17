@@ -53,7 +53,9 @@ def _is_ignored(name: str, ignore_rules: list[str], literal_rules: frozenset[str
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
-    if args is not None and bool(getattr(args, "fp4_param", False) or getattr(args, "fp4_param_gather", False)):
+    if args is not None and bool(
+        getattr(args.trainer_backend, "fp4_param", False) or getattr(args.trainer_backend, "fp4_param_gather", False)
+    ):
         raise NotImplementedError("fp4-param-gather is unsupported for Miles NVFP4 checkpoint export.")
 
     if getattr(args, "extra_high_precision_layers_megatron", False):
@@ -78,10 +80,10 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         layer_idx, rest = match.groups()
 
     # Skip quantization for BF16 tail of main decoder layers.
-    if getattr(args, "first_last_layers_bf16", False):
+    if getattr(args.trainer_backend, "first_last_layers_bf16", False):
         num_layers = int(args.num_layers)
-        num_layers_at_start_in_bf16 = int(getattr(args, "num_layers_at_start_in_bf16", 0))
-        num_layers_at_end_in_bf16 = int(getattr(args, "num_layers_at_end_in_bf16", 0))
+        num_layers_at_start_in_bf16 = int(getattr(args.trainer_backend, "num_layers_at_start_in_bf16", 0))
+        num_layers_at_end_in_bf16 = int(getattr(args.trainer_backend, "num_layers_at_end_in_bf16", 0))
         head_end_idx = num_layers_at_start_in_bf16
         tail_start_idx = num_layers - num_layers_at_end_in_bf16
         if int(layer_idx) < head_end_idx or int(layer_idx) >= tail_start_idx:

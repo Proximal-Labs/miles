@@ -167,29 +167,32 @@ def get_lr_scheduler(args, optimizer: torch.optim.Optimizer) -> FSDPLRScheduler:
     Returns:
         FSDPLRScheduler: Initialized scheduler bound to ``optimizer``.
     """
-    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
-    if args.lr_decay_iters is None:
-        args.lr_decay_iters = args.train_iters
-    lr_decay_steps = args.lr_decay_iters
+    with args.trainer_backend.mutable():
+        args.trainer_backend.train_iters = (
+            args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+        )
+        if args.trainer_backend.lr_decay_iters is None:
+            args.trainer_backend.lr_decay_iters = args.trainer_backend.train_iters
+    lr_decay_steps = args.trainer_backend.lr_decay_iters
     wsd_decay_steps = None
-    if args.lr_wsd_decay_iters is not None:
-        wsd_decay_steps = args.lr_wsd_decay_iters
-    if args.lr_warmup_fraction is not None:
-        lr_warmup_steps = args.lr_warmup_fraction * lr_decay_steps
+    if args.trainer_backend.lr_wsd_decay_iters is not None:
+        wsd_decay_steps = args.trainer_backend.lr_wsd_decay_iters
+    if args.trainer_backend.lr_warmup_fraction is not None:
+        lr_warmup_steps = args.trainer_backend.lr_warmup_fraction * lr_decay_steps
     else:
-        lr_warmup_steps = args.lr_warmup_iters
+        lr_warmup_steps = args.trainer_backend.lr_warmup_iters
     lr_scheduler = FSDPLRScheduler(
         optimizer,
-        init_lr=args.lr_warmup_init,
-        max_lr=args.lr,
-        min_lr=args.min_lr,
+        init_lr=args.trainer_backend.lr_warmup_init,
+        max_lr=args.trainer_backend.lr,
+        min_lr=args.trainer_backend.min_lr,
         lr_warmup_steps=lr_warmup_steps,
         lr_decay_steps=lr_decay_steps,
-        lr_decay_style=args.lr_decay_style,
-        use_checkpoint_lr_scheduler=args.use_checkpoint_lr_scheduler,
-        override_lr_scheduler=args.override_lr_scheduler,
+        lr_decay_style=args.trainer_backend.lr_decay_style,
+        use_checkpoint_lr_scheduler=args.trainer_backend.use_checkpoint_lr_scheduler,
+        override_lr_scheduler=args.trainer_backend.override_lr_scheduler,
         wsd_decay_steps=wsd_decay_steps,
-        lr_wsd_decay_style=args.lr_wsd_decay_style,
+        lr_wsd_decay_style=args.trainer_backend.lr_wsd_decay_style,
     )
 
     return lr_scheduler
