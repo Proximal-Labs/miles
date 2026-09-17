@@ -258,6 +258,9 @@ The main Miles training image already supplies the policy-loop dependencies.
    `megatron_path`, `verifier_url`, and unique `run_id`.
 4. Run `run_nemotron35_workplace.py --config <launcher.json>` from the Ray head.
 
+Set `pause_generation_mode` to `abort` (the default) or `retract`.
+The latter uses full per-turn routing replay instead of incremental replay.
+
 The service uses Gym's unmodified tools and `is_correct` state verifier. It checks
 that live tool execution agrees with native replay before returning binary reward.
 Gold actions and synthesis provenance never enter the policy payload. Each episode

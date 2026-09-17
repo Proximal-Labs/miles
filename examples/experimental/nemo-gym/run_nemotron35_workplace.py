@@ -50,11 +50,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
         assert self.num_nodes == 2 and self.num_gpus_per_node == 8
         assert self.global_batch_size == self.rollout_batch_size * self.group_size
         assert self.response_length < self.context_length
-        assert self.pause_generation_mode == "abort"
+        assert self.pause_generation_mode in {"abort", "retract"}
 
     @property
     def run_name(self) -> str:
-        return f"{self.run_id}-nemotron35-lightning-workplace-async-2n-bs{self.global_batch_size}-g{self.group_size}-abort"
+        return f"{self.run_id}-nemotron35-lightning-workplace-async-2n-bs{self.global_batch_size}-g{self.group_size}-{self.pause_generation_mode}"
 
 
 def _flags(values: dict[str, object]) -> str:
