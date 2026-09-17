@@ -2,8 +2,10 @@ import asyncio
 import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -19,6 +21,7 @@ from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_eve
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
@@ -85,6 +88,7 @@ class TrainerController:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._weight_version_epoch = uuid4().hex
 
     @property
     def pool_id(self) -> str:
@@ -260,7 +264,13 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, attempt=attempt, role=self._role, cell_outcomes=cell_outcomes),
+                dict(
+                    rollout_id=rollout_id,
+                    attempt=attempt,
+                    role=self._role,
+                    cell_outcomes=cell_outcomes,
+                    cell_incarnations={cell.cell_id: cell.workers_hash for cell in snapshot_alive_cells},
+                ),
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
@@ -374,6 +384,7 @@ class TrainerController:
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
 
         cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        self._weight_version_epoch = uuid4().hex
         return [item for sublist in cell_results for item in sublist]
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
@@ -394,10 +405,32 @@ class TrainerController:
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
         """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
+        info = replace(info, update_id=uuid4().hex)
+
         if supports_partial_target_weight_update(self.args):
-            return await self._update_weights_on_every_alive_cell(info)
+            output = await self._update_weights_on_every_alive_cell(info)
         else:
-            return await self._update_weights_on_first_alive_cell(info)
+            output = await self._update_weights_on_first_alive_cell(info)
+        output = replace(output, version_epoch=self._weight_version_epoch, update_id=info.update_id)
+        updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
+        if is_event_logger_initialized():
+            try:
+                get_event_logger().log(
+                    WeightUpdateResultEvent,
+                    dict(
+                        update_id=info.update_id,
+                        version_epoch=self._weight_version_epoch,
+                        rollout_id=rollout_id,
+                        candidate_version=output.weight_version,
+                        published_version=output.weight_version if updated_cell_ids else None,
+                        target_incarnations=info.snapshot_cell_id_to_hashes,
+                        updated_cell_ids=updated_cell_ids,
+                        failed_cell_ids=list(output.failed_cell_ids),
+                    ),
+                )
+            except Exception:
+                logger.exception("Could not record weight publication observation")
+        return output
 
     async def _update_weights_on_first_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
@@ -596,6 +629,7 @@ class TrainerController:
         src_alive_rank = will_alive_indices.index(src_cell_index)
         ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_healing_indices]
 
+        participating_cells = [c for c in self._cells if c.cell_index in will_alive_indices]
         with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
                 *[
@@ -616,8 +650,7 @@ class TrainerController:
                             recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
                         )
                     )
-                    for c in self._cells
-                    if c.cell_index in will_alive_indices
+                    for c in participating_cells
                 ],
                 return_exceptions=True,
             )
@@ -642,6 +675,7 @@ class TrainerController:
                 src_cell_index=src_cell_index if snapshotted_healing_indices else None,
                 healed_cell_indices=snapshotted_healing_indices,
                 alive_cell_indices_after=will_alive_indices,
+                cell_incarnations_after={cell.cell_id: cell.workers_hash for cell in participating_cells},
             )
         else:
             log_structured(
@@ -662,6 +696,7 @@ class TrainerController:
         src_cell_index: int | None,
         healed_cell_indices: list[int],
         alive_cell_indices_after: list[int],
+        cell_incarnations_after: dict[str, str],
     ) -> None:
         if is_event_logger_initialized():
             get_event_logger().log(
@@ -672,6 +707,7 @@ class TrainerController:
                     src_cell_index=src_cell_index,
                     healed_cell_indices=healed_cell_indices,
                     alive_cell_indices_after=alive_cell_indices_after,
+                    cell_incarnations_after=cell_incarnations_after,
                 ),
             )
 

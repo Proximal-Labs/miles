@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator
+from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
@@ -100,6 +100,7 @@ class TrainGroupStepEndEvent(EventBase):
     attempt: int
     role: Literal["actor", "critic"]
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
+    cell_incarnations: dict[str, str] = Field(default_factory=dict)
 
 
 class CellReconfigureEvent(EventBase):
@@ -110,6 +111,7 @@ class CellReconfigureEvent(EventBase):
     # healing happened iff non-empty
     healed_cell_indices: list[int]
     alive_cell_indices_after: list[int]
+    cell_incarnations_after: dict[str, str] = Field(default_factory=dict)
 
 
 class InferenceEngineWeightChecksumEvent(EventBase):
@@ -136,6 +138,7 @@ class EnvReportEvent(EventBase):
 class EngineEnvReportEvent(EventBase):
     type: Literal["engine_env_report"] = "engine_env_report"
     cell_id: str
+    workers_hash: str | None = None
     server_url: str
     server_info: dict[str, Any]
 
@@ -185,6 +188,36 @@ class TrainerModelCompanionInfoEvent(EventBase):
     skipped_nonfinite_sample_counts: list[OutputConsumption]
 
 
+class FaultHookEvent(EventBase):
+    type: Literal["fault_hook"] = "fault_hook"
+    request_id: str
+    instance_id: str
+    hook: str
+    mode: str
+    action: Literal["inject", "observe"] = "inject"
+    status: Literal["armed", "cancelled", "expired", "fired", "failed"]
+    monotonic_time: float
+    reached_at: float | None = None
+    due_at: float | None = None
+    rollout_id: int | None = None
+    attempt: int | None = None
+    weight_version: int | None = None
+    update_id: str | None = None
+    target_incarnations: dict[str, str] = Field(default_factory=dict)
+
+
+class WeightUpdateResultEvent(EventBase):
+    type: Literal["weight_update_result"] = "weight_update_result"
+    update_id: str
+    version_epoch: str | None = None
+    rollout_id: int | None
+    candidate_version: int | None
+    published_version: int | None
+    target_incarnations: dict[str, str]
+    updated_cell_ids: list[str]
+    failed_cell_ids: list[str]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -198,7 +231,9 @@ Event = Annotated[
     | MetricEvent
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
-    | TrainerModelCompanionInfoEvent,
+    | TrainerModelCompanionInfoEvent
+    | FaultHookEvent
+    | WeightUpdateResultEvent,
     Discriminator("type"),
 ]
 

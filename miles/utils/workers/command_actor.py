@@ -41,8 +41,12 @@ class CommandActor(NodeProbeMixin):
             f"it from the outside, so only sigkill can be injected into a subprocess"
         )
 
-        logger.warning(f"CommandActor kills its subprocess group pid={self._process.pid}")
-        process_utils.kill_process_tree(self._process)
+        logger.warning("CommandActor injects %s into subprocess tree pid=%s", mode, self._process.pid)
+        root_pidfd = os.pidfd_open(self._process.pid)
+        try:
+            process_utils.kill_process_tree_and_wait(self._process, root_pidfd=root_pidfd)
+        finally:
+            os.close(root_pidfd)
 
     def _babysit(self, process: subprocess.Popen) -> None:
         returncode = process.wait()

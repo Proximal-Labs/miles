@@ -17,9 +17,11 @@ from miles.utils.http_utils import wrap_ipv6
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
+from miles.utils.test_utils.fault_hooks import FaultHookCommand, FaultHookRecord
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
@@ -102,8 +104,33 @@ class RayWorkerManager:
         async with self._membership_lock:
             await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
 
-    def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
+    def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
         cell = self._find_cell(cell_id)
+        if not cell.alive or not 0 <= sub_index < len(cell.actors):
+            raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {sub_index}")
+        return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=cell.get_info().workers_hash)
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> str | FaultHookRecord:
+        if self.observe_fault_target(cell_id=target.cell_id, sub_index=target.sub_index) != target:
+            raise StaleFaultTargetError("Fault hook target no longer matches the observed worker")
+        actor = self._find_cell(target.cell_id).actors[target.sub_index].actor_handle
+        return await asyncio.wait_for(actor.control_fault_hook.remote(command=command), timeout=10.0)
+
+    def inject_fault(
+        self,
+        cell_id: str,
+        *,
+        mode: str,
+        worker_in_cell_index: int,
+        expected_target: FaultTarget | None = None,
+    ) -> None:
+        cell = self._find_cell(cell_id)
+        if expected_target is not None and (
+            expected_target.cell_id != cell_id
+            or expected_target.sub_index != worker_in_cell_index
+            or expected_target.workers_hash != cell.get_info().workers_hash
+        ):
+            raise StaleFaultTargetError(f"Cell {cell_id} no longer matches the observed fault target")
         if not cell.alive:
             raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
         if not 0 <= worker_in_cell_index < len(cell.actors):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -12,9 +13,18 @@ from starlette.responses import JSONResponse
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
+from miles.utils.ft_utils.api_server.models import (
+    Cell,
+    CellList,
+    CellPatch,
+    FaultHookControl,
+    FaultInjection,
+    K8sStatus,
+    _OkResponse,
+)
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.test_utils.fault_hooks import FaultHookRecord
+from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -126,11 +136,56 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
 
         return await handler.get_cell(name)
 
+    @app.get("/api/v1/cells/{name}/fault-target")
+    async def get_fault_target(name: str, sub_index: int = 0) -> FaultTarget:
+        handler = await _resolve(name)
+        try:
+            return await handler.observe_fault_target(name, sub_index=sub_index)
+        except StaleFaultTargetError as err:
+            raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
+        except NotImplementedError as err:
+            raise _K8sError(status_code=400, reason="BadRequest", message=str(err)) from err
+
+    @app.post("/api/v1/cells/{name}/fault-hook")
+    async def control_fault_hook(name: str, body: FaultHookControl) -> str | FaultHookRecord:
+        if body.target.cell_id != name:
+            raise _K8sError(status_code=400, reason="BadRequest", message="Fault target does not match route")
+        handler = await _resolve(name)
+        command = body.command
+        try:
+            return await asyncio.wait_for(
+                handler.control_fault_hook(target=body.target, command=command), timeout=15.0
+            )
+        except StaleFaultTargetError as error:
+            raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(error)) from error
+        except NotImplementedError as error:
+            raise _K8sError(status_code=400, reason="BadRequest", message=str(error)) from error
+        except KeyError as error:
+            raise _K8sError(status_code=404, reason="NotFound", message="Unknown fault hook request") from error
+        except ValueError as error:
+            raise _K8sError(status_code=409, reason="Conflict", message=str(error)) from error
+        except (TimeoutError, asyncio.TimeoutError) as error:
+            raise _K8sError(status_code=504, reason="Timeout", message="Fault hook outcome is unknown") from error
+        except Exception as error:
+            logger.exception("Failed to control fault hook in cell %s", name)
+            raise _K8sError(
+                status_code=500, reason="InternalError", message="Fault hook outcome is unknown"
+            ) from error
+
     @app.post("/api/v1/cells/{name}/inject-fault")
     async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
         handler = await _resolve(name)
         try:
-            await handler.inject_fault(name, mode=body.mode, sub_index=body.sub_index)
+            await handler.inject_fault(
+                name,
+                mode=body.mode,
+                sub_index=body.sub_index,
+                expected_target=body.expected_target,
+            )
+        except _K8sError:
+            raise
+        except StaleFaultTargetError as err:
+            raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
         except NotImplementedError as err:
             raise _K8sError(
                 status_code=400,

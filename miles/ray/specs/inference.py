@@ -1,6 +1,7 @@
 import logging
 import os
 import shlex
+from argparse import Namespace
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
@@ -391,7 +392,7 @@ def _compute_spec_inference_engine(
     )
 
 
-def compute_inference_engine_env_vars(args) -> dict[str, str]:
+def compute_inference_engine_env_vars(args: Namespace) -> dict[str, str]:
     env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
         key: os.environ.get(key, default_val)
         for key, default_val in {
