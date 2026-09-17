@@ -303,6 +303,49 @@ Unkeyed requests and fresh keys sample new generations, even when their prompts
 are identical. All sampled attempts remain available to the configured picker;
 this API does not choose which attempts should contribute to training.
 
+## Instrumented harness completion
+
+An agent function can return `AgentResult(metadata=..., producer_finished=...)`
+from `miles.rollout.agentic.harness`. Set `producer_finished=False` when child/tool
+completion is unknown. A normal return does not upgrade that explicit result.
+Existing dict/None returns retain their contract that returning asserts all work
+was joined.
+
+`AgentRun` composes an AnyIO task group with context registration. Submit child
+agents and background tool work through `run.create_task(...)`; exiting the
+scope joins them, including registered grandchildren. `run.result(...)` is valid
+only after that join. A child exception cancels and joins siblings; a cancelled
+child prevents a complete result. External processes and tasks created outside
+the group require a separate adapter-provided join boundary.
+
+`GenerationRequest(context, previous_response_id=...)` supplies identity and a
+stable idempotency key. Reuse the same instance's headers for transport retries;
+construct a new instance for each sampling attempt. The
+[instrumented example](../../examples/experimental/session_multi_agent/agent.py)
+runs a parent and two independent reviewers through these APIs.
+
+Score the final task state after joining producers. The default postprocessor
+broadcasts one episode reward across all agent/context rows, and those rows
+share one `rollout_id`. Reward normalization counts independent episodes, while
+loss normalization uses each episode's total trainable tokens. Child agents do
+not become extra GRPO trials. Finer-grained credit assignment requires a separate
+objective; this path preserves the existing episode objective.
+
+### Harbor's strict entry point
+
+Use `examples.experimental.harbor.harbor_agent_function.run_with_completion`
+to require an explicit producer attestation. It accepts only the boolean
+`agent_result.metadata["miles_producer_finished"] == True` together with a
+nonempty verifier reward report. Missing attestation, missing outcome, timeout,
+and adapter failure remain incomplete and are filtered by v2 finalization.
+
+The Harbor agent must emit that attestation after joining every child and tool
+producer, before verification observes the final task state. Existing opaque
+Claude Code bindings do not provide this proof or automatic per-child context
+IDs. The strict entry point therefore aborts those uninstrumented trials; the
+existing `run` entry point retains its legacy completion assumption. Wiring real
+CLI child identities and validating that boundary remain integration work.
+
 ## Example
 
 [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker)

@@ -100,3 +100,13 @@ This README's command has been run end to end: 8×H200, real training mode with
 the batch dials reduced, both trials scoring reward 1.0 and one GRPO step
 completed. Which sandbox providers this path has been run on is the table in
 [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md).
+
+## Strict v2 producer completion
+
+For a harness that explicitly reports completion of all child and tool work,
+use `--custom-agent-function-path examples.experimental.harbor.harbor_agent_function.run_with_completion`.
+It requires a verifier outcome and the boolean
+`agent_result.metadata["miles_producer_finished"] = True`.
+Without that evidence the v2 trace is incomplete and produces no training rows.
+See [agentic rollout](../../../docs/user-guide/agentic-rollout.md#harbors-strict-entry-point)
+for the adapter contract and current Claude Code limitations.

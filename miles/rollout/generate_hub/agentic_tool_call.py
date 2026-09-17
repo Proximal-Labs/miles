@@ -21,6 +21,8 @@ Agent function contract:
   Returning None means no extra metadata to attach.
   Returning a dict merges it into every sample's metadata, so downstream
   reward models (--custom-rm-path) can read whatever the agent left there.
+  Return AgentResult to report producer completion explicitly. Dict/None
+  retain the legacy contract: returning asserts that all child work was joined.
 """
 
 import argparse
@@ -35,6 +37,7 @@ import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.agentic.harness import AgentResult
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
@@ -77,14 +80,19 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
-        agent_metadata = await custom_agent_function(
+        agent_result = await custom_agent_function(
             base_url=tracer.base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
-        producer_finished = True
+        if isinstance(agent_result, AgentResult):
+            agent_metadata = agent_result.metadata
+            producer_finished = agent_result.producer_finished
+        else:
+            agent_metadata = agent_result
+            producer_finished = True
     except Exception as e:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
 

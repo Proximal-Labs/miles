@@ -5,6 +5,7 @@ import pytest
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.agentic.harness import AgentResult
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.types import Sample
@@ -263,4 +264,18 @@ async def test_asyncio_collection_timeout_aborts_before_python_311(monkeypatch):
     monkeypatch.setattr(agentic_tool_call, "asyncio", SimpleNamespace(TimeoutError=LegacyAsyncTimeoutError))
     _patch_agent(monkeypatch, _Tracer(error=LegacyAsyncTimeoutError()))
     output = await agentic_tool_call.generate(_generate_input())
+    assert output.samples[0].status == Sample.Status.ABORTED
+
+
+async def test_unknown_producer_completion_is_not_upgraded_by_normal_return(monkeypatch):
+    tracer = _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="incomplete"))
+    _patch_agent(monkeypatch, tracer)
+
+    async def unknown_agent(**kwargs):
+        return AgentResult(metadata={"reward": 0.0}, producer_finished=False)
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: unknown_agent)
+    output = await agentic_tool_call.generate(_generate_input())
+    assert tracer.producer_finished is False
+    assert tracer.agent_metadata == {"reward": 0.0}
     assert output.samples[0].status == Sample.Status.ABORTED

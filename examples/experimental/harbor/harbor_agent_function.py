@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
+from miles.rollout.agentic.harness import AgentResult
 from miles.rollout.agentic.session import resolve_session_url
 
 logger = logging.getLogger(__name__)
@@ -475,3 +476,12 @@ async def run(
     out["trial_dir"] = str(trial.paths.trial_dir)
     logger.info(f"Harbor trial {instance_id}: exit_status={out['exit_status']} reward={out['reward']}")
     return out
+
+
+async def run_with_completion(base_url, prompt, request_kwargs=None, metadata=None, **kwargs) -> AgentResult:
+    """Require a harness-attested producer barrier and a verifier outcome for v2."""
+    outcome = await run(base_url, prompt, request_kwargs, metadata, **kwargs)
+    producer_finished = (
+        outcome["agent_metrics"].get("miles_producer_finished") is True and bool(outcome["eval_report"])
+    )
+    return AgentResult(metadata=outcome, producer_finished=producer_finished)
