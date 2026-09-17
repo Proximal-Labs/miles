@@ -204,13 +204,13 @@ def _default_missing_entries_when_load_from_state_dict(
 ) -> None:
     for name, parameter in module.named_parameters(recurse=False):
         key = f"{prefix}{name}"
-        if _is_companion_entry(state_dict.get(key), parameter):
+        if key in state_dict and not _is_missing_companion_placeholder(state_dict[key]):
             continue
         state_dict[key] = torch.zeros(tuple(parameter.shape), dtype=parameter.dtype, device=parameter.device)
 
 
-def _is_companion_entry(value: Any, parameter: torch.Tensor) -> bool:
-    return isinstance(value, torch.Tensor) and value.dtype == parameter.dtype
+def _is_missing_companion_placeholder(value: Any) -> bool:
+    return isinstance(value, torch.Tensor) and value.dtype == torch.uint8 and value.shape == (0,)
 
 
 def _reallocate_when_load_from_state_dict(
