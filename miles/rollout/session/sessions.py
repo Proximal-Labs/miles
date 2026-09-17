@@ -214,6 +214,9 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
 
         try:
             openai_response = ChatCompletionResponse.model_validate_json(core_response.body)
+            generation_headers = {
+                key: value for key, value in core_response.headers.items() if key.lower() == "x-miles-generation-id"
+            }
             if anthropic_stream:
                 events = anthropic_utils.to_anthropic_fake_sse_events(
                     openai_response,
@@ -223,11 +226,11 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
                 return Response(
                     content=_anthropic_sse_body(events),
                     status_code=200,
-                    headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+                    headers={"cache-control": "no-cache", "x-accel-buffering": "no", **generation_headers},
                     media_type="text/event-stream",
                 )
             envelope = convert_response(openai_response).model_copy(update={"id": openai_response.id})
-            return Response(content=_anthropic_wire_json(envelope), status_code=200, media_type=JSON_MEDIA_TYPE)
+            return Response(content=_anthropic_wire_json(envelope), status_code=200, headers=generation_headers, media_type=JSON_MEDIA_TYPE)
         except Exception:
             # Post-commit failures keep the record and return JSON 500, never partial SSE.
             logger.exception("Anthropic response conversion failed for session %s", session_id)

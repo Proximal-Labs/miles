@@ -14,6 +14,12 @@ def assign_reward(samples: list[Sample], trajectory_reward: float) -> None:
 
 def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
     """Assign shared-token ownership after selection and preserve picker order."""
+    return finalize_samples(leaf_samples, session_metadata, excluded_generation_ids=frozenset())
+
+
+def finalize_samples(
+    leaf_samples: list[Sample], session_metadata: dict, *, excluded_generation_ids: frozenset[str]
+) -> list[Sample]:
     nodes_by_id = {node["id"]: node for node in session_metadata["tree"]["nodes"]}
     agent_metadata = session_metadata.get("agent") or {}
     trajectory_reward = agent_metadata.get("reward")
@@ -31,9 +37,10 @@ def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> l
             mask_start = max(completion_start - response_start, 0)
             mask_end = min(completion_end - response_start, sample.response_length)
             owned = owned_tokens.setdefault(node_id, set())
+            excluded = node.get("generation_id") in excluded_generation_ids
             for position in range(mask_start, mask_end):
                 token_offset = position + response_start - completion_start
-                if token_offset in owned:
+                if excluded or token_offset in owned:
                     sample.loss_mask[position] = 0
                 elif sample.loss_mask[position]:
                     owned.add(token_offset)

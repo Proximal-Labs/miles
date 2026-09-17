@@ -23,6 +23,7 @@ from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pret
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.contexts import SessionContexts
 from miles.rollout.session.v2.lifecycle import SessionLifecycle
+from miles.rollout.session.v2.operations import GenerationOperations
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
@@ -39,6 +40,7 @@ class SessionStateV2:
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     contexts: SessionContexts = field(default_factory=SessionContexts)
+    operations: GenerationOperations = field(default_factory=GenerationOperations, repr=False)
     active_leaf: TrajectoryNode | None = None
     sample_export: tuple[str, bytes] | None = field(default=None, repr=False)
     expiry: asyncio.TimerHandle | None = field(default=None, repr=False, compare=False)
@@ -157,6 +159,9 @@ def commit_generation(
     response_id: str,
     finish_reason: str,
     context_id: str | None = None,
+    generation_id: str | None = None,
+    retry_of: str | None = None,
+    supersedes: str | None = None,
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (captured at
     positioning time), then advance the view to the new node. Prefix
@@ -182,6 +187,9 @@ def commit_generation(
         record=record,
         finish_reason=finish_reason,
         context_id=context_id,
+        generation_id=generation_id,
+        retry_of=retry_of,
+        supersedes=supersedes,
     )
     state.active_leaf = node
     return node
@@ -203,6 +211,7 @@ class SessionRegistryV2(SessionRegistry):
         session = self.get_session(session_id)
         del self.sessions[session_id]
         session.closing = True
+        session.operations.cancel_pending()
         if session.expiry is not None:
             session.expiry.cancel()
 

@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import asdict, dataclass
 
 from starlette.responses import Response
@@ -21,6 +23,7 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_sampl
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.contexts import SessionContext, split_context_headers
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
+from miles.rollout.session.v2.operations import GenerationIntent, request_fingerprint, split_generation_headers
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     SessionStateV2,
@@ -46,6 +49,8 @@ class _PreparedGeneration:
     client_stream: bool
     request_timestamp: float
     context_id: str | None
+    generation_id: str
+    intent: GenerationIntent
 
 
 class SessionCoreV2(SessionCore):
@@ -181,7 +186,7 @@ class SessionCoreV2(SessionCore):
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
         if not samples:
             return _samples_response(
-                encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
+                encode_samples([], metadata, empty_reason="no_trainable_tokens", fields=COMPUTED_FIELDS_V2)
             )
         # Hooks may inspect or mutate session metadata, so publish the
         # authoritative server-owned value only at the wire boundary.
@@ -197,11 +202,32 @@ class SessionCoreV2(SessionCore):
         """Record admitted generations while finish drains without holding the lock."""
         session = self.registry.get_session(session_id)
         context, previous_response_id, headers = split_context_headers(headers)
+        intent, headers = split_generation_headers(headers)
+        key = intent.idempotency_key
+        fingerprint = request_fingerprint(
+            body, method=method, query=query, context=context,
+            previous_response_id=previous_response_id, intent=intent,
+        ) if key is not None else None
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
-            generation = self._prepare_generation(session, body, context, previous_response_id)
+            operation = session.operations.lookup(key, fingerprint) if key is not None else None
+            if operation is None:
+                generation = self._prepare_generation(session, body, context, previous_response_id, intent)
+                if key is not None:
+                    operation = asyncio.create_task(self._execute_generation(
+                        session_id, session, generation, method=method, query=query, headers=headers,
+                    ))
+                    session.operations.remember(key, fingerprint, operation)
+        if operation is not None:
+            response = await asyncio.shield(operation)
+            return Response(content=response.body, status_code=response.status_code, headers=dict(response.headers))
+        return await self._execute_generation(session_id, session, generation, method=method, query=query, headers=headers)
 
+    async def _execute_generation(
+        self, session_id: str, session: SessionStateV2, generation: _PreparedGeneration,
+        *, method: str, query: str, headers: dict,
+    ) -> Response:
         failed = True
         try:
             upstream = await self.backend.do_proxy(
@@ -241,10 +267,15 @@ class SessionCoreV2(SessionCore):
                         response_id=response.get("id", ""),
                         finish_reason=choice.get("finish_reason") or "",
                         context_id=generation.context_id,
+                        generation_id=generation.generation_id,
+                        retry_of=generation.intent.retry_of,
+                        supersedes=generation.intent.supersedes,
                     )
                     failed = False
                     session.lifecycle.resolve(generation.ticket, failed=False)
-            return _chat_client_response(upstream, response, generation.client_stream)
+            client_response = _chat_client_response(upstream, response, generation.client_stream)
+            client_response.headers["X-Miles-Generation-Id"] = generation.generation_id
+            return client_response
         finally:
             async with session.lock:
                 session.lifecycle.resolve(generation.ticket, failed=failed)
@@ -255,12 +286,18 @@ class SessionCoreV2(SessionCore):
         body: bytes,
         context: SessionContext | None,
         previous_response_id: str | None,
+        intent: GenerationIntent,
     ) -> _PreparedGeneration:
         session.lifecycle.check_open()
         if len(session.tree.nodes) + session.lifecycle.pending_count >= MAX_NODES:
             raise SessionConflictError(f"Session reached its {MAX_NODES}-generation capacity; create a new session.")
         request_body, client_stream, tokenizer = prepare_chat_request(body, self.config, self.registry.tito_tokenizer)
         context_id = context.context_id if context is not None else None
+        for reference in (intent.retry_of, intent.supersedes):
+            if reference is not None and not any(
+                node.generation_id == reference and node.context_id == context_id for node in session.tree.nodes
+            ):
+                raise SessionConflictError("Retry references must identify a committed generation in the same context.")
         request_messages = request_body.get("messages", [])
         position_for_request(
             session,
@@ -286,4 +323,6 @@ class SessionCoreV2(SessionCore):
             client_stream=client_stream,
             request_timestamp=time.time(),
             context_id=context_id,
+            generation_id=uuid.uuid4().hex,
+            intent=intent,
         )

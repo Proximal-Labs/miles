@@ -34,6 +34,8 @@ def tree_metadata(state: SessionStateV2) -> dict:
             "generation_id": node.generation_id,
             "context_id": node.context_id,
             "identity_source": "explicit" if node.context_id is not None else "inferred",
+            "retry_of": node.retry_of,
+            "supersedes": node.supersedes,
         }
         for node in state.tree.nodes
     ]

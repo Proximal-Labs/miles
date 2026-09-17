@@ -141,6 +141,7 @@ def test_routes_preserve_identity_and_reject_invalid_predecessors(context_core, 
         assert response.status_code == 200, response.text
         metadata = client.get(endpoint).json()["metadata"]
         assert metadata["tree"]["nodes"][0]["context_id"] == "first"
+        assert response.headers["x-miles-generation-id"] == metadata["tree"]["nodes"][0]["generation_id"]
         assert metadata["contexts"] == [context.model_dump(exclude_none=True)]
         invalid = {**context.headers(), "X-Miles-Previous-Response-Id": "missing"}
         assert client.post(f"{endpoint}/{path}", json=payload, headers=invalid).status_code == 409
