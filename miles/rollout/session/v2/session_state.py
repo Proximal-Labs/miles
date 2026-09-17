@@ -20,6 +20,7 @@ from typing import Any
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
 from miles.rollout.session.types import SessionRecord
+from miles.rollout.session.v2.contexts import SessionContexts
 from miles.rollout.session.v2.lifecycle import SessionLifecycle
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -36,6 +37,7 @@ class SessionStateV2:
     lifecycle: SessionLifecycle = field(default_factory=SessionLifecycle, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
+    contexts: SessionContexts = field(default_factory=SessionContexts)
     active_leaf: TrajectoryNode | None = None
     sample_export: tuple[str, bytes] | None = field(default=None, repr=False)
     expiry: asyncio.TimerHandle | None = field(default=None, repr=False, compare=False)
@@ -62,9 +64,14 @@ def position_for_request(
     request_messages: list[dict[str, Any]],
     *,
     message_matcher: SessionMessageMatcher | None = None,
+    context_id: str | None = None,
+    previous_response_id: str | None = None,
 ) -> None:
     """Move the view (``active_leaf``) to the attach point for *request_messages*."""
-    attach = state.tree.find_attach_point(request_messages, message_matcher=message_matcher)
+    attach = state.tree.find_attach_point(
+        request_messages, message_matcher=message_matcher,
+        context_id=context_id, previous_response_id=previous_response_id,
+    )
 
     if attach.node is not None and attach.node.truncated:
         raise TruncatedGenerationError(
@@ -146,6 +153,7 @@ def commit_generation(
     record: SessionRecord,
     response_id: str,
     finish_reason: str,
+    context_id: str | None = None,
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (captured at
     positioning time), then advance the view to the new node. Prefix
@@ -170,6 +178,7 @@ def commit_generation(
         response_id=response_id,
         record=record,
         finish_reason=finish_reason,
+        context_id=context_id,
     )
     state.active_leaf = node
     return node

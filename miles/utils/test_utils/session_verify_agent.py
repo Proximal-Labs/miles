@@ -306,11 +306,17 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     # silently-stuck samples from burning wall-time.
     consecutive_failure_rollbacks = 0
 
+    session_headers = metadata.get("session_headers") or {}
+    generated_messages: dict[int, tuple[dict, str]] = {}
     async with httpx.AsyncClient(timeout=180) as client:
+        if session_headers:
+            client.headers.update(session_headers)
         # Initial completion — no driver action yet.
         resp = await _chat_complete(client, base_url, messages, rk, label="Initial")
         assistant = resp["choices"][0]["message"]
         messages.append(assistant)
+        if session_headers:
+            generated_messages[id(assistant)] = (assistant, resp["id"])
         events.append("initial")
         counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
 
@@ -416,9 +422,17 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             else:
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
+            if "X-Miles-Context-Id" in session_headers:
+                previous = next((generated_messages[id(message)][1] for message in reversed(messages) if id(message) in generated_messages), None)
+                if previous is not None:
+                    client.headers["X-Miles-Previous-Response-Id"] = previous
+                else:
+                    client.headers.pop("X-Miles-Previous-Response-Id", None)
             resp = await _chat_complete(client, base_url, messages, rk, label=label)
             assistant = resp["choices"][0]["message"]
             messages.append(assistant)
+            if session_headers:
+                generated_messages[id(assistant)] = (assistant, resp["id"])
             counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
 
     logger.info("Agent done: events=%s counters=%s", events, counters)

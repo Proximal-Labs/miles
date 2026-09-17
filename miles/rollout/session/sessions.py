@@ -10,6 +10,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from miles.rollout.session.v2.contexts import SessionContext
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
 from starlette.responses import Response
@@ -118,6 +119,10 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         return await core.delete_session(session_id)
 
     if use_v2:
+
+        @app.post("/sessions/{session_id}/contexts")
+        async def register_context(session_id: str, context: SessionContext):
+            return await core.register_context(session_id, context)
 
         @app.post("/sessions/{session_id}/finish")
         async def finish_session(session_id: str, params: _FinishSessionRequest):

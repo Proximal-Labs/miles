@@ -257,6 +257,37 @@ survive a server restart. Timeout fencing prevents late commits; it does not
 cancel upstream GPU work. Active-session collection without a snapshot remains
 a live preview for existing clients. V1 keeps its existing lifecycle.
 
+## Explicit agent contexts (v2)
+
+Send `X-Miles-Agent-Run-Id` and `X-Miles-Context-Id` on each OpenAI or Anthropic
+request to isolate continuation matching. A child has its own agent and context
+IDs; `X-Miles-Parent-Agent-Run-Id` and optional `X-Miles-Parent-Tool-Call-Id`
+describe its execution relationship without sharing the parent's token history.
+
+Contexts register on their first request. To register a parent before it makes
+any model call, use `POST /sessions/{id}/contexts`:
+
+```json
+{"agent_run_id": "main", "context_id": "main-1"}
+```
+
+Repeat the same identity headers for that context. IDs and parent relationships
+are immutable within the session; unknown parents and conflicting registrations
+return 409. Compaction uses a new context ID with
+`X-Miles-Derived-From-Context-Id` referencing the same agent's old context.
+Changing the model, adapter, tools, or chat-template options also requires a new
+context. These transitions always start a new token root.
+
+Optional `X-Miles-Previous-Response-Id` chooses one predecessor inside the
+context. Its stored messages must match the request prefix; an invalid reference
+returns 409. Without it, equally deep matches start a fresh root. Requests without
+identity headers remain inferred and cannot attach to explicitly identified
+contexts. Miles consumes these headers before forwarding to inference.
+
+Session metadata exposes the context registry and each node's stable
+`generation_id`, `context_id`, and `identity_source`. Leaf sample metadata carries
+the agent/context IDs. All contexts still belong to the same training episode.
+
 ## Example
 
 [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker)

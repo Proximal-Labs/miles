@@ -5,10 +5,12 @@ key. Everything here is synchronous pure data — serving policy,
 concurrency, and tokenization live one layer up in ``session_state``.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.types import SessionRecord
+from miles.rollout.session.errors import SessionConflictError
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
@@ -28,6 +30,8 @@ class TrajectoryNode:
     finish_reason: str
     parent: "TrajectoryNode | None" = None
     children: list["TrajectoryNode"] = field(default_factory=list, repr=False)
+    generation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    context_id: str | None = None
 
     @property
     def truncated(self) -> bool:
@@ -76,7 +80,10 @@ class SessionTree:
         response_id: str,
         record: SessionRecord,
         finish_reason: str,
+        context_id: str | None = None,
     ) -> TrajectoryNode:
+        if parent is not None and parent.context_id != context_id:
+            raise SessionConflictError("Token ancestry cannot cross contexts; start a new root.")
         if len(self.nodes) >= MAX_NODES:
             raise ValueError(
                 f"node cap reached ({MAX_NODES}): the session cannot branch or extend "
@@ -93,6 +100,7 @@ class SessionTree:
             record=record,
             finish_reason=finish_reason,
             parent=parent,
+            context_id=context_id,
         )
         self.nodes.append(node)
         if parent is None:
@@ -106,20 +114,37 @@ class SessionTree:
         request_messages: list[dict[str, Any]],
         *,
         message_matcher: SessionMessageMatcher | None = None,
+        context_id: str | None = None,
+        previous_response_id: str | None = None,
     ) -> AttachPoint:
         """Deepest node whose full path messages are a prefix of the request.
 
         Message equivalence is decided by *message_matcher* (defaults to the
         strict matcher).  A node is only entered after its parent's delta is
-        fully consumed; ties on depth (twins whose deltas both match) go to
-        the latest ``seq``.  Pure judgment — never mutates the forest.
+        fully consumed. Ambiguous matches start a root; an explicit predecessor
+        must match within this context. Pure judgment -- never mutates the forest.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
+        if previous_response_id is not None:
+            candidates = [
+                node for node in self.nodes
+                if node.context_id == context_id and node.response_id == previous_response_id
+            ]
+            if len(candidates) != 1:
+                raise SessionConflictError("Previous response is unknown or ambiguous in this context.")
+            node = candidates[0]
+            stored = node.path_messages()
+            if len(stored) > len(request_messages) or not all(
+                matcher(old, new) for old, new in zip(stored, request_messages, strict=False)
+            ):
+                raise SessionConflictError("Previous response does not match the supplied history; replay its prefix.")
+            return AttachPoint(node=node, matched_messages=len(stored), best_overlap=len(stored))
         best: TrajectoryNode | None = None
         best_matched = -1
         best_overlap = 0
+        ambiguous = False
 
-        stack = [(root, 0) for root in reversed(self.roots)]
+        stack = [(root, 0) for root in reversed(self.roots) if root.context_id == context_id]
         while stack:
             node, offset = stack.pop()
             delta = node.delta_messages
@@ -134,10 +159,13 @@ class SessionTree:
             if i < len(delta):
                 continue  # partial delta: this node (and its subtree) is not a candidate
             matched = offset + len(delta)
-            if matched > best_matched or (matched == best_matched and best is not None and node.seq > best.seq):
+            if matched > best_matched:
                 best, best_matched = node, matched
+                ambiguous = False
+            elif matched == best_matched:
+                ambiguous = True
             stack.extend((child, matched) for child in reversed(node.children))
 
-        if best is None:
+        if best is None or ambiguous:
             return AttachPoint(node=None, matched_messages=0, best_overlap=best_overlap)
         return AttachPoint(node=best, matched_messages=best_matched, best_overlap=best_overlap)

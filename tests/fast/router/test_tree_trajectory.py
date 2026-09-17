@@ -107,14 +107,15 @@ class TestAttachPoint:
         assert ap.node is None
         assert ap.best_overlap == 0
 
-    def test_case9_twin_tie_goes_to_latest_seq(self):
+    def test_ambiguous_twins_start_a_new_root(self):
         tree = SessionTree()
         n0 = _commit(tree, None, [SYS, U1, A1])
         twin_a = _commit(tree, n0, [T1, A2])
         twin_b = _commit(tree, n0, [T1, A2])  # same delta text, later seq
         assert twin_a.seq < twin_b.seq
         ap = tree.find_attach_point([SYS, U1, A1, T1, A2, {"role": "user", "content": "next"}])
-        assert ap.node is twin_b
+        assert ap.node is None
+        assert ap.matched_messages == 0
 
     def test_deepest_match_wins_across_roots(self):
         """Two roots where one's opening is a prefix of the other's history."""
@@ -212,4 +213,5 @@ class TestModel:
         later = _commit(tree, n0, [T1, A2], committed_at=99.0)
         assert early_clock.seq < later.seq
         ap = tree.find_attach_point([SYS, U1, A1, T1, A2, T2])
-        assert ap.node is later
+        assert ap.node is None
+        assert tree.find_attach_point([SYS, U1, A1, T1, A2, T2], previous_response_id=later.response_id).node is later

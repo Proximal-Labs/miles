@@ -31,6 +31,9 @@ def tree_metadata(state: SessionStateV2) -> dict:
             "completion_span": list(node.completion_span),
             "num_tokens": len(node.token_ids),
             "response_id": node.response_id,
+            "generation_id": node.generation_id,
+            "context_id": node.context_id,
+            "identity_source": "explicit" if node.context_id is not None else "inferred",
         }
         for node in state.tree.nodes
     ]
@@ -87,6 +90,11 @@ def build_leaf_material(
                 "parent": leaf.parent.seq if leaf.parent is not None else None,
                 "path_node_ids": [n.seq for n in path],
                 "response_id": leaf.response_id,
+                "generation_id": leaf.generation_id,
+                "context_id": leaf.context_id,
+                "agent_run_id": (
+                    state.contexts.contexts[leaf.context_id].agent_run_id if leaf.context_id is not None else None
+                ),
             },
         }
         try:

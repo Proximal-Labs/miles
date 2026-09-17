@@ -20,6 +20,7 @@ from miles.rollout.session.errors import SessionConflictError, SessionNotFoundEr
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
+from miles.rollout.session.v2.contexts import SessionContext, split_context_headers
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     SessionStateV2,
@@ -44,6 +45,7 @@ class _PreparedGeneration:
     tokenizer: TITOTokenizer
     client_stream: bool
     request_timestamp: float
+    context_id: str | None
 
 
 class SessionCoreV2(SessionCore):
@@ -73,6 +75,8 @@ class SessionCoreV2(SessionCore):
         metadata["accumulated_token_ids"] = session.active_token_ids()
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
+        if session.contexts.contexts:
+            metadata["contexts"] = [context.model_dump(exclude_none=True) for context in session.contexts.contexts.values()]
         if session.lifecycle.finished is not None:
             metadata["finalization"] = asdict(session.lifecycle.finished)
         return metadata
@@ -91,6 +95,13 @@ class SessionCoreV2(SessionCore):
         self.registry.retain_for_collection(session_id)
         finished = await session.lifecycle.finish(producer_finished=producer_finished, timeout=timeout)
         return Response(content=_render_json(asdict(finished)), media_type=JSON_MEDIA_TYPE)
+
+    async def register_context(self, session_id: str, context: SessionContext) -> Response:
+        session = self.registry.get_session(session_id)
+        async with session.lock:
+            session.lifecycle.check_open()
+            session.contexts.register(context)
+        return Response(content=_render_json(context.model_dump(exclude_none=True)), media_type=JSON_MEDIA_TYPE)
 
     async def collect_samples(
         self,
@@ -183,10 +194,11 @@ class SessionCoreV2(SessionCore):
     ) -> Response:
         """Record admitted generations while finish drains without holding the lock."""
         session = self.registry.get_session(session_id)
+        context, previous_response_id, headers = split_context_headers(headers)
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
-            generation = self._prepare_generation(session, body)
+            generation = self._prepare_generation(session, body, context, previous_response_id)
 
         failed = True
         try:
@@ -226,6 +238,7 @@ class SessionCoreV2(SessionCore):
                         record=record,
                         response_id=response.get("id", ""),
                         finish_reason=choice.get("finish_reason") or "",
+                        context_id=generation.context_id,
                     )
                     failed = False
                     session.lifecycle.resolve(generation.ticket, failed=False)
@@ -234,13 +247,23 @@ class SessionCoreV2(SessionCore):
             async with session.lock:
                 session.lifecycle.resolve(generation.ticket, failed=failed)
 
-    def _prepare_generation(self, session: SessionStateV2, body: bytes) -> _PreparedGeneration:
+    def _prepare_generation(
+        self, session: SessionStateV2, body: bytes,
+        context: SessionContext | None, previous_response_id: str | None,
+    ) -> _PreparedGeneration:
         session.lifecycle.check_open()
         if len(session.tree.nodes) + session.lifecycle.pending_count >= MAX_NODES:
             raise SessionConflictError(f"Session reached its {MAX_NODES}-generation capacity; create a new session.")
         request_body, client_stream, tokenizer = prepare_chat_request(body, self.config, self.registry.tito_tokenizer)
+        context_id = context.context_id if context is not None else None
+        if context is not None:
+            session.contexts.register(context)
+            session.contexts.bind_rendering(context_id, request_body)
         request_messages = request_body.get("messages", [])
-        position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
+        position_for_request(
+            session, request_messages, message_matcher=self.registry.message_matcher,
+            context_id=context_id, previous_response_id=previous_response_id,
+        )
         prompt_token_ids = prepare_pretokenized(
             session, request_messages, tools=request_body.get("tools"), tito_tokenizer=tokenizer
         )
@@ -255,4 +278,5 @@ class SessionCoreV2(SessionCore):
             tokenizer=tokenizer,
             client_stream=client_stream,
             request_timestamp=time.time(),
+            context_id=context_id,
         )
