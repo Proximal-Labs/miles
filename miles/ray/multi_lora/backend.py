@@ -50,22 +50,18 @@ class MultiLoRABackend:
         if config is None or not isinstance(config, AdapterRunConfig):
             return config
 
-        rank = config.rank if config.rank is not None else getattr(self.args, "lora_rank", 1)
-        alpha = config.alpha if config.alpha is not None else getattr(self.args, "lora_alpha", rank)
+        rank = config.rank if config.rank is not None else self.args.lora_rank
+        alpha = config.alpha if config.alpha is not None else self.args.lora_alpha
         rollout_batch_size = (
-            config.rollout_batch_size
-            if config.rollout_batch_size is not None
-            else getattr(self.args, "rollout_batch_size", None)
+            config.rollout_batch_size if config.rollout_batch_size is not None else self.args.rollout_batch_size
         )
         n_samples_per_prompt = (
-            config.n_samples_per_prompt
-            if config.n_samples_per_prompt is not None
-            else getattr(self.args, "n_samples_per_prompt", 1)
+            config.n_samples_per_prompt if config.n_samples_per_prompt is not None else self.args.n_samples_per_prompt
         )
 
         if type(rank) is not int or rank <= 0:
             raise ValueError(f"Adapter '{name}' rank must be a positive integer")
-        if rank > getattr(self.args, "lora_rank", rank):
+        if rank > self.args.lora_rank:
             raise ValueError(f"Adapter '{name}' rank {rank} exceeds the allocated maximum rank {self.args.lora_rank}")
         if alpha is None or alpha <= 0:
             raise ValueError(f"Adapter '{name}' must have a positive alpha")
@@ -92,8 +88,8 @@ class MultiLoRABackend:
         if (
             config.custom_rm_path is None
             and not (config.rm_type or "").strip()
-            and getattr(self.args, "custom_rm_path", None) is None
-            and not (getattr(self.args, "rm_type", None) or "").strip()
+            and self.args.custom_rm_path is None
+            and not (self.args.rm_type or "").strip()
         ):
             raise ValueError(
                 f"Adapter '{name}' has no reward config: set rm_type or custom_rm_path in the adapter "
@@ -101,14 +97,14 @@ class MultiLoRABackend:
             )
 
         adapter_global_batch_size = rollout_batch_size * n_samples_per_prompt
-        if (max_batch := getattr(self.args, "multi_lora_max_adapter_global_batch_size", None)) is not None:
+        if (max_batch := self.args.multi_lora_max_adapter_global_batch_size) is not None:
             if adapter_global_batch_size > max_batch:
                 raise ValueError(
                     f"Adapter '{name}' consumes {adapter_global_batch_size} samples per step "
                     f"(rollout_batch_size {rollout_batch_size} x n_samples_per_prompt {n_samples_per_prompt}), "
                     f"exceeding --multi-lora-max-adapter-global-batch-size {max_batch}"
                 )
-        if (dp_size := getattr(self.args, "multi_lora_dp_size", None)) is not None:
+        if (dp_size := self.args.multi_lora_dp_size) is not None:
             try:
                 group_multiple = min_groups_per_dp_split(n_samples_per_prompt, dp_size)
             except ValueError as e:
@@ -122,7 +118,7 @@ class MultiLoRABackend:
 
         save = Path(config.save) if config.save is not None else None
         if save is None:
-            if getattr(self.args, "save", None) is None:
+            if self.args.save is None:
                 raise ValueError(f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save")
             save = Path(self.args.save) / "adapters" / name
 
@@ -139,7 +135,7 @@ class MultiLoRABackend:
         config = self.resolve_adapter_config(name, config)
         await self.validate_adapter(name, config)
         result = self.registry.register(name, config)
-        resolved = getattr(config, "save", None)
+        resolved = config.save
         if resolved is not None:
             logger.info(f"Adapter '{name}' registered (slot {result['slot']}), checkpoints -> {resolved}")
         return result

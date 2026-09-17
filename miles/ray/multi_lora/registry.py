@@ -88,9 +88,9 @@ class AdapterRegistry:
                 raise ValueError(f"Adapter '{name}' already registered")
             if existing.state in (AdapterState.RETIRING, AdapterState.CLEANUP):
                 raise ValueError(f"Adapter '{name}' is still cleaning up; retry shortly")
-        if (save_dir := getattr(config, "save", None)) is not None:
+        if (save_dir := config.save) is not None:
             for record in self.in_state(*LIVE_STATES).values():
-                other_save = getattr(record.config, "save", None)
+                other_save = record.config.save
                 if other_save is not None and Path(other_save).resolve() == Path(save_dir).resolve():
                     raise ValueError(
                         f"Adapter '{name}' save dir '{save_dir}' is already used by adapter '{record.name}'"
@@ -186,7 +186,7 @@ class AdapterRegistry:
                 record.accumulated_groups = 0
                 stepped.append(name)
                 if (
-                    getattr(record.config, "num_step", None) is not None
+                    record.config.num_step is not None
                     and record.state is AdapterState.ACTIVE
                     and (record.step - record.start_step) >= record.config.num_step
                 ):
