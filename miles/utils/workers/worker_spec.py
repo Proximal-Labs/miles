@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -88,6 +89,7 @@ class WorkerMetaContext(FrozenStrictBaseModel):
 
 
 class WorkerLaunchContext(FrozenStrictBaseModel):
+    args: Any = None
     cell_index: int
     worker_in_cell_index: int
     gpu_ids: list[int]
@@ -158,3 +160,41 @@ class ServeWorkerSpec(BaseWorkerSpec):
         if all(_port_info_name(port_info) != RPC_PORT_NAME for port_info in port_infos):
             port_infos.append(DEFAULT_RPC_PORT_INFO)
         return {**values, "port_infos": port_infos}
+
+
+class BaseSpec(ABC):
+    name: str
+    category: str | None = None
+    deploy_component: DeployComponent = DeployComponent.PRIMARY
+    platform_access: PlatformAccess = PlatformAccess.NONE
+
+    @abstractmethod
+    def scheduling(self) -> SchedulingSpec: ...
+
+    @abstractmethod
+    def port_infos(self) -> list[PortInfo]: ...
+
+    @abstractmethod
+    def static_meta(self) -> dict[str, Any]: ...
+
+    @abstractmethod
+    def slice_config(self, args: Any) -> Any: ...
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return {}
+
+
+class BaseCommandSpec(BaseSpec):
+    @abstractmethod
+    def launch_command(self, ctx: LaunchCommandContext) -> str: ...
+
+
+class BaseServeSpec(BaseSpec):
+    worker_class: str
+    concurrency_groups: dict[str, int] | None = None
+
+    def port_infos(self) -> list[PortInfo]:
+        return [DEFAULT_RPC_PORT_INFO]
+
+    @abstractmethod
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]: ...
