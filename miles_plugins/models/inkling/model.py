@@ -53,6 +53,7 @@ class InklingExtra:
         self.hidden_size = t["hidden_size"]
         self.num_hidden_layers = t["num_hidden_layers"]
         self.vocab_size = t["vocab_size"]
+        self.unpadded_vocab_size = t.get("unpadded_vocab_size")
         self.rms_norm_eps = t["rms_norm_eps"]
         self.dense_mlp_idx = int(t.get("dense_mlp_idx", 0))
         self.dense_intermediate_size = int(t.get("dense_intermediate_size", t["intermediate_size"]))
@@ -274,12 +275,16 @@ class InklingGPTModel(GPTModel):
             )
 
 
-def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *, mm_towers=False):
+def inkling_model_provider(
+    pre_process: bool = True,
+    post_process: bool = True,
+    vp_stage: int | None = None,
+    *,
+    args: TrainerConfig,
+    mm_towers: bool = False,
+) -> InklingGPTModel:
     import json
 
-    from megatron.training import get_args
-
-    args = get_args()
     if args.backend.context_parallel_size > 1:
         assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
@@ -316,10 +321,18 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
     return model
 
 
-def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None):
+def inkling_mm_model_provider(
+    pre_process: bool = True,
+    post_process: bool = True,
+    vp_stage: int | None = None,
+    *,
+    args: TrainerConfig,
+) -> InklingGPTModel:
     """Multimodal provider: the text model plus the frozen HF vision/audio towers.
 
     A separate entry point instead of a CLI switch -- multimodal launch scripts pass
     this as --custom-model-provider-path.
     """
-    return inkling_model_provider(pre_process, post_process, vp_stage, mm_towers=True)
+    return inkling_model_provider(
+        pre_process=pre_process, post_process=post_process, vp_stage=vp_stage, args=args, mm_towers=True
+    )

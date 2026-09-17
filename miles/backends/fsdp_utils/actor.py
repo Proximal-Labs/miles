@@ -8,6 +8,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.ci_utils import check_grad_norm
 from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
@@ -68,6 +69,7 @@ class FSDPTrainRayActor(TrainRayActor):
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert isinstance(args.backend, FsdpArgsNamespace)
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
@@ -724,7 +726,7 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
+def apply_fsdp2(model, mesh=None, cpu_offload=False, *, args, param_dtype=None, reduce_dtype=None):
     """Apply FSDP2 (fully_shard) to the model.
 
     ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).

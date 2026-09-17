@@ -128,7 +128,7 @@ class TrainRayActor(NodeProbeMixin):
         backend = args.backend.distributed_backend
         if args.train_backend == "fsdp" and args.backend.fsdp_cpu_offload and args.backend.fsdp_cpu_backend:
             cpu_backend = args.backend.fsdp_cpu_backend
-            backend = f"cpu:{cpu_backend},cuda:{args.backend.distributed_backend}"
+            backend = f"cpu:{cpu_backend},cuda:{backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         dist.init_process_group(
