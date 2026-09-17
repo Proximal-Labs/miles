@@ -125,6 +125,8 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     engine_checksums: list[dict[str, str]]
     weight_version: int | None = None
     engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(default_factory=list)
+    lora_enabled: bool | None = None
+    update_weights_interval: int | None = Field(default=None, ge=1)
     version_epoch: str | None = None
     update_id: str | None = None
 

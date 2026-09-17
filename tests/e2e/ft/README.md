@@ -418,5 +418,5 @@ membership is asserted.
 
 - **Reduced scope**: no all-target batches, overlapping faults, fully-async variants or GSM8K quality thresholds.
 - **Checksum observation**: opt-in version/incarnation snapshots with a five-second collection timeout; observation failures lose evidence and fail the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
-- **Movement**: each tensor must change between adjacent observed versions within a model's version epoch. Runs require at least two observed versions.
+- **Movement**: each tensor must change between adjacent observed versions within a model's version epoch. LoRA and update intervals other than one explicitly disable movement, but never same-version consistency. Applicable runs require at least two observed versions.
 - **Mixed FT/deploy**: the Kubernetes takeover entry accepts `--mix-ft`; all action implementations and checks live in `tests/utils/soak/`. Each kind must independently meet its effect and recovery requirements.

@@ -59,6 +59,8 @@ def assert_published_weight_checksums(
         (event.trainer_model_id, event.version_epoch, event.weight_version)
         for event in events
         if isinstance(event, InferenceEngineWeightChecksumEvent)
+        and event.lora_enabled is False
+        and event.update_weights_interval == 1
         and (event.trainer_model_id, event.version_epoch, event.weight_version, event.update_id) in publications
     }
     if movement_versions:
