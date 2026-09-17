@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.rollout.test_fully_async_rollout import FakeDataSource, make_args, make_fn, make_group, train_input
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -51,19 +52,22 @@ class TestCheckpointSampleOwnership:
         restored.load(tmp_path)
         restored._worker = asyncio.create_task(asyncio.Event().wait())
         checker_args = SimpleNamespace(
-            ci_test=True,
-            enable_sample_ownership_checker=None,
-            sample_ownership_grace_steps=None,
-            custom_convert_samples_to_train_data_path=None,
-            save_debug_event_data=str(event_logger.log_dir),
-            train_backend="megatron",
-            megatron_config=None,
-            lora_rank=0,
-            lora_adapter_path=None,
-            multi_lora=False,
-            debug_train_only=False,
-            debug_rollout_only=False,
-            num_critic_only_steps=0,
+            **parser_defaults()
+            | dict(
+                ci_test=True,
+                enable_sample_ownership_checker=None,
+                sample_ownership_grace_steps=None,
+                custom_convert_samples_to_train_data_path=None,
+                save_debug_event_data=str(event_logger.log_dir),
+                train_backend="megatron",
+                megatron_config=None,
+                lora_rank=0,
+                lora_adapter_path=None,
+                multi_lora=False,
+                debug_train_only=False,
+                debug_rollout_only=False,
+                num_critic_only_steps=0,
+            )
         )
         _resolve_sample_ownership_check(checker_args)
         assert checker_args.enable_sample_ownership_checker
