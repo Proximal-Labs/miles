@@ -102,7 +102,8 @@ def build_multi_lora_optimizer(
             children = [
                 child
                 for child in chained.chained_optimizers
-                if getattr(child, "optimizer", None) is not None and child.get_parameters()
+                if getattr(child, "optimizer", None) is not None
+                and child.get_parameters()  # config-access-exempt: optimizer wrappers differ in optimizer support
             ]
             assert children, f"adapter slot {slot} produced no optimizer children"
             slot_child_indices[slot] = list(range(len(base_optimizers), len(base_optimizers) + len(children)))
@@ -136,7 +137,9 @@ def reset_grad_metadata_keep_grads(model_chunks) -> None:
     """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
     survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
     for model_chunk in model_chunks:
-        if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
+        if (
+            getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine"
+        ):  # config-access-exempt: third-party providers differ in cuda_graph_impl support
             for param in model_chunk.params_with_grad:
                 param.grad_added_to_main_grad = False
         for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
@@ -147,10 +150,14 @@ def zero_adapter_slot_grads(model, slot: int) -> None:
     """Zero one slot's gradients everywhere they live: the DDP ``main_grad`` buffer views
     and any lingering ``grad``/``main_param.grad`` references."""
     for param in adapter_slot_parameters(model, slot):
-        if (main_grad := getattr(param, "main_grad", None)) is not None:
+        if (
+            main_grad := getattr(param, "main_grad", None)
+        ) is not None:  # config-access-exempt: main_grad is optional backend-attached tensor metadata
             main_grad.zero_()
         param.grad = None
-        if (main_param := getattr(param, "main_param", None)) is not None:
+        if (
+            main_param := getattr(param, "main_param", None)
+        ) is not None:  # config-access-exempt: main_param is optional backend-attached tensor metadata
             main_param.grad = None
 
 

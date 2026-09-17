@@ -184,7 +184,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if role != "critic":
             for m in all_replay_managers:
-                m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
+                m.enabled = getattr(
+                    self.args, f"use_{m.name}_replay", False
+                )  # config-access-exempt: attribute selected at runtime from f'use_{m.name}_replay'
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
         checkpointing_context = None
@@ -259,7 +261,9 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model,
             weights_getter=self._get_actor_weights,
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            quantization_config=getattr(
+                self.hf_config, "quantization_config", None
+            ),  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
             iterator_factory=get_hf_weight_iterator,
             parallel_state=get_parallel_state(),
             is_lora=is_lora,
@@ -632,7 +636,9 @@ class MegatronTrainRayActor(TrainRayActor):
         return TrainStepOutput(outcome=train_step_outcome, values=values)
 
     def _use_rollout_replay(self, m) -> bool:
-        return getattr(self.args, f"use_rollout_{m.name}_replay", False)
+        return getattr(
+            self.args, f"use_rollout_{m.name}_replay", False
+        )  # config-access-exempt: attribute selected at runtime from f'use_rollout_{m.name}_replay'
 
     @with_logs
     def _train_actor(
