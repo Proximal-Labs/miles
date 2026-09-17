@@ -131,6 +131,13 @@ def _checkpoint_args(path: Path, **overrides: object) -> Namespace:
     return make_args(save=str(path), load=str(path), rollout_batch_size=1, **overrides)
 
 
+async def _generate_and_reward(_state, group: list[Sample], **_kwargs: Any) -> list[Sample]:
+    for sample in group:
+        sample.status = Sample.Status.COMPLETED
+        sample.reward = 1
+    return group
+
+
 async def test_running_generation_is_restored_as_a_clean_retry(monkeypatch, tmp_path: Path) -> None:
     """A half-written generation is replayed from an untouched prompt after restore."""
     fn = make_fn(monkeypatch, _checkpoint_args(tmp_path), FakeDataSource())
@@ -238,7 +245,7 @@ async def test_aborted_group_in_retry_queue_survives_checkpoint(monkeypatch, tmp
 async def test_a_group_blocked_in_put_is_restored_as_a_clean_retry(monkeypatch, tmp_path: Path) -> None:
     """A group saved while its put waits for buffer capacity is regenerated from its prompt after restore."""
     args = _checkpoint_args(tmp_path, async_data_buffer_capacity_factor=1)
-    fn = make_fn(monkeypatch, args, FakeDataSource())
+    fn = make_fn(monkeypatch, args, FakeDataSource(), generate=_generate_and_reward)
     first, second = make_group(1), make_group(2)
     await fn._output.put(DataBufferInput(prompt_group=first, group=first))
     blocked = asyncio.create_task(fn._output.put(DataBufferInput(prompt_group=second, group=second)))
@@ -249,7 +256,7 @@ async def test_a_group_blocked_in_put_is_restored_as_a_clean_retry(monkeypatch, 
     blocked.cancel()
     await asyncio.gather(blocked, return_exceptions=True)
 
-    restored = make_fn(monkeypatch, args, FakeDataSource())
+    restored = make_fn(monkeypatch, args, FakeDataSource(), generate=_generate_and_reward)
     restored.load(tmp_path)
 
     [pending] = restored._retry_buffer
