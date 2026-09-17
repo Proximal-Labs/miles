@@ -387,7 +387,7 @@ class AsyncMultiLoRAWorker:
         nothing is poppable; returns them with an updated ``group_counts`` copy (prevents adapter overshoot)."""
         adapters = {**snapshot["active"], **snapshot["retiring"]}
         dp_size = self.args.multi_lora_dp_size
-        max_staleness = getattr(self.args, "max_weight_staleness", None)
+        max_staleness = self.args.max_weight_staleness
         group_counts = dict(group_counts)  # updated copy; the argument is not modified
         popped: list[Group] = []
         popped_samples = 0
@@ -449,8 +449,8 @@ async def collect_batch(args, worker: AsyncMultiLoRAWorker, snapshot: dict) -> T
     stalls for ``--multi-lora-max-coalesce-wait-s`` (the target can be unreachable; ship what there is)."""
     adapters = {**snapshot["active"], **snapshot["retiring"]}
     target_samples = args.global_batch_size
-    wait_s = getattr(args, "multi_lora_max_coalesce_wait_s", 0.5)
-    empty_wait_s = getattr(args, "multi_lora_max_empty_wait_s", EMPTY_BATCH_TIMEOUT_S)
+    wait_s = args.multi_lora_max_coalesce_wait_s
+    empty_wait_s = args.multi_lora_max_empty_wait_s
 
     collected: list[Group] = []
     group_counts: dict[str, int] = {}

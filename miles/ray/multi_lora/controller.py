@@ -80,10 +80,10 @@ class MultiLoRAController:
         await resolve_router_addrs(args, router_providers=self._router_providers)
         router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
-        backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), MultiLoRABackend)
-        server_cls = _load_subclass(getattr(args, "multi_lora_http_server_path", None), MultiLoRAHTTPServer)
+        backend_cls = _load_subclass(args.multi_lora_backend_path, MultiLoRABackend)
+        server_cls = _load_subclass(args.multi_lora_http_server_path, MultiLoRAHTTPServer)
         self.backend = backend_cls(args, router_url)
-        self.server = server_cls(self.backend, self.host, api_port=getattr(args, "multi_lora_api_port", 0))
+        self.server = server_cls(self.backend, self.host, api_port=args.multi_lora_api_port)
 
         await self.backend.init()
         await self.server.start()
