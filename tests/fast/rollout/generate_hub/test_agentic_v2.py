@@ -4,8 +4,8 @@ import pytest
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
-from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.agentic.harness import AgentResult
+from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.types import Sample

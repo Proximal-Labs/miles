@@ -117,7 +117,16 @@ def _verdict(reward=1.0, **agent_fields):
     )
 
 
-@pytest.mark.parametrize("attestation,report,complete", [(True, {"reward": 0.0}, True), (False, {"reward": 1.0}, False), (None, {"reward": 1.0}, False), ("true", {"reward": 1.0}, False), (True, {}, False)])
+@pytest.mark.parametrize(
+    "attestation,report,complete",
+    [
+        (True, {"reward": 0.0}, True),
+        (False, {"reward": 1.0}, False),
+        (None, {"reward": 1.0}, False),
+        ("true", {"reward": 1.0}, False),
+        (True, {}, False),
+    ],
+)
 def test_strict_adapter_requires_join_attestation_and_verifier_outcome(monkeypatch, attestation, report, complete):
     async def fake_run(*args, **kwargs):
         return {"reward": 0.0, "eval_report": report, "agent_metrics": {"miles_producer_finished": attestation}}

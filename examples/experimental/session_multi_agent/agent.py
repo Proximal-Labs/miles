@@ -32,13 +32,26 @@ async def run(base_url, prompt, request_kwargs, metadata, **kwargs) -> AgentResu
                 context = await run.register_context(
                     SessionContext(agent_run_id=name, context_id=name, parent_agent_run_id="main")
                 )
-                reviews.append(run.create_task(_complete(
-                    client, base_url, context,
-                    [{"role": "user", "content": f"Review this answer independently: {draft_message['content']}"}],
-                    request_kwargs,
-                )))
+                reviews.append(
+                    run.create_task(
+                        _complete(
+                            client,
+                            base_url,
+                            context,
+                            [
+                                {
+                                    "role": "user",
+                                    "content": f"Review this answer independently: {draft_message['content']}",
+                                }
+                            ],
+                            request_kwargs,
+                        )
+                    )
+                )
             responses = await asyncio.gather(*reviews)
             critiques = [response["choices"][0]["message"]["content"] for response in responses]
             messages += [draft_message, {"role": "user", "content": f"Revise using these reviews: {critiques}"}]
-            final = await _complete(client, base_url, parent, messages, request_kwargs, previous_response_id=draft["id"])
+            final = await _complete(
+                client, base_url, parent, messages, request_kwargs, previous_response_id=draft["id"]
+            )
         return run.result({"answer": final["choices"][0]["message"]["content"]})

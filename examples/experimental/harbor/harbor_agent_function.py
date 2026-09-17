@@ -481,7 +481,7 @@ async def run(
 async def run_with_completion(base_url, prompt, request_kwargs=None, metadata=None, **kwargs) -> AgentResult:
     """Require a harness-attested producer barrier and a verifier outcome for v2."""
     outcome = await run(base_url, prompt, request_kwargs, metadata, **kwargs)
-    producer_finished = (
-        outcome["agent_metrics"].get("miles_producer_finished") is True and bool(outcome["eval_report"])
+    producer_finished = outcome["agent_metrics"].get("miles_producer_finished") is True and bool(
+        outcome["eval_report"]
     )
     return AgentResult(metadata=outcome, producer_finished=producer_finished)
