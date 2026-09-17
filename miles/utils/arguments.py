@@ -222,6 +222,7 @@ def add_user_provided_function_arguments(
         (rollout_path, "rollout"),
         (eval_path, "rollout"),
         *((vars(args_partial).get(name), owner) for name, owner in path_names),
+        *((dataset.custom_generate_function_path, "rollout") for dataset in _resolve_eval_datasets(args_partial)),
     ):
         if path is not None:
             owners_by_path.setdefault(path, set()).add(owner)
