@@ -49,6 +49,7 @@ from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
 from miles.utils.args.runtime import AllConfig
+from miles.utils.args.schema import BaseConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
@@ -182,20 +183,49 @@ def _assert_reset_arg_compatible(
         assert actual == value, f"Cannot reset {name}: {key}={actual!r} does not match {value!r}"
 
 
-def add_user_provided_function_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+def add_user_provided_function_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    custom_arg_names: set[str],
+    custom_function_paths: dict[str, set[str]],
+) -> argparse.ArgumentParser:
     try:
         with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
             args_partial, _ = parser.parse_known_args()
     except SystemExit:
         return parser
-    paths = [args_partial.custom_inference_engine_provider_path]
-    if not use_legacy_rollout_v1():
-        paths = [
-            resolve_rollout_function_paths(args_partial)[0],
-            args_partial.custom_generate_function_path,
-            *paths,
-        ]
-    for path in paths:
+    rollout_path, eval_path = resolve_rollout_function_paths(args_partial)
+    path_names = (
+        ("custom_inference_engine_provider_path", "inference"),
+        ("custom_generate_function_path", "rollout"),
+        ("custom_agent_function_path", "rollout"),
+        ("custom_model_provider_path", "trainer"),
+        ("custom_tis_function_path", "trainer"),
+        ("custom_pg_loss_reducer_function_path", "trainer"),
+        ("custom_rm_path", "rollout"),
+        ("custom_reward_post_process_path", "rollout"),
+        ("custom_convert_samples_to_train_data_path", "rollout"),
+        ("custom_rollout_log_function_path", "rollout"),
+        ("custom_eval_rollout_log_function_path", "rollout"),
+        ("custom_update_weight_post_write_path", "trainer"),
+        ("custom_megatron_init_path", "trainer"),
+        ("custom_megatron_before_log_prob_hook_path", "trainer"),
+        ("custom_megatron_before_train_step_hook_path", "trainer"),
+        ("custom_megatron_post_save_hook_path", "trainer"),
+        ("custom_loss_function_path", "trainer"),
+        ("rollout_data_postprocess_path", "trainer"),
+        ("data_source_path", "rollout"),
+    )
+    owners_by_path: dict[str, set[str]] = {}
+    for path, owner in (
+        (rollout_path, "rollout"),
+        (eval_path, "rollout"),
+        *((vars(args_partial).get(name), owner) for name, owner in path_names),
+    ):
+        if path is not None:
+            owners_by_path.setdefault(path, set()).add(owner)
+    registered_config_classes: set[type] = set()
+    for path, owners in owners_by_path.items():
         try:
             fn = load_function(path)
         except (ModuleNotFoundError, ValueError):
@@ -203,15 +233,36 @@ def add_user_provided_function_arguments(parser: argparse.ArgumentParser) -> arg
         if fn is not None and callable(
             getattr(fn, "add_arguments", None)
         ):  # config-access-exempt: custom hooks may optionally register CLI arguments
+            previous_arg_names = {action.dest for action in parser._actions}
             fn.add_arguments(parser)
+            custom_arg_names.update(action.dest for action in parser._actions if action.dest not in previous_arg_names)
+        if (
+            fn is not None
+            and (config_class := getattr(fn, "config_class", None))
+            is not None  # config-access-exempt: custom hook protocol discovery
+            and config_class not in registered_config_classes
+        ):
+            if not isinstance(config_class, type) or not issubclass(config_class, BaseConfig):
+                raise TypeError(f"{path}.config_class must inherit BaseConfig")
+            previous_arg_names = {action.dest for action in parser._actions}
+            config_class.add_arguments(parser=parser)
+            custom_arg_names.update(action.dest for action in parser._actions if action.dest not in previous_arg_names)
+            registered_config_classes.add(config_class)
+        if fn is not None:
+            custom_function_paths.setdefault(path, set()).update(owners)
     return parser
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
+    custom_arg_names: set[str] = set()
+    custom_function_paths: dict[str, set[str]] = {}
+
     def add_miles_arguments(parser):
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
+            previous_arg_names = {action.dest for action in parser._actions}
             parser = add_custom_arguments(parser)
+            custom_arg_names.update(action.dest for action in parser._actions if action.dest not in previous_arg_names)
 
         RunUuidConfig.add_arguments(parser=parser)
         ClusterConfig.add_arguments(parser=parser)
@@ -258,7 +309,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         PrefillDecodeDisaggregationConfig.add_arguments(parser=parser)
         CiConfig.add_arguments(parser=parser)
         CustomMegatronPluginsConfig.add_arguments(parser=parser)
-        parser = add_user_provided_function_arguments(parser)
+        parser = add_user_provided_function_arguments(
+            parser,
+            custom_arg_names=custom_arg_names,
+            custom_function_paths=custom_function_paths,
+        )
 
         reset_arg(
             parser,
@@ -288,6 +343,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         return parser
 
+    add_miles_arguments.custom_arg_names = custom_arg_names
+    add_miles_arguments.custom_function_paths = custom_function_paths
     return add_miles_arguments
 
 
@@ -411,7 +468,29 @@ def parse_args_and_get_parser(
     assert parser is not None
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
-    values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {
+    custom_function_configs = {owner: {} for owner in ("inference", "rollout", "trainer")}
+    for path, owners in add_miles_arguments.custom_function_paths.items():
+        function = load_function(path)
+        config_class = getattr(function, "config_class", None)  # config-access-exempt: custom hook protocol discovery
+        if config_class is None:
+            continue
+        else:
+            config_values = {name: vars(args)[name] for name in config_class.model_fields if name in vars(args)}
+        custom_config = config_class.model_validate(config_values)
+        for owner in owners:
+            custom_function_configs[owner][path] = custom_config
+    custom_arg_names = {
+        name
+        for values_by_path in custom_function_configs.values()
+        for custom_config in values_by_path.values()
+        for name in type(custom_config).model_fields
+    }
+    values = {
+        name: value
+        for name, value in vars(args).items()
+        if name not in backend_only_fields and name not in custom_arg_names
+    } | {
+        "custom_function_configs": custom_function_configs,
         "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "sglang": SglangConfig.parse_args(args),

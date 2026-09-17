@@ -6,6 +6,7 @@ from typing import Any, TypeAlias
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.args.schema import BaseConfig
+from miles.utils.function_registry import load_function
 
 
 ConfigSource: TypeAlias = BaseConfig | Namespace | Mapping[str, Any]
@@ -43,11 +44,20 @@ def compute_custom_function_config(
     *runtime_sources: ConfigSource,
     owner: str,
 ) -> ImmutableNamespace:
+    try:
+        custom_config = args.custom_function_configs[owner][path]
+    except KeyError as error:
+        function = load_function(path)
+        if getattr(function, "config_class", None) is not None:  # config-access-exempt: custom hook protocol discovery
+            raise ValueError(
+                f"Typed custom function {path!r} has no registered {owner!r} configuration; "
+                "typed custom functions must be known while parsing arguments"
+            ) from error
+        custom_config = BaseConfig()
     sources: list[ConfigSource] = [args]
     if isinstance(args, TrainerConfig):
         sources.append(args.backend)
-    sources.extend(runtime_sources)
-    return _compute_namespace_from_sources(*sources)
+    return _compute_namespace_from_sources(*sources, custom_config, *runtime_sources)
 
 
 def _compute_namespace_from_sources(*sources: ConfigSource) -> ImmutableNamespace:
