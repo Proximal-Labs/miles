@@ -34,6 +34,10 @@
 - **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
 - **Mixed injection**: `scenario_random_crash --precise-p2p --mix-wall-clock` (or `--precise-all-gather`) draws both hook and wall-clock forms through the same scheduler. Every enabled form must produce an effect; hook forms additionally require worker-side hit evidence.
 - **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
+- **Precise P2P entries**: `scenario_precise_p2p` uses `kill_train__dp2_tp2` for sender faults and `kill_rollout__dp2_tp2` for receiver faults; both have explicit CI entries and reuse the shared soak runner.
+- **Receiver triggers**: an observation-only trainer hook precedes a fault through the selected backend's cell operation; worker hit evidence and an independently observed victim state change are both required. Controller polling and network latency separate hook arrival from receiver failure.
+- **Receiver recovery**: single-target receiver scenarios enable only rollout FT.
+- **Late receiver faults**: independently observed effects still require recovery even when transfer finishes before the fault. Each remote form must additionally achieve at least one failure in its exact triggered update; late misses cannot satisfy precise-hit coverage.
 
 - **Scenario logic**: `conftest_ft/scenario_<name>.py` — a typer app plus a `run_ci(mode)` runner.
 
