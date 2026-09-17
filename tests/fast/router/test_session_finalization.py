@@ -224,4 +224,3 @@ def test_capped_occurrence_cannot_own_tokens_it_does_not_contain():
     assert samples == [full, short]
     assert short.loss_mask == [1]
     assert full.loss_mask == [0, 1, 1]
-
