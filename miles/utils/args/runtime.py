@@ -45,6 +45,24 @@ from miles.utils.args.configs.wandb import WandbConfig
 from miles.utils.args.runtime_base import BaseLeafConfig
 
 
+_SHARED_TRAINER_FIELDS = frozenset(
+    {
+        "async_save",
+        "distributed_backend",
+        "distributed_timeout_minutes",
+        "eval_interval",
+        "global_batch_size",
+        "micro_batch_size",
+        "num_layers",
+        "save",
+        "save_interval",
+        "seed",
+        "wandb_project",
+    }
+)
+_RUNTIME_DUPLICATED_TRAINER_FIELDS = frozenset({"ckpt_step", "load"})
+
+
 class OrchestratorConfig(
     BaseLeafConfig,
     OrchestratorOnlyConfig,
@@ -154,6 +172,27 @@ class TrainerConfig(
             case backend:
                 raise ValueError(f"Unsupported training backend: {backend!r}")
         return values | {"trainer_backend": backend_class._validate(values["trainer_backend"])}
+
+    @model_validator(mode="after")
+    def _validate_shared_trainer_fields(self) -> Self:
+        backend_values = vars(self.trainer_backend)
+        duplicated_fields = set(type(self).model_fields) & set(backend_values)
+        classified_fields = _SHARED_TRAINER_FIELDS | _RUNTIME_DUPLICATED_TRAINER_FIELDS
+        if unclassified := duplicated_fields - classified_fields:
+            raise ValueError(
+                f"Trainer {self.trainer_id!r} has unclassified duplicated fields: {sorted(unclassified)}"
+            )
+        for name in duplicated_fields & _SHARED_TRAINER_FIELDS:
+            outer_value = dict(self)[name]
+            backend_value = backend_values[name]
+            if outer_value != backend_value:
+                raise ValueError(
+                    f"Trainer {self.trainer_id!r} field {name!r} differs between TrainerConfig "
+                    f"({outer_value!r}) and trainer_backend ({backend_value!r})"
+                )
+            if name in type(self)._mutable_fields or name in type(self.trainer_backend)._mutable_fields:
+                raise ValueError(f"Shared trainer field {name!r} must be immutable")
+        return self
 
 
 class InferenceControllerConfig(
