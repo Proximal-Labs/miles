@@ -343,6 +343,8 @@ def parse_args_and_get_parser(
 
         if args.hf_checkpoint:
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
+        else:
+            args.num_layers = None
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
@@ -377,6 +379,11 @@ def parse_args_and_get_parser(
         validate_hybrid_shard_args(args)
 
     sglang_validate_args(args)
+
+    vars(args).setdefault("ckpt_step", None)
+    vars(args).setdefault("lora_A_init_method", "xavier")
+    vars(args).setdefault("lora_B_init_method", "zero")
+    vars(args).setdefault("custom_agent_function_path", None)
 
     assert parser is not None
     values = vars(args) | {
