@@ -344,7 +344,7 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
 
-    if args.save_interval is not None:
+    if args.backend.save_interval is not None:
         # The controller still holds the step count until free_slot runs.
         step = asyncio.run(get_multi_lora_controller().adapter_step(name))
         save_multi_lora_checkpoints(args, model, {name: step}, {name: adapter})
@@ -426,7 +426,7 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
         optimizer,
         model,
         step_batch_sizes,
-        clip_grad=args.clip_grad,
+        clip_grad=args.backend.clip_grad,
     )
 
     if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
@@ -460,14 +460,14 @@ def save_due_adapter_checkpoints(args, model) -> bool:
     from miles.utils.distributed_utils import get_gloo_group
 
     due_buffer = [None]
-    if is_first_replica_megatron_main_rank() and args.save_interval is not None:
+    if is_first_replica_megatron_main_rank() and args.backend.save_interval is not None:
         snapshot = asyncio.run(get_multi_lora_controller().snapshot())
         adapters = {**snapshot["active"], **snapshot["retiring"]}
         due_buffer[0] = {
             name: adapter
             for name, adapter in adapters.items()
             if adapter.step > 0
-            and adapter.step % args.save_interval == 0
+            and adapter.step % args.backend.save_interval == 0
             and adapter.config.save is not None
             and not (Path(adapter.config.save) / "checkpoints" / f"step_{adapter.step}").exists()
         }
