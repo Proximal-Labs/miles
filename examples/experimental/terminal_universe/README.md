@@ -9,6 +9,13 @@ The default topology is one eight-GPU trainer node and two eight-GPU rollout
 nodes. It uses fully asynchronous GRPO, Qwen3.6 TITO v2, R3 routing replay, and
 `retract` pause generation.
 
+Pass `--pause-generation-mode in_place` to retain in-flight requests during
+weight updates. This also enables incremental R3 payloads in the session server,
+reducing repeated prefix storage. It preserves cached inference state across
+updates and is not equivalent to recomputing that state with the new weights.
+The default remains `retract`; neither mode guarantees immediate reclamation
+of completed session trees.
+
 The rollout coordinator is pinned to the Ray head node. Start the Ray head on
 the node that can reach E2B's control plane and sandbox endpoints; connectivity
 from another allocation member is not sufficient. Verify sandbox creation,
