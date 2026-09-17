@@ -105,6 +105,13 @@ class TrainerConfig(
         assert self.train_backend == self.backend.backend_name, "train_backend must match backend.backend_name"
         return self
 
+    @model_validator(mode="after")
+    def _validate_shared_trainer_fields(self) -> Self:
+        from miles.utils.args.trainer_utils import validate_shared_trainer_fields
+
+        validate_shared_trainer_fields(self)
+        return self
+
 
 class InferenceControllerConfig(
     BaseLeafConfig,
