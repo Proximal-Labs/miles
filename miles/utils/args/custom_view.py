@@ -53,7 +53,10 @@ def compute_custom_function_config(
                 f"Typed custom function {path!r} has no registered {owner!r} configuration; "
                 "typed custom functions must be known while parsing arguments"
             ) from error
-        custom_config = BaseConfig()
+        try:
+            custom_config = args.legacy_custom_configs[owner]
+        except KeyError:
+            raise ValueError(f"Unknown custom configuration owner {owner!r}") from error
     sources: list[ConfigSource] = [args]
     if isinstance(args, TrainerConfig):
         sources.append(args.backend)

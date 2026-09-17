@@ -7,10 +7,15 @@ from miles.utils.function_registry import load_function
 from miles.utils.pydantic_utils import StrictBaseModel
 
 
+class LegacyCustomArgsConfig(BaseConfig):
+    model_config = ConfigDict(extra="allow")
+
+
 class BaseLeafConfig(StrictBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
     _mutable_fields: ClassVar[frozenset[str]] = frozenset()
     custom_function_configs: dict[str, dict[str, SerializeAsAny[BaseConfig]]] = Field(default_factory=dict)
+    legacy_custom_configs: dict[str, LegacyCustomArgsConfig] = Field(default_factory=dict)
 
     @field_validator("custom_function_configs", mode="before")
     @classmethod
@@ -25,6 +30,8 @@ class BaseLeafConfig(StrictBaseModel):
                 config_class = getattr(
                     function, "config_class", None
                 )  # config-access-exempt: custom hook protocol discovery
+                if config_class is None:
+                    config_class = LegacyCustomArgsConfig
                 if not isinstance(config_class, type) or not issubclass(config_class, BaseConfig):
                     raise TypeError(f"{path}.config_class must inherit BaseConfig")
                 configs[owner][path] = (

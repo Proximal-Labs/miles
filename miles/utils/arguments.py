@@ -49,6 +49,7 @@ from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
 from miles.utils.args.runtime import AllConfig
+from miles.utils.args.runtime_base import LegacyCustomArgsConfig
 from miles.utils.args.schema import BaseConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
@@ -468,18 +469,28 @@ def parse_args_and_get_parser(
     assert parser is not None
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
-    custom_function_configs = {owner: {} for owner in ("inference", "rollout", "trainer")}
+    legacy_custom_arg_names = set(add_miles_arguments.custom_arg_names)
+    if args.custom_config_path:
+        legacy_custom_arg_names.update(yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
+    legacy_config_values = {name: vars(args)[name] for name in legacy_custom_arg_names if name in vars(args)}
+    legacy_custom_configs = {
+        owner: LegacyCustomArgsConfig.model_validate(legacy_config_values)
+        for owner in ("inference", "rollout", "trainer")
+    }
+    custom_function_configs = {owner: {} for owner in legacy_custom_configs}
     for path, owners in add_miles_arguments.custom_function_paths.items():
         function = load_function(path)
         config_class = getattr(function, "config_class", None)  # config-access-exempt: custom hook protocol discovery
         if config_class is None:
+            for owner in owners:
+                custom_function_configs[owner][path] = legacy_custom_configs[owner]
             continue
         else:
             config_values = {name: vars(args)[name] for name in config_class.model_fields if name in vars(args)}
         custom_config = config_class.model_validate(config_values)
         for owner in owners:
             custom_function_configs[owner][path] = custom_config
-    custom_arg_names = {
+    custom_arg_names = legacy_custom_arg_names | {
         name
         for values_by_path in custom_function_configs.values()
         for custom_config in values_by_path.values()
@@ -491,6 +502,7 @@ def parse_args_and_get_parser(
         if name not in backend_only_fields and name not in custom_arg_names
     } | {
         "custom_function_configs": custom_function_configs,
+        "legacy_custom_configs": legacy_custom_configs,
         "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "sglang": SglangConfig.parse_args(args),
