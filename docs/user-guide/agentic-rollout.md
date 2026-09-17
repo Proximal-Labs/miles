@@ -271,8 +271,8 @@ before it makes any model call, use `POST /sessions/{id}/contexts`:
 {"agent_run_id": "main", "context_id": "main-1"}
 ```
 
-Repeat the same identity headers for that context. Context identities are immutable within the session; conflicting registrations
-return 409. Parent/tool/compaction links are descriptive metadata and do not
+Repeat the same identity headers for that context. Context identities are
+immutable within the session; conflicting registrations return 409. Parent/tool/compaction links are descriptive metadata and do not
 require ordered registration. Compaction uses a new context ID with
 `X-Miles-Derived-From-Context-Id` referencing the same agent's old context.
 Changing the model, adapter, tools, or chat-template options also requires a new
