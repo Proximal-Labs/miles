@@ -94,24 +94,36 @@ async def test_context_rejects_rendering_changes_before_inference(context_core, 
     assert len(core.backend.requests) == 1
 
 
-def test_context_registration_rejects_unknown_and_changing_relationships():
+def test_child_context_can_register_before_its_parent():
     contexts = SessionContexts()
-    root = SessionContext(agent_run_id="main", context_id="main")
     child = SessionContext(agent_run_id="child", context_id="child", parent_agent_run_id="main")
-    with pytest.raises(SessionConflictError, match="Unknown parent"):
-        contexts.register(child)
-    contexts.register(root)
     contexts.register(child)
+    contexts.register(SessionContext(agent_run_id="main", context_id="main"))
     with pytest.raises(SessionConflictError, match="identity changed"):
         contexts.register(SessionContext(agent_run_id="other", context_id="child"))
-    with pytest.raises(SessionConflictError, match="parent changed"):
-        contexts.register(SessionContext(agent_run_id="child", context_id="new"))
-    with pytest.raises(SessionConflictError, match="same agent"):
-        contexts.register(
-            SessionContext(
-                agent_run_id="child", context_id="new", parent_agent_run_id="main", derived_from_context_id="main"
-            )
+    assert contexts.contexts["child"] == child
+
+
+@pytest.mark.parametrize("register_first", [False, True])
+async def test_rejected_first_request_does_not_bind_rendering(context_core, register_first):
+    core = context_core
+    sid, state = await _fresh_state(core)
+    context = SessionContext(agent_run_id="main", context_id="first")
+    if register_first:
+        await core.register_context(sid, context)
+    with pytest.raises(SessionConflictError, match="Previous response"):
+        await core.chat_completions(
+            sid,
+            method="POST",
+            query="",
+            headers={**context.headers(), "X-Miles-Previous-Response-Id": "unknown"},
+            body=b'{"model":"mistyped-model","messages":[{"role":"user","content":"hi"}]}',
         )
+    assert core.backend.requests == []
+    assert len(state.contexts.contexts) == int(register_first)
+    await chat(core, sid, context, [{"role": "user", "content": "hi"}], model="correct-model")
+    assert len(state.tree.nodes) == 1
+    assert core.backend.requests[0]["model"] == "correct-model"
 
 
 @pytest.mark.parametrize("protocol", ["openai", "anthropic"])

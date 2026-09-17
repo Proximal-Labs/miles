@@ -264,16 +264,16 @@ request to isolate continuation matching. A child has its own agent and context
 IDs; `X-Miles-Parent-Agent-Run-Id` and optional `X-Miles-Parent-Tool-Call-Id`
 describe its execution relationship without sharing the parent's token history.
 
-Contexts register on their first request. To register a parent before it makes
-any model call, use `POST /sessions/{id}/contexts`:
+Contexts register after their first request passes preparation. To register one
+before it makes any model call, use `POST /sessions/{id}/contexts`:
 
 ```json
 {"agent_run_id": "main", "context_id": "main-1"}
 ```
 
-Repeat the same identity headers for that context. IDs and parent relationships
-are immutable within the session; unknown parents and conflicting registrations
-return 409. Compaction uses a new context ID with
+Repeat the same identity headers for that context. Context identities are immutable within the session; conflicting registrations
+return 409. Parent/tool/compaction links are descriptive metadata and do not
+require ordered registration. Compaction uses a new context ID with
 `X-Miles-Derived-From-Context-Id` referencing the same agent's old context.
 Changing the model, adapter, tools, or chat-template options also requires a new
 context. These transitions always start a new token root.

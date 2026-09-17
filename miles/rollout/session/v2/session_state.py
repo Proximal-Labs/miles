@@ -6,7 +6,8 @@ suffix becomes the new branch's delta, and whatever is not a clean
 extension just grows a sibling or a new root. Whether a branch was a retry
 is decided later by the sample_picker, not here.
 
-Concurrency contract: single lock on the whole tree. A commit only appends a new
+Concurrency contract: one event loop owns the state; do not share it across threads.
+A single lock protects the whole tree. A commit only appends a new
 node under the parent captured at positioning time, so concurrent
 generations from the same spot become sibling nodes instead of a conflict.
 """

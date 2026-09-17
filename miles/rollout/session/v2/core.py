@@ -261,9 +261,6 @@ class SessionCoreV2(SessionCore):
             raise SessionConflictError(f"Session reached its {MAX_NODES}-generation capacity; create a new session.")
         request_body, client_stream, tokenizer = prepare_chat_request(body, self.config, self.registry.tito_tokenizer)
         context_id = context.context_id if context is not None else None
-        if context is not None:
-            session.contexts.register(context)
-            session.contexts.bind_rendering(context_id, request_body)
         request_messages = request_body.get("messages", [])
         position_for_request(
             session,
@@ -278,6 +275,8 @@ class SessionCoreV2(SessionCore):
         request_body["input_ids"] = prompt_token_ids
         self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
         proxy_body = json.dumps(request_body).encode()
+        if context is not None:
+            session.contexts.register(context, request=request_body)
         return _PreparedGeneration(
             ticket=session.lifecycle.admit(),
             request=request_body,
