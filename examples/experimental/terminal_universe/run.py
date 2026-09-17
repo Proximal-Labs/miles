@@ -50,7 +50,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     learning_rate: float = 3e-7
     save_interval: int = 50
     train_num_nodes: int = 1
-    pause_generation_mode: Literal["retract"] = "retract"
+    pause_generation_mode: Literal["retract", "in_place"] = "retract"
     update_weight_transfer_mode: Literal["broadcast"] = "broadcast"
 
     agent_timeout: int = 5400
