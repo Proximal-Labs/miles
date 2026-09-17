@@ -195,7 +195,7 @@ class FaultHookEvent(EventBase):
     hook: str
     mode: str
     action: Literal["inject", "observe"] = "inject"
-    status: Literal["armed", "cancelled", "expired", "fired", "failed"]
+    status: Literal["armed", "scheduled", "cancelled", "expired", "fired", "failed"]
     monotonic_time: float
     reached_at: float | None = None
     due_at: float | None = None
