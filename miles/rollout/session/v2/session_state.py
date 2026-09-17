@@ -188,11 +188,11 @@ class SessionRegistryV2(SessionRegistry):
             )
 
     def remove_session(self, session_id: str) -> None:
-        session = self.sessions.pop(session_id, None)
-        if session is not None:
-            session.closing = True
-            if session.expiry is not None:
-                session.expiry.cancel()
+        session = self.get_session(session_id)
+        del self.sessions[session_id]
+        session.closing = True
+        if session.expiry is not None:
+            session.expiry.cancel()
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
