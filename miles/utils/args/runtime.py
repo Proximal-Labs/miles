@@ -1,6 +1,17 @@
-from pydantic import ConfigDict
+from argparse import Namespace
+from dataclasses import fields
+from typing import Any, Self
 
-from miles.backends.megatron_utils.megatron_config import MegatronConfig
+from pydantic import ConfigDict, model_validator
+
+from miles.backends.fsdp_utils.arguments import FSDPArgs
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
+from miles.backends.megatron_utils.megatron_config import (
+    MegatronArgsNamespace,
+    MegatronConfig,
+    MegatronTrainerConfig,
+    compute_trainer_args,
+)
 from miles.utils.args.component_multi_lora import MultiLoraOnlyConfig
 from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
 from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
@@ -97,7 +108,52 @@ class TrainerConfig(
     DashboardConfig,
     SglangFieldsConfig,
 ):
-    pass
+    @classmethod
+    def from_all_config(cls, args: "AllConfig", *, trainer: MegatronTrainerConfig) -> Self:
+        backend_values = (
+            args.raw_megatron.base_args if args.train_backend == "megatron" else vars(args.fsdp)
+        )
+        base = Namespace(**(dict(args) | backend_values))
+        trainer_args = compute_trainer_args(args=base, trainer=trainer)
+        values = vars(trainer_args)
+        if args.train_backend == "megatron":
+            trainer_backend = MegatronArgsNamespace.from_args(
+                trainer_args,
+                names=set(args.raw_megatron.base_args),
+            )
+        else:
+            fsdp_names = {field.name for field in fields(FSDPArgs)} | {
+                "calculate_per_token_loss",
+                "clip_grad",
+                "no_save_optim",
+            }
+            trainer_backend = FsdpArgsNamespace.from_args(trainer_args, names=fsdp_names)
+            if trainer_backend.fsdp_cpu_offload:
+                values["offload_train"] = False
+        if trainer.role == "critic":
+            values["loss_type"] = "value_loss"
+        values.update(
+            trainer_backend=trainer_backend,
+            trainer_id=trainer.trainer_id,
+            trainer_model_id=trainer.model_id,
+            trainer_role=trainer.role,
+        )
+        return cls.from_config(values)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_trainer_backend(cls, values: Any) -> Any:
+        if not isinstance(values, dict) or "trainer_backend" not in values:
+            return values
+        backend_class: type[MegatronArgsNamespace | FsdpArgsNamespace]
+        match values.get("train_backend", cls.model_fields["train_backend"].default):
+            case "megatron":
+                backend_class = MegatronArgsNamespace
+            case "fsdp":
+                backend_class = FsdpArgsNamespace
+            case backend:
+                raise ValueError(f"Unsupported training backend: {backend!r}")
+        return values | {"trainer_backend": backend_class._validate(values["trainer_backend"])}
 
 
 class InferenceControllerConfig(
@@ -236,3 +292,4 @@ class AllConfig(
     model_config = ConfigDict(extra="allow")
 
     raw_megatron: MegatronConfig
+    fsdp: FsdpArgsNamespace

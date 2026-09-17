@@ -305,8 +305,7 @@ def parse_args_and_get_parser(
 
     def add_miles_arguments_and_capture_parser(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
         nonlocal parser
-        if backend == "megatron":
-            training_backend_arg_names.update(action.dest for action in value._actions)
+        training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
         return parser
 
@@ -377,6 +376,21 @@ def parse_args_and_get_parser(
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args
 
         validate_hybrid_shard_args(args)
+        vars(args).setdefault("no_load_optim", False)
+        vars(args).setdefault("no_load_rng", False)
+        vars(args).setdefault("no_save_optim", False)
+        training_backend_arg_names.update(
+            {
+                "bf16",
+                "calculate_per_token_loss",
+                "clip_grad",
+                "no_load_optim",
+                "no_load_rng",
+                "no_save_optim",
+                "rank",
+                "world_size",
+            }
+        )
 
     sglang_validate_args(args)
 
@@ -386,11 +400,24 @@ def parse_args_and_get_parser(
     vars(args).setdefault("custom_agent_function_path", None)
 
     assert parser is not None
-    values = vars(args) | {
+    from miles.backends.fsdp_utils.config import FsdpArgsNamespace
+
+    backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
+    backend_only_fields = {
+        "calculate_per_token_loss",
+        "clip_grad",
+        "lr",
+        "mtp_loss_scaling_factor",
+        "mtp_num_layers",
+        "no_save_optim",
+        "padded_vocab_size",
+    }
+    values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {
         "raw_megatron": resolve_megatron_config(
             args,
-            base_args={name: value for name, value in vars(args).items() if name in training_backend_arg_names},
+            base_args=backend_values if backend == "megatron" else {},
         ),
+        "fsdp": FsdpArgsNamespace(**(backend_values if backend == "fsdp" else {})),
         "sglang": SglangConfig.parse_args(args),
     }
     values.update(RouterConfig.from_args(args))
