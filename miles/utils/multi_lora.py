@@ -146,7 +146,7 @@ def validate_multi_lora_args(args: Any) -> None:
 
     # Trainer DP size, used to validate adapter batch shapes; guarded for harnesses without megatron args set.
     if all(
-        hasattr(args, name)
+        hasattr(args, name)  # config-access-exempt: attribute selected at runtime from name
         for name in (
             "world_size",
             "tensor_model_parallel_size",
