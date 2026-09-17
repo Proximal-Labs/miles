@@ -122,7 +122,7 @@ def convert_glm4moe_to_hf(args, name, param):
     match = re.match(mtp_layer_pattern, name)
     if match:
         layer_idx, rest = match.groups()
-        layer_idx = int(layer_idx) + args.num_layers
+        layer_idx = int(layer_idx) + args.backend.num_layers
         if rest == "eh_proj.weight":
             return [(f"model.layers.{layer_idx}.eh_proj.weight", param)]
         elif rest == "enorm.weight":

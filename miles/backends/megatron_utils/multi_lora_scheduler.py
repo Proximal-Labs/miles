@@ -27,38 +27,38 @@ def build_slot_scheduler(args: TrainerConfig, optimizer, adapter, resume_step: i
     num_step = adapter.config.num_step
 
     decay_steps = num_step * samples_per_step if num_step is not None else None
-    if args.lr_warmup_fraction is not None and decay_steps is not None:
-        lr_warmup_steps = args.lr_warmup_fraction * decay_steps
+    if args.backend.lr_warmup_fraction is not None and decay_steps is not None:
+        lr_warmup_steps = args.backend.lr_warmup_fraction * decay_steps
     else:
-        lr_warmup_steps = args.lr_warmup_iters * samples_per_step
+        lr_warmup_steps = args.backend.lr_warmup_iters * samples_per_step
     if decay_steps is None:
         # No horizon: warm up, then hold constant. The decay steps only need
         # to satisfy the scheduler's warmup < decay invariant.
         lr_decay_style = "constant"
         decay_steps = int(lr_warmup_steps) + 1
     else:
-        lr_decay_style = args.lr_decay_style
+        lr_decay_style = args.backend.lr_decay_style
 
     scheduler = OptimizerParamScheduler(
         _SlotParamGroups(groups),
-        init_lr=args.lr_warmup_init,
-        max_lr=args.lr,
-        min_lr=args.min_lr,
+        init_lr=args.backend.lr_warmup_init,
+        max_lr=args.backend.lr,
+        min_lr=args.backend.min_lr,
         lr_warmup_steps=lr_warmup_steps,
         lr_decay_steps=decay_steps,
         lr_decay_style=lr_decay_style,
-        start_wd=args.start_weight_decay,
-        end_wd=args.end_weight_decay,
+        start_wd=args.backend.start_weight_decay,
+        end_wd=args.backend.end_weight_decay,
         wd_incr_steps=decay_steps,
-        wd_incr_style=args.weight_decay_incr_style,
+        wd_incr_style=args.backend.weight_decay_incr_style,
         use_checkpoint_opt_param_scheduler=False,
         override_opt_param_scheduler=False,
         wsd_decay_steps=(
-            args.lr_wsd_decay_iters * samples_per_step
-            if lr_decay_style == "WSD" and args.lr_wsd_decay_iters is not None
+            args.backend.lr_wsd_decay_iters * samples_per_step
+            if lr_decay_style == "WSD" and args.backend.lr_wsd_decay_iters is not None
             else None
         ),
-        lr_wsd_decay_style=args.lr_wsd_decay_style,
+        lr_wsd_decay_style=args.backend.lr_wsd_decay_style,
     )
     if resume_step:
         scheduler.step(increment=resume_step * samples_per_step)
