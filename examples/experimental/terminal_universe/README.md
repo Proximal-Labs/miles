@@ -14,6 +14,11 @@ the node that can reach E2B's control plane and sandbox endpoints; connectivity
 from another allocation member is not sufficient. Verify sandbox creation,
 command execution, and cleanup from the head before submitting training.
 
+Terminus 2's model client runs in the rollout process, outside the sandbox.
+The recipe therefore preserves TITO's internal session URLs instead of
+rewriting them to an external address. An external address rewrite is only
+appropriate for agents that call the model from inside a remote sandbox.
+
 The task archive must be unpacked with its executable modes preserved. Set
 `E2B_API_KEY`, `WANDB_API_KEY`, and `MILES_ROUTER_EXTERNAL_HOST` in the launch
 environment. The launcher writes a redacted reproducibility manifest beside
