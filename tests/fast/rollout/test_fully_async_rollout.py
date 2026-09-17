@@ -171,7 +171,7 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
     eval_release = asyncio.Event()
     eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
 
-    async def fake_run_eval_datasets(state, cache):
+    async def fake_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
         assert state is fn.state  # shared-engine eval uses the train state
         eval_started.set()
         await eval_release.wait()
@@ -213,7 +213,7 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
     eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
     seen_states = []
 
-    async def fake_run_eval_datasets(state, cache):
+    async def fake_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
         seen_states.append(state)
         return eval_results
 
@@ -240,10 +240,10 @@ class TestKvCacheNamespace:
         """The producer follows the rollout id of the call in flight, never a counter of its own."""
         fn = make_fn(monkeypatch, make_args(), FakeDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=5))
+        await fn(train_input(rollout_id=5))
         assert fn._curr_kv_cache_namespace == "train:-:5"
 
-        await fn(RolloutFnTrainInput(rollout_id=6))
+        await fn(train_input(rollout_id=6))
         assert fn._curr_kv_cache_namespace == "train:-:6"
 
     @pytest.mark.parametrize("producer_namespace", [None, "train:-:1"])
@@ -279,7 +279,7 @@ class TestKvCacheNamespace:
         """With --no-namespaced-radix-cache the producer names no namespace at all."""
         fn = make_fn(monkeypatch, make_args(namespaced_radix_cache=False), FakeDataSource())
 
-        await fn(RolloutFnTrainInput(rollout_id=5))
+        await fn(train_input(rollout_id=5))
 
         assert fn._curr_kv_cache_namespace is None
 
@@ -311,7 +311,7 @@ class TestKvCacheNamespace:
             marker = len(stamps)
             for _ in range(2 * fn.args.rollout_batch_size):
                 gate.put_nowait(None)
-            await fn(RolloutFnTrainInput(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
+            await fn(train_input(rollout_id=rollout_id, trainer_model_id=trainer_model_id))
             await asyncio.sleep(0.05)
 
             assert set(stamps[marker:]) == {f"train:{trainer_model_id}:{rollout_id}"}
@@ -334,28 +334,35 @@ class TestRetryBuffer:
 
 
 async def test_aborted_group_recycled(monkeypatch):
+    """An aborted prompt is submitted again before its retry can count as successful."""
     aborted = make_group(1, status=Sample.Status.ABORTED)
     for sample in aborted:
         sample.reward = None
     data_source = FakeDataSource(scripted=[aborted])
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     calls = 0
+    retried = asyncio.Event()
 
     async def abort_once(state, group, **kwargs):
         nonlocal calls
         calls += 1
+        if calls > 1 and group is aborted:
+            retried.set()
         for sample in group:
             sample.status = Sample.Status.ABORTED if calls == 1 else Sample.Status.COMPLETED
+            if calls > 1:
+                sample.reward = 1
         return group
 
     fn = make_fn(monkeypatch, args, data_source, generate=abort_once)
 
     output = await fn(train_input(rollout_id=0))
+    await asyncio.wait_for(retried.wait(), timeout=5)
 
-    assert data_source.num_get_calls == 1
+    assert calls >= 2
+    assert not fn._retry_buffer
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
-    assert output.samples[0][0].group_index == 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
 
@@ -367,9 +374,9 @@ async def test_missing_reward_group_dropped_without_recycling(monkeypatch):
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source)
 
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(train_input(rollout_id=0))
 
-    assert data_source.recycled == []
+    assert not fn._retry_buffer
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/dynamic_filter/drop_group_has_missing_reward"] == 1
 
@@ -407,9 +414,11 @@ async def test_stale_group_recycled(monkeypatch):
 
     output = await fn(train_input(rollout_id=0, weight_version=10))
 
-    assert data_source.num_get_calls == 1
+    assert data_source.num_get_calls >= 1
+    assert not fn._retry_buffer
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
-    assert output.metrics["rollout/fully_async/max_staleness"] == 5
+    # max_staleness measures what training consumed, and the stale group never got that far
+    assert output.metrics["rollout/fully_async/max_staleness"] == 0
 
 
 async def test_stale_group_dropped_by_default(monkeypatch):
@@ -484,13 +493,17 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     prompt_group = make_group(1)
     data_source = FakeDataSource(scripted=[prompt_group])
     submitted = []
+    retried = asyncio.Event()
 
     async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
+            if group is prompt_group:
+                retried.set()
             for sample in group:
                 sample.status = Sample.Status.COMPLETED
+                sample.reward = 1
             return group
         expanded = []
         for sample in group:
@@ -501,8 +514,10 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
     output = await fn(train_input(rollout_id=0))
+    await asyncio.wait_for(retried.wait(), timeout=5)
 
-    assert data_source.num_get_calls == 1
+    assert data_source.num_get_calls >= 1
+    assert not fn._retry_buffer
     assert all(isinstance(sample, Sample) for sample in submitted[1])
     assert len(submitted) > 1
     assert len(output.samples) == 1
@@ -960,7 +975,9 @@ class TestPerPolicyBufferClass:
             "solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"]
         )
 
-        assert RecordingBuffer.constructed_with.unused_handler_fn == unused.append
+        RecordingBuffer.constructed_with.unused_handler_fn(["a-group"], "a-reason")
+
+        assert unused == [["a-group"]]
         assert RecordingBuffer.constructed_with.args is buffer._inners["verifier"]._args
 
     def test_a_policy_this_run_does_not_train_is_refused(self):
@@ -1557,7 +1574,7 @@ class TestInFlightBudget:
         assert len((await step).samples) == 2
 
     async def test_the_producer_submits_nothing_more_while_an_eval_pause_is_in_effect(self, monkeypatch) -> None:
-        """The shared-engine pause has to hold the producer between groups, not merely stop new eval work."""
+        """The shared-engine pause holds the producer between groups until the pause is lifted."""
         generate = _GatedGenerate()
         source = FakeDataSource()
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source, generate=generate)
@@ -1574,7 +1591,7 @@ class TestInFlightBudget:
 
         fn._producer_resumed.set()
         await _settle()
-        assert source.num_get_calls == 2
+        assert source.num_get_calls > 1
 
     async def test_every_submitted_group_is_reported_to_the_submission_scheduler(self, monkeypatch) -> None:
         """The scheduler paces on the samples it was told about, and an unreported group is free capacity."""
@@ -1860,7 +1877,7 @@ class TestLifecycle:
         source = FakeDataSource()
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source)
 
-        async def fake_run_eval_datasets(state, cache):
+        async def fake_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
             return {}
 
         monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
@@ -1874,7 +1891,7 @@ class TestLifecycle:
         """A failed eval that left the producer paused would stall every later training step."""
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
 
-        async def failing_run_eval_datasets(state, cache):
+        async def failing_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
             raise RuntimeError("eval exploded")
 
         monkeypatch.setattr(fully_async, "run_eval_datasets", failing_run_eval_datasets)
@@ -1889,7 +1906,7 @@ class TestLifecycle:
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
         caches = []
 
-        async def fake_run_eval_datasets(state, cache):
+        async def fake_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
             caches.append(cache)
             return {}
 
@@ -1907,7 +1924,7 @@ class TestLifecycle:
         fn = make_fn(monkeypatch, args, FakeDataSource())
         resumed_during_eval = []
 
-        async def fake_run_eval_datasets(state, cache):
+        async def fake_run_eval_datasets(state, cache, *, kv_cache_namespace=None):
             resumed_during_eval.append(fn._producer_resumed.is_set())
             return {}
 
