@@ -157,7 +157,7 @@ def train_args(args: ScriptArgs) -> str:
         "--use-tis "
     )
     optimizer_args = f"--optimizer adam --lr {args.learning_rate} --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 --optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
-    grpo_args = "--advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.01 --kl-loss-type k3 --entropy-coef 0.0 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty 0 "
+    grpo_args = "--advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.01 --kl-loss-type k3 --entropy-coef 0.0 --eps-clip 0.2 --eps-clip-high 0.28 "
     perf_args = (
         "--tensor-model-parallel-size 2 --sequence-parallel "
         "--pipeline-model-parallel-size 1 --context-parallel-size 4 "
