@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_serve
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
@@ -239,8 +241,14 @@ class InferenceController:
 
     @releases_lock
     async def end_update_weights(
-        self, snapshot_cell_id_to_hashes: dict[str, str], failed_cell_ids: Sequence[str]
-    ) -> None:
+        self,
+        snapshot_cell_id_to_hashes: dict[str, str],
+        failed_cell_ids: Sequence[str],
+        *,
+        collect_checksums: bool = False,
+        checksum_timeout_seconds: float = 300.0,
+        model_id: str | None = None,
+    ) -> list[InferenceEngineChecksumSnapshot]:
         cells = [
             (cell_id, cell)
             for srv in self.servers.values()
@@ -250,6 +258,26 @@ class InferenceController:
         failed_cells, updated_cells = partition(cells, lambda kv: kv[0] not in failed_cell_ids)
         await asyncio.gather(*[cell.mark_errored() for _, cell in failed_cells])
         await asyncio.gather(*[cell.mark_weights_ready() for _, cell in updated_cells if cell.is_pending_weights])
+        updated_cell_ids = [cell_id for cell_id, _ in updated_cells]
+        if not collect_checksums or not updated_cell_ids:
+            return []
+        srv = self._get_updatable_server(model_id=model_id)
+        if srv is None:
+            logger.error("No updatable inference model for checksum snapshot: %s", model_id)
+            return []
+        if not math.isfinite(checksum_timeout_seconds) or checksum_timeout_seconds <= 0:
+            logger.error("Checksum timeout must be positive and finite")
+            return []
+        try:
+            return await asyncio.wait_for(
+                srv.get_weight_checksum_snapshot(
+                    target_incarnations={cell_id: snapshot_cell_id_to_hashes[cell_id] for cell_id in updated_cell_ids}
+                ),
+                timeout=checksum_timeout_seconds,
+            )
+        except Exception:
+            logger.exception("Could not observe inference engine weight checksums")
+            return []
 
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:

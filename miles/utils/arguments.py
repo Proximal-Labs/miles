@@ -2430,6 +2430,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-inference-engine-weight-checksum",
+                action="store_true",
+                help="Save per-tensor inference engine checksums after weight publication.",
+            )
+            parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
                 help="Save per-rank local weight checksum per-step.",

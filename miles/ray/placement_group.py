@@ -27,7 +27,7 @@ from miles.ray.specs.train import (
 )
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.ray.wiring import get_backend_capability
-from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
@@ -313,12 +313,27 @@ async def update_weights(
     except BaseException:
         await inference_controller.abort_update_weights()
         raise
-    await inference_controller.end_update_weights(
-        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes, failed_cell_ids=output.failed_cell_ids
+    snapshots = await inference_controller.end_update_weights(
+        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+        failed_cell_ids=output.failed_cell_ids,
+        collect_checksums=(
+            args.save_inference_engine_weight_checksum
+            and is_event_logger_initialized()
+            and not args.debug_train_only
+            and not args.debug_rollout_only
+        ),
+        model_id=trainer_model_id,
+        checksum_timeout_seconds=min(args.update_weight_engine_request_timeout, 5.0),
     )
 
     await _maybe_log_inference_engine_weight_checksums(
-        args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
+        args,
+        snapshots=snapshots,
+        rollout_id=rollout_id,
+        trainer_model_id=trainer_model_id,
+        weight_version=output.weight_version,
+        version_epoch=output.version_epoch,
+        update_id=output.update_id,
     )
 
     if output.weight_version is not None:
@@ -326,23 +341,39 @@ async def update_weights(
 
 
 async def _maybe_log_inference_engine_weight_checksums(
-    args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
+    args,
+    *,
+    snapshots: list[InferenceEngineChecksumSnapshot],
+    rollout_id: int | None,
+    trainer_model_id: str | None,
+    weight_version: int | None,
+    version_epoch: str | None,
+    update_id: str | None,
 ) -> None:
     if not is_event_logger_initialized():
         return
     if args.debug_train_only or args.debug_rollout_only:
         return
 
-    check_weights_result = await inference_controller.check_weights(action="checksum", model_id=trainer_model_id)
-    engine_checksums = flatten_inference_engine_checksums(check_weights_result)
-    get_event_logger().log(
-        InferenceEngineWeightChecksumEvent,
-        dict(
-            rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
-            trainer_model_id=trainer_model_id,
-            engine_checksums=engine_checksums,
-        ),
-    )
+    if not snapshots:
+        return
+    try:
+        assert weight_version is not None, "Checksum snapshots require a published weight version"
+        engine_checksums = [snapshot.tensors for snapshot in snapshots]
+        get_event_logger().log(
+            InferenceEngineWeightChecksumEvent,
+            dict(
+                rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
+                trainer_model_id=trainer_model_id,
+                engine_checksums=engine_checksums,
+                weight_version=weight_version,
+                version_epoch=version_epoch,
+                update_id=update_id,
+                engine_snapshots=snapshots,
+            ),
+        )
+    except Exception:
+        logger.exception("Could not record inference engine checksum observation")
 
 
 # TODO: move (when reorganizing files)

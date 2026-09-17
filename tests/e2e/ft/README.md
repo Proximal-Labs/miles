@@ -1,5 +1,7 @@
 # Fault Tolerance E2E Tests
 
+- **Checksum observation**: opt-in version/incarnation snapshots with a five-second collection timeout; observation failures lose evidence and fail the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
+
 ## Overview Table
 
 ### CI Entries
