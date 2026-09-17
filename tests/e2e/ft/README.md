@@ -14,11 +14,13 @@
 | `scenario_trainer_no_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
 | `scenario_trainer_deterministic` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
 | `scenario_trainer_with_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2` |
+| `scenario_rollout_deterministic` | `kill_rollout__dp4` |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 
 - **Forced absences**, one reason each:
     - `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` is multi-node, and no multi-node CI lane exists.
     - `kill_rollout__dp4__colocate` fits only the scenarios that crash engines.
+    - `scenario_rollout_deterministic` needs real engines and `ft_components == ("rollout",)` exactly.
     - `kill_train__dp2_cp2` supersedes `kill_train__dp2_cp2__moe_5layer` in `scenario_trainer_with_failure`.
 - **Every other absence is an unclaimed cell**, not a decision — adding an entry file is all it takes.
 
@@ -35,6 +37,7 @@
 - **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
 - **Mixed injection**: `scenario_random_crash --precise-p2p --mix-wall-clock` (or `--precise-all-gather`) draws both hook and wall-clock forms through the same scheduler. Every enabled form must produce an effect; hook forms additionally require worker-side hit evidence.
 - **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
+- **Generation coverage boundary**: rollout-deterministic faults must span at least two progress windows separated by completed rollouts. This proves temporal spread; there is no atomic evidence that the victim engine was processing a generation request at the fault instant. Precise weight-transfer hooks do not close this separate gap.
 - **Precise P2P entries**: `scenario_precise_p2p` uses `kill_train__dp2_tp2` for sender faults and `kill_rollout__dp2_tp2` for receiver faults; both have explicit CI entries and reuse the shared soak runner.
 - **Receiver triggers**: an observation-only trainer hook precedes a fault through the selected backend's cell operation; worker hit evidence and an independently observed victim state change are both required. Controller polling and network latency separate hook arrival from receiver failure.
 - **Receiver recovery**: single-target receiver scenarios enable only rollout FT.
@@ -47,6 +50,7 @@
 | `scenario_trainer_no_failure` | comparison | indep_dp matches normal DP when no faults |
 | `scenario_trainer_with_failure` | comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
 | `scenario_trainer_deterministic` | comparison, multi-phase | healing state transfer is bitwise-correct, on cold start and on resume from a post-healing ckpt |
+| `scenario_rollout_deterministic` | comparison | engine crashes change training bits not at all |
 | `scenario_random_crash` | soak | system survives random crashes without hanging |
 
 ### Modes
@@ -109,6 +113,7 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 | `generate-data` | record debug rollout data with real engines, no dumper | comparison scenarios |
 
 - **Debugging**: prefer the individual subcommands over `run` — with a shared `--dump-dir` (plus `--phase` when multi-phase) you re-run only what changed.
+- **`scenario_rollout_deterministic`**: the comparison subcommands, with the injection constants fixed in the module rather than exposed as options.
 - **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds`.
 - **Dumps**: `resolve_dump_dir` in `tests/utils/soak/utils.py` puts them under `$MILES_TEST_DUMPS_ROOT/<run_id>/<test_name>/`, falling back to `/node_public/dumps` when the cluster sets no root. A comparison scenario's `run` deletes them when it ends; the random soak rejects a nonempty dump directory, so a finished soak leaves its dumps behind for inspection. The run id is what stops two agents running the same test from deleting each other's dumps.
 
@@ -152,6 +157,7 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 - **Metrics**: `compare_metrics` reads `MetricEvent`s, requires `train/grad_norm` and `train/loss` in the baseline and equal event counts on both sides, and compares only the highest-attempt event per rollout id.
 
 - **Why only some are bitwise**: baseline and target reduce over different topologies, so allreduce kernel ordering differs — unless `--deterministic-mode` and `--debug-deterministic-collective` are on.
+- **Why `train/grad_norm` is exempt in `scenario_trainer_deterministic`**: it sums squared shard fragments, so its bracketing follows the dist-optimizer shard count (8 flat vs 2 per cell); a few fp32 ulps are inherent. The grads stay bitwise-checked through the dumps. It is exact in `scenario_rollout_deterministic`, where ft on rollout alone leaves one trainer topology and no shard-count bracketing to excuse.
 
 ### Fault Forms and Receivers
 
@@ -307,6 +313,52 @@ Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src
 - **What phase_b adds**: reproducing the baseline bit-for-bit also proves the ckpt round-trips bitwise.
 - **Why the healing witness**: it gates the off-by-one bug where healing never runs and the comparison passes on two fault-free runs.
 
+### `scenario_rollout_deterministic`
+
+```
+Type: comparison; both sides run the identical command under the monitored launcher,
+      with fault forms enabled only on the target
+Entry: test_rollout_deterministic__kill_rollout__dp4.py, ft-long
+Steps: 8 rollouts (NUM_ROLLOUTS)
+Requires: mode.has_real_rollout, and ft_components == ("rollout",) exactly
+Compare: dumps rel <= 0 (bitwise); metrics rtol=0 / atol=0 over train/* and rollout/*,
+         train/grad_norm included
+
+Regime (both sides):
+  - the shared deterministic rollout recipe: --sglang-enable-deterministic-inference,
+    --sglang-attention-backend flashinfer and --deterministic-mode
+  - --debug-deterministic-collective and scenario_trainer_deterministic's deterministic env vars
+  - --sglang-disable-radix-cache
+  - --rollout-health-check-interval 1
+
+Injection (target side only):
+  1. Rollout cells, seed 42, exponential mean CRASH_INTERVAL_SECONDS (30s)
+  2. Forms drawn per (cluster backend, cell type), as in the soaks
+  3. Admit faults after the actor's first normal training step; close admission after
+     rollout 4, leaving the final three rollouts for recovery
+  4. Stop the injector, waiting out a mid-flight injection for at most
+     STOP_AND_JOIN_TIMEOUT_SECONDS (180s), then re-use the soak's rollout witnesses: >= 2
+     accepted rollout injections, each paired with one completed recovery cycle
+
+Assertions:
+  1. Reconfigure events: zero on BOTH sides - crashing an engine must not reconfigure trainer cells
+  2. Metrics: rtol=atol=0 over train/* and rollout/*
+  3. Dumps: rel <= 0
+  4. Engine checksums: baseline and target pushed identical weights per (rollout, engine)
+  5. Weights moved, per side: the engine weight checksum is not identical across all rollouts
+  6. Both sides complete the recovery tail and archive evidence through the shared teardown
+```
+
+- **Why it exists**: an engine dying and being replaced mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak only ever asserted survival.
+- **Why the shared deterministic recipe**: the assertion is deterministic replay across fresh inference engines, not true-on-policy training. Reusing the same FlashInfer recipe as the main deterministic trainer-FT test avoids a second, incompatible attention-backend contract.
+- **Why `--sglang-disable-radix-cache`**: a replacement engine serves with a cold prefix cache where the baseline's was warm, and deterministic inference is nowhere documented as prefix-cache-length invariant.
+- **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
+- **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation for its rollout witness.
+- **Why this scenario polls the fault window every 0.2 seconds**: colocated generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
+- **Why the final three rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 4, so teardown cannot race a newly accepted replacement.
+- **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
+- **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
+- **Why not a loss or reward curve**: neither is a progress signal here — the reward is `deterministic_random`, a hash of the response, and GRPO's surrogate loss is not monotone even while a run learns. Over eight rollouts neither moves for a reason worth asserting, and the weights either changed or they did not.
 
 ### `scenario_random_crash`
 
