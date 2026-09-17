@@ -1,6 +1,5 @@
 import argparse
 import copy
-import argparse
 import logging
 import os
 import re
@@ -208,13 +207,13 @@ class MegatronTrainerConfig(FrozenStrictBaseModel):
 
 class MegatronConfig(FrozenStrictBaseModel):
     trainers: list[MegatronTrainerConfig]
+    base_args: dict[str, Any] = {}
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         from megatron.training.arguments import add_megatron_arguments
 
         add_megatron_arguments(parser)
-
 
     @pydantic.model_validator(mode="after")
     def _validate_ids(self) -> "MegatronConfig":
@@ -251,11 +250,11 @@ class MegatronConfig(FrozenStrictBaseModel):
         raise KeyError(f"Unknown trainer model id {model_id!r}, known ids: {self.model_ids}")
 
 
-def resolve_megatron_config(args) -> MegatronConfig:
-    return MegatronConfig(trainers=_compute_trainers(args))
+def resolve_megatron_config(args: Namespace, *, base_args: dict[str, Any]) -> MegatronConfig:
+    return MegatronConfig(trainers=_compute_trainers(args), base_args=base_args)
 
 
-def _compute_trainers(args) -> list[MegatronTrainerConfig]:
+def _compute_trainers(args: Namespace) -> list[MegatronTrainerConfig]:
     if (raw := _resolve_raw_megatron_config(args.megatron_config)) is None:
         trainers = [MegatronTrainerConfig(trainer_id=ACTOR_ROLE, model_id=None, role=ACTOR_ROLE, overrides={})]
     else:
@@ -272,7 +271,7 @@ def _compute_trainers(args) -> list[MegatronTrainerConfig]:
     return trainers
 
 
-def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
+def _compute_critic_trainer(args: Namespace, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
     model_id = policy.model_id
     return MegatronTrainerConfig(
         trainer_id=CRITIC_ROLE if model_id is None else f"{model_id}-{CRITIC_ROLE}",
@@ -282,7 +281,7 @@ def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronT
     )
 
 
-def _compute_critic_overrides(args) -> dict[str, Any]:
+def _compute_critic_overrides(args: Namespace) -> dict[str, Any]:
     return {
         "kl_coef": 0,
         "use_opd": False,

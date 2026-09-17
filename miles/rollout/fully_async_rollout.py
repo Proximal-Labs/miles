@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import (
     BaseRolloutFn,
     RolloutFnConstructorInput,
@@ -91,7 +90,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
         default_buffer_cls = (
-            DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
+            DefaultMultiDataBuffer if self.args.raw_megatron.is_multi_policy else DefaultDataBuffer
         )
         buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
         self._output: DataBuffer = buffer_cls(
