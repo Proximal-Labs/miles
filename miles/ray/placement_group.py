@@ -372,6 +372,7 @@ async def _maybe_log_inference_engine_weight_checksums(
                 engine_snapshots=snapshots,
                 lora_enabled=args.lora_rank > 0 or args.lora_adapter_path is not None,
                 update_weights_interval=args.update_weights_interval,
+                transfer_mode=args.update_weight_transfer_mode if not args.colocate else "cuda_ipc",
             ),
         )
     except Exception:

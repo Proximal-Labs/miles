@@ -24,6 +24,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.test_utils.weight_observation import observe_transfer
 
 from .p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from .p2p_transfer_utils import (
@@ -111,6 +112,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
                 for cell_updater in meta.target_cell_updaters:
+                    target = cell_updater.targets_by_rollout_engine_rank[meta.rollout_engine_rank]
+                    observe_transfer(
+                        parameters=self._cpu_replicas.shared_params_dict,
+                        names=transfer_ready_params,
+                        cell_id=cell_updater.cell_id,
+                        receiver_rank=meta.rollout_engine_rank,
+                        receiver_session_id=target.session_id,
+                        expected_names=list(target.weights_info),
+                    )
                     cell_updater.submit_write(
                         rollout_engine_rank=meta.rollout_engine_rank,
                         names=transfer_ready_params,

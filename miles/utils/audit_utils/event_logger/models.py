@@ -127,6 +127,7 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(default_factory=list)
     lora_enabled: bool | None = None
     update_weights_interval: int | None = Field(default=None, ge=1)
+    transfer_mode: str | None = None
     version_epoch: str | None = None
     update_id: str | None = None
 
@@ -228,6 +229,17 @@ class FaultHookEvent(EventBase):
     target_incarnations: dict[str, str] = Field(default_factory=dict)
 
 
+class WeightTransferChecksumEvent(EventBase):
+    type: Literal["weight_transfer_checksum"] = "weight_transfer_checksum"
+    update_id: str
+    cell_id: str
+    workers_hash: str
+    receiver_rank: int
+    receiver_session_id: str
+    expected_names: list[str]
+    tensors: dict[str, str]
+
+
 class WeightUpdateResultEvent(EventBase):
     type: Literal["weight_update_result"] = "weight_update_result"
     update_id: str
@@ -255,6 +267,7 @@ Event = Annotated[
     | ExplicitlyDroppedSamplesEvent
     | TrainerModelCompanionInfoEvent
     | FaultHookEvent
+    | WeightTransferChecksumEvent
     | WeightUpdateResultEvent,
     Discriminator("type"),
 ]

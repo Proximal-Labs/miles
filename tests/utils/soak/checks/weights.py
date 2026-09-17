@@ -3,6 +3,7 @@ from datetime import datetime
 
 from tests.utils.soak.checks import inference_engine_weight_checksum_consistency
 from tests.utils.soak.checks.inference_engine_weight_movement import check as check_weight_movement
+from tests.utils.soak.checks.transfer_checksums import assert_transfer_checksums
 
 from miles.utils.audit_utils.event_logger.models import (
     Event,
@@ -54,6 +55,7 @@ def assert_published_weight_checksums(
         len(publications) >= minimum_publications
     ), f"Expected at least {minimum_publications} successful weight publications"
     assert checksums == publications, "Checksum versions or engine incarnations do not cover every publication"
+    assert_transfer_checksums(events, publication_keys=set(publications))
     assert_weight_checksum_history(events)
     movement_versions = {
         (event.trainer_model_id, event.version_epoch, event.weight_version)

@@ -8,7 +8,11 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
-from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot, flatten_inference_engine_checksums
+from miles.utils.audit_utils.checksum_utils import (
+    InferenceEngineChecksumSnapshot,
+    flatten_inference_engine_checksums,
+    flatten_received_checksums,
+)
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
@@ -223,15 +227,20 @@ class RolloutServer:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-        return [
-            InferenceEngineChecksumSnapshot(
-                model_name=self.model_name,
-                cell_id=cell.meta.cell_id,
-                workers_hash=cell.meta.workers_hash,
-                tensors=flatten_inference_engine_checksums([body])[0],
+        snapshots = []
+        for cell, body in zip(selected, bodies, strict=True):
+            received_update_id, received_tensors = flatten_received_checksums(body)
+            snapshots.append(
+                InferenceEngineChecksumSnapshot(
+                    model_name=self.model_name,
+                    cell_id=cell.meta.cell_id,
+                    workers_hash=cell.meta.workers_hash,
+                    tensors=flatten_inference_engine_checksums([body])[0],
+                    received_update_id=received_update_id,
+                    received_tensors=received_tensors,
+                )
             )
-            for cell, body in zip(selected, bodies, strict=True)
-        ]
+        return snapshots
 
     @lock_exempt
     async def wait_init_expected_num_cells(self, timeout: float = 3600):

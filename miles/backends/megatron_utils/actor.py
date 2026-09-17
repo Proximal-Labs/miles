@@ -39,6 +39,7 @@ from miles.utils.processing_utils import load_tokenizer
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.test_utils.weight_observation import observe_weight_update
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -1008,10 +1009,18 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             weight_version = self._get_actor_weight_version()
-            with self._fault_hooks.weight_update_scope(
-                weight_version=weight_version,
-                update_id=update_id,
-                target_incarnations=snapshot_cell_id_to_hashes,
+            with (
+                self._fault_hooks.weight_update_scope(
+                    weight_version=weight_version,
+                    update_id=update_id,
+                    target_incarnations=snapshot_cell_id_to_hashes,
+                ),
+                observe_weight_update(
+                    enabled=self.args.save_inference_engine_weight_checksum
+                    and self.args.update_weight_transfer_mode == "p2p",
+                    update_id=update_id,
+                    target_incarnations=snapshot_cell_id_to_hashes,
+                ),
             ):
                 self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")

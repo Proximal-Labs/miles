@@ -12,6 +12,24 @@ class InferenceEngineChecksumSnapshot(FrozenStrictBaseModel):
     cell_id: str = Field(min_length=1)
     workers_hash: str = Field(min_length=1)
     tensors: dict[str, str] = Field(min_length=1)
+    received_update_id: str | None = None
+    received_tensors: dict[str, str] | None = None
+
+
+def flatten_received_checksums(check_weights_result: dict[str, Any]) -> tuple[str | None, dict[str, str] | None]:
+    ranks = check_weights_result["ranks"]
+    updates = {rank.get("received_update_id") for rank in ranks}
+    if len(updates) != 1 or None in updates:
+        return None, None
+    tensors: dict[str, str] = {}
+    seen: set[int] = set()
+    for rank in ranks:
+        index = _gpu_rank(rank)
+        if index in seen or not rank.get("received_checksums"):
+            return None, None
+        seen.add(index)
+        tensors.update({f"rank{index}/{name}": value for name, value in rank["received_checksums"].items()})
+    return next(iter(updates)), tensors
 
 
 def flatten_inference_engine_checksums(check_weights_result: Any) -> list[InferenceEngineChecksums]:

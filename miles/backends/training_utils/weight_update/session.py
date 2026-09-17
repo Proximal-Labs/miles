@@ -11,6 +11,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.utils import async_utils
 from miles.utils.arguments import driver_owns_generation_pause
+from miles.utils.test_utils.weight_observation import observation_update_id
 
 
 def maybe_pause_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUpdater]) -> None:
@@ -53,7 +54,11 @@ def end_weight_update(
     the streamed LoRA stash (optionally verified against a sha256 manifest)."""
     results = async_utils.wait_futures(
         [
-            updater.submit_client_call("end_weight_update", expected_lora_checksums=expected_lora_checksums)
+            updater.submit_client_call(
+                "end_weight_update",
+                expected_lora_checksums=expected_lora_checksums,
+                **({"observation_update_id": update_id} if (update_id := observation_update_id()) is not None else {}),
+            )
             for updater in cell_updaters
         ]
     )
