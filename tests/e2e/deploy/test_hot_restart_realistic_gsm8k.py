@@ -7,7 +7,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["deploy", "ft-long"],
     hardware=["hopper", "blackwell"],
-    disabled="needs a Kubernetes cluster backend; FT soak tests pending CI infra support",
+    disabled="Requires a Kubernetes CI lane with shared storage and release-management credentials; the H200 lane uses Ray",
 )
 
 if __name__ == "__main__":

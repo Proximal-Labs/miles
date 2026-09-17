@@ -1,26 +1,25 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import asyncio
 import json
 import os
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import API_SERVER_PORT
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
 from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.soak.storage import validate_dump_storage, validate_training_storage
+from tests.utils.soak.utils import DATA_DIR, DEFAULT_TRAIN_SCRIPT, MODEL_DIR, get_dumps_root
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.workers.types import ClusterBackend
 
-_RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
-_MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"
+_LAUNCH_ID: str = uuid4().hex
 _MEGATRON_PATH: str = os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
-MODEL_DIR: str = get_test_model_dir()
-DATA_DIR: str = get_test_data_dir()
 _DEBUG_ROLLOUT_DATA_DIR: str = f"{DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
 
 
@@ -43,6 +42,11 @@ def _get_hf_num_layers(model_path: str) -> int:
 
 def prepare(mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig | None = None) -> None:
     config = _resolve_config(config)
+    patcher_path = _source_patcher_path()
+    storage = asyncio.run(validate_dump_storage(patcher_path.parent))
+
+    patcher_path.parent.mkdir(parents=True, exist_ok=True)
+    (patcher_path.parent / f"storage-{uuid4().hex}.json").write_text(storage.model_dump_json(indent=2))
 
     U = create_backend_for_run(config)
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
@@ -65,7 +69,7 @@ def prepare(mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig | None
     U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
     megatron_yaml: str = MEGATRON_PATCHER_YAMLS["thd"]
-    _MEGATRON_SOURCE_PATCHER_CONFIG_PATH.write_text(megatron_yaml)
+    patcher_path.write_text(megatron_yaml)
 
 
 def _resolve_config(config: command_utils.ExecuteTrainConfig | None) -> command_utils.ExecuteTrainConfig:
@@ -94,6 +98,7 @@ def get_common_train_args(
     )
 
     rollout_args: str
+    rollout_data_path = Path(dump_dir) / "rollout_data" / "{rollout_id}.pt"
     if not mode.has_real_rollout:
         rollout_dir = debug_rollout_data_dir or _DEBUG_ROLLOUT_DATA_DIR
         rollout_args = (
@@ -116,7 +121,7 @@ def get_common_train_args(
             "--rollout-batch-size 32 "
             "--n-samples-per-prompt 8 "
             # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
-            + DETERMINISTIC_ROLLOUT_ARGS + f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
+            + DETERMINISTIC_ROLLOUT_ARGS + f"--save-debug-rollout-data {shlex.quote(str(rollout_data_path))} "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
             f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
         )
@@ -155,37 +160,17 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
     dumper_args: str = ""
     if enable_dumper:
         dumper_args = (
-            f"--dumper-dir {dump_dir}/dumps "
+            f"--dumper-dir {shlex.quote(str(Path(dump_dir) / 'dumps'))} "
             f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 include_parallel_rank_in_filename=1 "
-            f"--dumper-source-patcher-config-train {_MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
+            f"--dumper-source-patcher-config-train {shlex.quote(str(_source_patcher_path()))} "
         )
 
-    return f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} {dumper_args}"
+    return f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} {dumper_args}"
 
 
-def get_ft_args(mode: FTTestMode) -> str:
-    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
-
-
-def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:
-    resolved = config if config is not None else command_utils.default_config()
-    if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
-        return f"--api-server-port {API_SERVER_PORT} "
-    return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
-
-
-DEFAULT_TRAIN_SCRIPT: str = "train.py"
-FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
-
-
-def get_train_script(*, fully_async: bool) -> str:
-    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
-
-
-def get_fully_async_args(*, fully_async: bool) -> str:
-    if not fully_async:
-        return ""
-    return "--fully-async --pause-generation-mode in_place "
+def get_ft_args(mode: FTTestMode, *, api_server_args: str = "--api-server-port 0 ") -> str:
+    checksum_args = "--save-inference-engine-weight-checksum " if mode.has_real_rollout else ""
+    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} {api_server_args}{checksum_args}"
 
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (
@@ -227,7 +212,11 @@ def run_training(
     config: command_utils.ExecuteTrainConfig | None = None,
     train_script: str = DEFAULT_TRAIN_SCRIPT,
 ) -> None:
-    U = _resolve_config(config).create_backend()
+    asyncio.run(validate_training_storage(train_args))
+    if dump_dir is not None:
+        asyncio.run(validate_dump_storage(Path(dump_dir)))
+    config = _resolve_config(config)
+    U = config.create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     merged_env_vars = {
@@ -255,3 +244,7 @@ def run_training(
         megatron_path=_MEGATRON_PATH,
         train_script=train_script,
     )
+
+
+def _source_patcher_path() -> Path:
+    return get_dumps_root() / "launch-config" / _LAUNCH_ID / "megatron_source_patcher.yaml"

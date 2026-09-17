@@ -1,0 +1,197 @@
+import asyncio
+from pathlib import Path
+
+from tests.utils.soak.action import SoakActionForm
+from tests.utils.soak.deploy.cluster_observer import compute_hot_restart_workloads
+from tests.utils.soak.deploy.deployment_target import validate_deployment_target
+from tests.utils.soak.deploy.evidence import HotRestartRecord
+from tests.utils.soak.deploy.fault_form import (
+    HOT_RESTART_FORM_NAME,
+    TAKE_OVER_POLL_INTERVAL_SECONDS,
+    TAKE_OVER_TIMEOUT_SECONDS,
+    restamped_replaced_workloads,
+)
+from tests.utils.soak.deploy.guarded_launcher import HotRestartLaunchSpec
+from tests.utils.soak.deploy.utils import REPLACED_LAUNCH_EXIT_CODE, compute_hot_restart_config
+from tests.utils.soak.recipes.gsm8k_launcher import Gsm8kLaunchSpec, launch
+from tests.utils.soak.state import (
+    EventLog,
+    SoakActionAppliedEvent,
+    SoakActionRequest,
+    SoakDeploymentTarget,
+    SoakEvent,
+    SoakLauncherExitedEvent,
+    SoakObservation,
+)
+from tests.utils.soak.views import SoakActionRecord, project_actions
+
+SESSION_TIMEOUT_SECONDS: float = 6 * 3600
+
+
+class SoakActionFormHotRestart(SoakActionForm):
+    def __init__(
+        self,
+        *,
+        launch_spec: Gsm8kLaunchSpec,
+        event_log: EventLog,
+        log_dir: Path,
+        max_allowed_rollout_id: int,
+        poll_interval_seconds: float = TAKE_OVER_POLL_INTERVAL_SECONDS,
+        timeout_seconds: float = TAKE_OVER_TIMEOUT_SECONDS,
+    ) -> None:
+        self._launch_spec = launch_spec
+        self._event_log = event_log
+        self._log_dir = log_dir
+        self._max_allowed_rollout_id = max_allowed_rollout_id
+        self._poll_interval_seconds = poll_interval_seconds
+        self._timeout_seconds = timeout_seconds
+
+    @property
+    def name(self) -> str:
+        return HOT_RESTART_FORM_NAME
+
+    @property
+    def harms_cell(self) -> bool:
+        return False
+
+    def is_recovered(self, *, action: SoakActionRecord, events: list[SoakEvent]) -> bool:
+        if action.applied is None:
+            return False
+        before = action.requested.request.target
+        assert isinstance(before, SoakDeploymentTarget)
+        after = SoakDeploymentTarget.model_validate(action.applied.evidence["after"])
+        saved = max(
+            before.saved_iteration if before.saved_iteration is not None else -1,
+            after.saved_iteration if after.saved_iteration is not None else -1,
+        )
+        finished = before.finished_rollout_id if before.finished_rollout_id is not None else -1
+        return any(
+            observation.timestamp > action.applied.timestamp
+            and not observation.errors
+            and target.namespace == before.namespace
+            and target.release == before.release
+            and target.workload_uids == after.workload_uids
+            and target.workload_stamps == after.workload_stamps
+            and target.saved_iteration is not None
+            and target.saved_iteration > saved
+            and target.finished_rollout_id is not None
+            and target.finished_rollout_id > finished
+            for observation in events
+            if isinstance(observation, SoakObservation)
+            for target in observation.deployments
+        )
+
+    def is_eligible(self, *, events: list[SoakEvent], target: dict | SoakDeploymentTarget) -> bool:
+        if not isinstance(target, SoakDeploymentTarget):
+            return False
+        progress = target.finished_rollout_id
+        if progress is None or progress >= self._max_allowed_rollout_id or target.saved_iteration is None:
+            return False
+        actions = {
+            request_id: action
+            for request_id, action in project_actions(events).items()
+            if action.requested.request.form_name == self.name
+        }
+        previous = next(
+            (
+                event
+                for event in reversed(events)
+                if isinstance(event, SoakActionAppliedEvent) and event.request_id in actions
+            ),
+            None,
+        )
+        if previous is None:
+            return True
+        before = actions[previous.request_id].requested.request.target
+        assert isinstance(before, SoakDeploymentTarget)
+        after = SoakDeploymentTarget.model_validate(previous.evidence["after"])
+        return target.saved_iteration > max(
+            before.saved_iteration if before.saved_iteration is not None else -1,
+            after.saved_iteration if after.saved_iteration is not None else -1,
+        )
+
+    async def execute(self, request: SoakActionRequest) -> None:
+        target = request.target
+        assert isinstance(target, SoakDeploymentTarget), "Hot restart requires a deployment target"
+        assert request.form_name == self.name
+        assert target.namespace == self._launch_spec.config.namespace
+        config = compute_hot_restart_config(self._launch_spec.config, installed_release=target.release)
+        await validate_deployment_target(target)
+        spec = HotRestartLaunchSpec(
+            config=config,
+            train_args=self._launch_spec.train_args,
+            target=target,
+            guard_directory=self._log_dir / f"guard-{request.request_id}",
+        )
+        log_path = self._log_dir / f"launcher-{request.request_id}.log"
+        launcher = asyncio.create_task(self._launch(request=request, spec=spec, log_path=log_path))
+        try:
+            async with asyncio.timeout(self._timeout_seconds):
+                await self._wait_for_take_over(request=request, launcher=launcher)
+            result = await launcher
+            assert result in (
+                0,
+                REPLACED_LAUNCH_EXIT_CODE,
+            ), f"Hot restart launcher {request.request_id} exited {result}; see {log_path}"
+        finally:
+            if not launcher.done():
+                launcher.cancel()
+            await asyncio.gather(launcher, return_exceptions=True)
+
+    async def _launch(self, *, request: SoakActionRequest, spec: Gsm8kLaunchSpec, log_path: Path) -> int:
+        result = await launch(
+            spec,
+            log_path=log_path,
+            timeout_seconds=SESSION_TIMEOUT_SECONDS,
+            module_name="tests.utils.soak.deploy.guarded_launcher",
+        )
+        self._event_log.note_launcher_exited(
+            SoakLauncherExitedEvent(request_id=request.request_id, returncode=result, log_path=log_path)
+        )
+        return result
+
+    async def _wait_for_take_over(self, *, request: SoakActionRequest, launcher: asyncio.Task[int]) -> None:
+        target = request.target
+        assert isinstance(target, SoakDeploymentTarget)
+        while True:
+            await asyncio.sleep(self._poll_interval_seconds)
+            events = self._event_log.events
+            observation = next((event for event in reversed(events) if isinstance(event, SoakObservation)), None)
+            after = (
+                next(
+                    (
+                        one
+                        for one in observation.deployments
+                        if one.release == target.release and one.namespace == target.namespace
+                    ),
+                    None,
+                )
+                if observation is not None
+                else None
+            )
+            if after is not None and restamped_replaced_workloads(
+                before=target.workload_stamps,
+                after=after.workload_stamps,
+                workloads=compute_hot_restart_workloads(target.release),
+            ):
+                requests = [
+                    request_id
+                    for request_id, action in project_actions(events).items()
+                    if isinstance(action.requested.request.target, SoakDeploymentTarget)
+                ]
+                record = HotRestartRecord(
+                    index=requests.index(request.request_id),
+                    saved_iteration_at_trigger=target.saved_iteration,
+                    frozen_rollout_id=-1 if target.finished_rollout_id is None else target.finished_rollout_id,
+                )
+                self._event_log.note_action_applied(
+                    SoakActionAppliedEvent(
+                        request_id=request.request_id,
+                        evidence={"record": record.model_dump(mode="json"), "after": after.model_dump(mode="json")},
+                    )
+                )
+                return
+            assert not launcher.done(), (
+                f"Hot restart launcher {request.request_id} exited {launcher.result()} before restamping "
+                f"{sorted(compute_hot_restart_workloads(target.release))}"
+            )

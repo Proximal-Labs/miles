@@ -2,17 +2,17 @@ import json
 import shlex
 
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
-from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
+from tests.e2e.ft.conftest_ft import app as ft_app
+from tests.e2e.ft.conftest_ft import execution as ft_execution
+from tests.e2e.ft.conftest_ft.app import TARGET_SIDE, RunSideRequest
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.soak.deploy.driver import compute_freeze_plan
+from tests.utils.soak.deploy.freeze_plan import (
     arm_first_freeze,
     compute_freeze_plan_path,
     with_freeze_plan_of,
     write_freeze_plan,
 )
-from tests.e2e.ft.conftest_ft import app as ft_app
-from tests.e2e.ft.conftest_ft import execution as ft_execution
-from tests.e2e.ft.conftest_ft.app import TARGET_SIDE, RunSideRequest
-from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
