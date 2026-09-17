@@ -2,9 +2,10 @@
 the adapter's own trained samples. Adapters without a known ``num_step`` warm up, then hold ``--lr`` constant."""
 
 import logging
-from argparse import Namespace
 
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
+
+from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class _SlotParamGroups:
         self.param_groups = param_groups
 
 
-def build_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) -> OptimizerParamScheduler:
+def build_slot_scheduler(args: TrainerConfig, optimizer, adapter, resume_step: int) -> OptimizerParamScheduler:
     """Build the slot's scheduler and position it at the adapter's committed
     samples. Rebuilt on every adapter load, so slot reuse starts fresh."""
     from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
@@ -64,7 +65,7 @@ def build_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) 
     return scheduler
 
 
-def install_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) -> None:
+def install_slot_scheduler(args: TrainerConfig, optimizer, adapter, resume_step: int) -> None:
     """Attach the adapter's scheduler to the optimizer, keyed by slot."""
     if not hasattr(
         optimizer, "miles_slot_schedulers"
