@@ -376,10 +376,15 @@ def forward_only(
         model_module.eval()
 
     if args.custom_megatron_before_log_prob_hook_path:
+        from miles.utils.args.custom_view import compute_custom_function_config
         from miles.utils.function_registry import load_function
 
         custom_before_log_prob_hook = load_function(args.custom_megatron_before_log_prob_hook_path)
-        custom_before_log_prob_hook(args, model, store_prefix)
+        custom_before_log_prob_hook(
+            compute_custom_function_config(args, args.custom_megatron_before_log_prob_hook_path, owner="trainer"),
+            model,
+            store_prefix,
+        )
 
     forward_backward_func = get_forward_backward_func()
     # Don't care about timing during evaluation
@@ -475,10 +480,18 @@ def train_one_step(
         _zero_grads(model, optimizer, disable_optimizer)
 
     if args.custom_megatron_before_train_step_hook_path:
+        from miles.utils.args.custom_view import compute_custom_function_config
         from miles.utils.function_registry import load_function
 
         custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
-        custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
+        custom_before_train_step_hook(
+            compute_custom_function_config(args, args.custom_megatron_before_train_step_hook_path, owner="trainer"),
+            rollout_id,
+            step_id,
+            model,
+            optimizer,
+            opt_param_scheduler,
+        )
 
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[

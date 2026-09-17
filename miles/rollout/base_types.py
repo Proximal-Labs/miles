@@ -113,10 +113,11 @@ class GenerateFnInput:
     sample: Sample
     sampling_params: dict[str, Any]
     evaluation: bool
+    args_override: Namespace | None = None
 
     @property
     def args(self) -> Namespace:
-        return self.state.args
+        return self.args_override or self.state.args
 
 
 @dataclass(frozen=True)

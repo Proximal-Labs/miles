@@ -4,6 +4,7 @@ from types import MappingProxyType
 from typing import Any, TypeAlias
 
 from miles.utils.args.runtime import TrainerConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.args.schema import BaseConfig
 
 
@@ -36,15 +37,16 @@ class ImmutableNamespace:
         return _compute_namespace_from_sources, (dict(self._values),)
 
 
-def custom_config_view(
-    args: BaseConfig,
-    custom_config: BaseConfig,
+def compute_custom_function_config(
+    args: BaseLeafConfig,
+    path: str,
     *runtime_sources: ConfigSource,
+    owner: str,
 ) -> ImmutableNamespace:
     sources: list[ConfigSource] = [args]
     if isinstance(args, TrainerConfig):
         sources.append(args.backend)
-    sources.extend((custom_config, *runtime_sources))
+    sources.extend(runtime_sources)
     return _compute_namespace_from_sources(*sources)
 
 

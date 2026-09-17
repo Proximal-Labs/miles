@@ -24,6 +24,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -743,7 +744,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 log_train_advantage_computation_event(rollout_data)
 
             if self.rollout_data_postprocess is not None:
-                self.rollout_data_postprocess(self.args)
+                self.rollout_data_postprocess(
+                    compute_custom_function_config(self.args, self.args.rollout_data_postprocess_path, owner="trainer")
+                )
 
             log_rollout_data(rollout_id, self.args, rollout_data)
 
@@ -907,7 +910,14 @@ class MegatronTrainRayActor(TrainRayActor):
                 else None
             )
             post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
-            post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
+            post_save_hook(
+                compute_custom_function_config(
+                    self.args, self.args.custom_megatron_post_save_hook_path, owner="trainer"
+                ),
+                rollout_id,
+                checkpoint_dir,
+                hf_checkpoint_dir,
+            )
 
     @with_logs
     @timer

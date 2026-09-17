@@ -4,6 +4,7 @@ import random
 
 import aiohttp
 
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
@@ -43,7 +44,9 @@ async def async_rm(args, sample: Sample, **kwargs):
 
     if custom_rm_path is not None:
         rm_function = load_function(custom_rm_path)
-        return await rm_function(args, sample, **kwargs)
+        return await rm_function(
+            compute_custom_function_config(args, custom_rm_path, owner="rollout"), sample, **kwargs
+        )
 
     response = sample.response
     label = sample.label
@@ -101,7 +104,9 @@ async def batched_async_rm(
 
     if args.custom_rm_path is not None and not is_multi_lora_enabled(args):
         rm_function = load_function(args.custom_rm_path)
-        return await rm_function(args, samples, **kwargs)
+        return await rm_function(
+            compute_custom_function_config(args, args.custom_rm_path, owner="rollout"), samples, **kwargs
+        )
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
     return rewards

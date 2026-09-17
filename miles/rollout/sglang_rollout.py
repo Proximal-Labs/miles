@@ -19,6 +19,7 @@ from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
@@ -329,7 +330,13 @@ async def generate_and_rm(
             generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
             if generate_fn is not None:
                 output = await generate_fn(
-                    GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params, evaluation=evaluation)
+                    GenerateFnInput(
+                        state=state,
+                        sample=sample,
+                        sampling_params=sampling_params,
+                        evaluation=evaluation,
+                        args_override=compute_custom_function_config(args, custom_func_path, owner="rollout"),
+                    )
                 )
                 sample = output.samples
             else:

@@ -17,6 +17,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
@@ -156,7 +157,11 @@ def get_model_provider_func(
             custom_model_provider = load_function(args.custom_model_provider_path)
             # Check if the custom provider supports vp_stage parameter
             parameters = inspect.signature(custom_model_provider).parameters
-            provider_kwargs = {"args": args} if "args" in parameters else {}
+            provider_kwargs = (
+                {"args": compute_custom_function_config(args, args.custom_model_provider_path, owner="trainer")}
+                if "args" in parameters
+                else {}
+            )
             has_vp_stage = "vp_stage" in parameters
             if has_vp_stage:
                 model = custom_model_provider(

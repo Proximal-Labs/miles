@@ -29,6 +29,7 @@ from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.async_utils import maybe_await
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -103,7 +104,9 @@ class RolloutExecutor:
         init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        self.data_source = data_source_cls(
+            compute_custom_function_config(args, self.args.data_source_path, owner="rollout")
+        )
         SampleOwnershipRecorder.install(
             args=args, data_source=self.data_source, current_rollout_id=lambda: self.rollout_id
         )
@@ -114,21 +117,30 @@ class RolloutExecutor:
                 self.generate_rollout = None
                 self.eval_generate_rollout = None
             else:
-                input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
-                self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+                rollout_input = RolloutFnConstructorInput(
+                    args=compute_custom_function_config(args, self.args.rollout_function_path, owner="rollout"),
+                    data_source=self.data_source,
+                )
+                self.generate_rollout = load_rollout_function(rollout_input, self.args.rollout_function_path)
                 if self.args.eval_function_path == self.args.rollout_function_path:
                     # Reuse the instance so train and eval share one state (and stateful
                     # rollout fns like FullyAsyncRolloutFn are not constructed twice).
                     self.eval_generate_rollout = self.generate_rollout
                 else:
-                    self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+                    eval_input = RolloutFnConstructorInput(
+                        args=compute_custom_function_config(args, self.args.eval_function_path, owner="rollout"),
+                        data_source=self.data_source,
+                    )
+                    self.eval_generate_rollout = load_rollout_function(eval_input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = None
+        self.custom_reward_post_process_path = self.args.custom_reward_post_process_path
         if (x := self.args.custom_reward_post_process_path) is not None:
             self.custom_reward_post_process_func = load_function(x)
         self.custom_convert_samples_to_train_data_func = None
+        self.custom_convert_samples_to_train_data_path = self.args.custom_convert_samples_to_train_data_path
         if (x := self.args.custom_convert_samples_to_train_data_path) is not None:
             self.custom_convert_samples_to_train_data_func = load_function(x)
         if self.generate_rollout is not None:
@@ -184,7 +196,9 @@ class RolloutExecutor:
                 data,
                 metadata=metadata,
                 custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                custom_convert_samples_to_train_data_path=self.custom_convert_samples_to_train_data_path,
                 custom_reward_post_process_func=self.custom_reward_post_process_func,
+                custom_reward_post_process_path=self.custom_reward_post_process_path,
             )
             sample_indices = train_data.get("sample_indices")
             if self.args.delay_split_train_data_by_dp:
@@ -251,7 +265,7 @@ class RolloutExecutor:
                 result = await asyncio.to_thread(
                     call_rollout_fn,
                     self.eval_generate_rollout,
-                    self.args,
+                    compute_custom_function_config(self.args, self.args.eval_function_path, owner="rollout"),
                     rollout_id,
                     self.data_source,
                     evaluation=True,
@@ -316,7 +330,12 @@ class RolloutExecutor:
                 data = await maybe_await(self.generate_rollout(input))
             else:
                 data = await asyncio.to_thread(
-                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
+                    call_rollout_fn,
+                    self.generate_rollout,
+                    compute_custom_function_config(self.args, self.args.rollout_function_path, owner="rollout"),
+                    rollout_id,
+                    self.data_source,
+                    evaluation=False,
                 )
             metrics = data.metrics
             data = data.samples
