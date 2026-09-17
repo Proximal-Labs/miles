@@ -1,5 +1,4 @@
 import asyncio
-import threading
 from argparse import Namespace
 from collections import defaultdict
 from types import SimpleNamespace
@@ -286,12 +285,12 @@ class TestLastGetRolloutId:
         _record_logged_model_ids(monkeypatch)
         executor = _make_ready_executor(None)
         extra_metrics = _record_eval_metrics(monkeypatch)
-        eval_may_finish = threading.Event()
+        eval_may_finish = asyncio.Event()
         get_entered = asyncio.Event()
         get_may_finish = asyncio.Event()
 
-        def _eval_generate_rollout(eval_input):
-            assert eval_may_finish.wait(timeout=5)
+        async def _eval_generate_rollout(eval_input):
+            await asyncio.wait_for(eval_may_finish.wait(), timeout=5)
             return RolloutFnEvalOutput(data={})
 
         async def _get_rollout_data(rollout_id, trainer_model_id=None):
