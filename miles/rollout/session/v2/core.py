@@ -183,6 +183,10 @@ class SessionCoreV2(SessionCore):
                 f"postprocessor={self.config.session_sample_postprocessor_path}): {exc}"
             )
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
+        if not samples:
+            return _samples_response(
+                encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
+            )
         # Hooks may inspect or mutate session metadata, so publish the
         # authoritative server-owned value only at the wire boundary.
         if self.config.sglang_speculative_algorithm is not None:
