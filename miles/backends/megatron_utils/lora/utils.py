@@ -380,6 +380,10 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
+    # Megatron-Bridge main defaults share_expert_adapters=True (one adapter for all experts); miles trains
+    # per-expert adapters, so say so explicitly wherever the adapter class has the knob.
+    if "share_expert_adapters" in getattr(lora_cls, "__dataclass_fields__", {}):
+        lora_kwargs["share_expert_adapters"] = False
     # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default
     if getattr(args, "experts_shared_outer_loras", False):
         assert lora_cls is LoRA, "--experts-shared-outer-loras requires the standard LoRA adapter type"
@@ -462,7 +466,8 @@ def save_lora_checkpoint(
 
         lora_state_dict: dict[str, torch.Tensor] = {}
         with megatron_bridge_utils.patch_megatron_model(model):
-            for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
+            # 2 fields on Megatron-Bridge main, 3 on the radixark bridge branch; only name and weight are needed.
+            for hf_name, weight, *_ in bridge.export_adapter_weights(
                 model,
                 cpu=True,
                 show_progress=False,

@@ -1,4 +1,5 @@
 import dataclasses
+import inspect
 import itertools
 import json
 import os
@@ -48,6 +49,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 cpu=False,
                 conversion_tasks=conversion_tasks,
                 merge_adapter_weights=False,
+                **self._source_name_kwargs(self._bridge.export_hf_weights),
             )
 
             # Apply postprocess + quantization (when targeting a quantized rollout,
@@ -61,8 +63,8 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 return
 
             named_weights = self._postprocess_and_quantize(named_weights, "base")
-            # One unit per megatron param: quantize emits weight + scales
-            # consecutively, so grouping by source name keeps them together.
+            # One unit per source Megatron param set: quantize emits weight + scales
+            # consecutively, so grouping by the (tuple of) source names keeps them together.
             for _megatron_name, group in itertools.groupby(named_weights, key=lambda item: item[2]):
                 unit = [(h, w) for h, w, _m in group if not is_lora_weight_name(h)]
                 if unit:
@@ -83,12 +85,48 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
     def _export_current_adapter(self) -> list:
         with megatron_bridge_utils.patch_megatron_model(self.model):
-            named_weights = self._bridge.export_adapter_weights(self.model, cpu=False, show_progress=False)
+            named_weights = self._bridge.export_adapter_weights(
+                self.model,
+                cpu=False,
+                show_progress=False,
+                **self._source_name_kwargs(self._bridge.export_adapter_weights),
+            )
             named_weights = self._postprocess_and_quantize(named_weights, "lora")
             return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
 
+    @staticmethod
+    def _source_name_kwargs(export_fn) -> dict:
+        """Ask the bridge to report source Megatron parameter names when it can.
+
+        Megatron-Bridge main yields the plain two-field ``HFWeightTuple`` unless ``with_megatron_names=True``;
+        the radixark ``bridge`` branch always yields a third field and has no such keyword.
+        """
+        if "with_megatron_names" in inspect.signature(export_fn).parameters:
+            return {"with_megatron_names": True}
+        return {}
+
+    @staticmethod
+    def _source_names(item) -> tuple:
+        """Normalize the exported tuple's third field to a tuple of source Megatron parameter names.
+
+        Megatron-Bridge main reports 0 (HF-only passthrough tensor), 1 (direct conversion) or N (grouped-expert
+        export packing several Megatron params into one HF tensor) names in ``megatron_param_names``; the
+        radixark ``bridge`` branch reports a single ``megatron_param_name`` string.
+        """
+        source = item[2] if len(item) > 2 else None
+        if source is None:
+            return ()
+        if isinstance(source, str):
+            return (source,)
+        return tuple(source)
+
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
-        for hf_param_name, weight, megatron_param_name in named_weights:
+        for item in named_weights:
+            hf_param_name, weight = item[0], item[1]
+            megatron_param_names = self._source_names(item)
+            # Padding and quantization rules key on a Megatron name; for a packed grouped-expert tensor every
+            # contributing expert lives in the same layer, so the first source decides.
+            megatron_param_name = megatron_param_names[0] if megatron_param_names else None
             hf_name = hf_param_name.replace(".base_layer.", ".")
             weight = postprocess_hf_param(
                 args=self.args,
@@ -96,16 +134,17 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 hf_param_name=hf_name,
                 param=weight,
             )
-            if weight_type == "base" and self.quantization_config is not None:
+            if weight_type == "base" and self.quantization_config is not None and megatron_param_name is not None:
                 # quantize_params expects the megatron name with the `module.module.`
                 # prefix that the direct iterator uses; the bridge yields it without.
+                # A tensor with no Megatron source (HF-only passthrough) is not a trainable weight: pass it through.
                 qmegatron_name = f"module.module.{megatron_param_name}"
                 for q_hf_name, q_weight in quantize_params(
                     self.args, qmegatron_name, [(hf_name, weight)], self.quantization_config
                 ):
-                    yield q_hf_name, q_weight, megatron_param_name
+                    yield q_hf_name, q_weight, megatron_param_names
             else:
-                yield hf_name, weight, megatron_param_name
+                yield hf_name, weight, megatron_param_names
 
 
 def _load_quantized_param_basenames(hf_checkpoint):

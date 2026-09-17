@@ -17,6 +17,8 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -97,8 +99,7 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if getattr(args, "moe_aux_loss_coeff", None) is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
-    if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+    apply_dsa_backend_args(provider, args)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82

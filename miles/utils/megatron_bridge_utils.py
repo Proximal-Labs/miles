@@ -27,3 +27,20 @@ def patch_megatron_model(model):
     finally:
         if attribute_was_added:
             delattr(model_config, "share_embeddings_and_output_weights")
+
+
+def apply_dsa_backend_args(provider, args) -> None:
+    """Select the DSA (sparse-MLA) kernel backend on a Megatron-Bridge provider from ``--dsa-attention-backend``.
+
+    The radixark ``bridge`` branch exposes ``dsa_attention_backend`` ("megatron" | "tilelang", vendored TileLang
+    kernels). Megatron-Bridge ``main`` (radixark ``bridge-new``) drops that field and relies on Megatron-Core's
+    native ``dsa_kernel_backend`` ("none" | "tilelang" | "cudnn"). Map miles' option onto whichever the provider
+    has: "tilelang" -> "tilelang", "megatron" (unfused megatron-core path) -> "none". An explicit Megatron
+    ``--dsa-kernel-backend`` always wins. Non-DSA providers have neither field and are left alone.
+    """
+    backend = getattr(args, "dsa_attention_backend", "megatron")
+    if hasattr(provider, "dsa_attention_backend"):
+        provider.dsa_attention_backend = backend
+    elif hasattr(provider, "dsa_kernel_backend"):
+        explicit = getattr(args, "dsa_kernel_backend", None)
+        provider.dsa_kernel_backend = explicit or {"tilelang": "tilelang", "megatron": "none"}[backend]
