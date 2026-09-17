@@ -262,7 +262,9 @@ def execute(args: ScriptArgs) -> None:
         "HARBOR_MAX_SEQ_LEN": str(args.max_seq_len),
         "HARBOR_RESPONSE_LENGTH_POLICY": "abort",
         "HARBOR_AGENT_ALLOWED_HOSTS": args.router_external_host,
-        "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
+        # Terminus 2 calls the model from this process, not from its sandbox.
+        # Keep the session server's internal address and bind interface.
+        "MILES_ROUTER_EXTERNAL_HOST": "",
         "E2B_API_URL": args.e2b_api_url,
         "E2B_SANDBOX_URL": args.e2b_sandbox_url,
     }
