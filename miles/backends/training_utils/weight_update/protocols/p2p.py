@@ -54,8 +54,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
         self.transfer_manager = P2PTransferManager(
-            num_workers=getattr(args, "p2p_transfer_num_workers", 4),
-            transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
+            num_workers=args.p2p_transfer_num_workers,
+            transfer_timeout=args.p2p_transfer_timeout,
         )
 
     def after_base_weights(self) -> None:

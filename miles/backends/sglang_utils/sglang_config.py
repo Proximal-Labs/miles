@@ -371,7 +371,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     eval_num_gpus = args.eval_num_gpus
     rollout_num_gpus = args.rollout_num_gpus or 0
 
-    if getattr(args, "sglang_config", None) is not None:
+    if args.sglang_config is not None:
         config = _RawSglangConfig.from_file_arg(args.sglang_config)
         expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
@@ -460,17 +460,13 @@ def _compute_rollout_offset(args) -> int:
     """Offset (in PG bundle slots) where rollout GPUs start."""
     if args.debug_rollout_only or args.colocate or not args.starts_inference_engines:
         return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
     offset = args.actor_num_nodes * args.actor_num_gpus_per_node
     return offset
 
 
 def _compute_megatron_num_gpus(args) -> int:
     """Total number of megatron (actor + critic) GPU slots in the placement group."""
-    if getattr(args, "debug_rollout_only", False):
+    if args.debug_rollout_only:
         return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
     num = args.actor_num_nodes * args.actor_num_gpus_per_node
     return num
