@@ -65,6 +65,8 @@ class SoakActionRequest(FrozenStrictBaseModel):
     next_due_at: float | None = None
     pod: SoakPodTarget | None = None
     fault_target: FaultTarget | None = None
+    hook_trigger: FaultTarget | None = None
+    hook_delay_ms: float | None = Field(default=None, ge=0, le=300000, allow_inf_nan=False)
 
     @field_validator("target", mode="before")
     @classmethod

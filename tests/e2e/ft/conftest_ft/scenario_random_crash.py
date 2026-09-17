@@ -5,6 +5,7 @@
 import asyncio
 from functools import partial
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
@@ -23,18 +24,22 @@ from tests.e2e.ft.conftest_ft.execution import (
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.e2e.ft.conftest_ft.training_launcher import TrainingLaunchSpec, execute_session
 from tests.utils.soak.checks.ft import assert_healing
+from tests.utils.soak.checks.hooks import assert_hook_effects, assert_hook_survivors, assert_remote_p2p_failures
 from tests.utils.soak.checks.tail import assert_tail_complete
 from tests.utils.soak.checks.weights import assert_published_weight_checksums
 from tests.utils.soak.cli_options import SeedOption
 from tests.utils.soak.config import create_policy, create_tail_policy
 from tests.utils.soak.entrypoint import API_SERVER_PORT, create_soak_session
 from tests.utils.soak.fault_forms import compute_mean_interval_seconds_of_cell_type, create_cell_fault_forms
+from tests.utils.soak.hook_fault_form import HookFaultForm
 from tests.utils.soak.state import event_source
 from tests.utils.soak.teardown import teardown_run
 from tests.utils.soak.utils import create_soak_config, evidence_directory, get_api_server_args
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
+from miles.utils.audit_utils.event_logger.models import FaultHookEvent, TrainGroupStepEndEvent, WeightUpdateResultEvent
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.fault_injector import FailureMode
 
 app: typer.Typer = typer.Typer()
 
@@ -53,6 +58,9 @@ def run_ci(
     num_steps: NumStepsOption = DEFAULT_NUM_STEPS,
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    precise_all_gather: Annotated[bool, typer.Option()] = False,
+    precise_p2p: Annotated[bool, typer.Option()] = False,
+    mix_wall_clock: Annotated[bool, typer.Option()] = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -64,10 +72,28 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    if precise_all_gather or precise_p2p:
+        assert not ft_mode.colocate, "Precise fault soaks require disaggregated trainers and rollout engines"
+    assert not (precise_all_gather and precise_p2p), "Select one precise hook scenario"
+    if mix_wall_clock:
+        assert precise_all_gather or precise_p2p, "Mixed injection requires a precise hook scenario"
+    if precise_all_gather:
+        assert mode == "kill_train__dp2_tp2", "Precise all-gather requires the real-rollout TP2 mode"
+    if precise_p2p:
+        assert mode in {
+            "kill_train__dp2_tp2",
+            "kill_rollout__dp2_tp2",
+        }, "Precise P2P requires a disaggregated TP2 mode"
     tail_policy = create_tail_policy(num_rollout=num_steps)
 
     config = create_soak_config(command_utils.default_config())
     test_name: str = TEST_NAME
+    if precise_all_gather:
+        test_name = "precise_all_gather"
+    if precise_p2p:
+        test_name = "precise_p2p"
+    if mix_wall_clock:
+        test_name += "_mixed"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
@@ -91,9 +117,48 @@ def run_ci(
         )
         + "--mini-ft-controller-enable "
     )
+    if precise_all_gather or precise_p2p:
+        train_args += "--update-weight-transfer-mode p2p "
+    if precise_all_gather or precise_p2p:
+        train_args += "--update-weights-timeout 600 "
+
     base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     evidence_dir = evidence_directory(Path(dump_dir))
-    cell_fault_forms = create_cell_fault_forms(base_url=base_url, config=config)
+    cell_fault_forms = (
+        {
+            "actor": [
+                HookFaultForm(
+                    base_url=base_url,
+                    failure_mode=failure_mode,
+                    hook="trainer_before_all_gather" if precise_all_gather else "trainer_before_weight_send",
+                    lifetime_seconds=300,
+                    delay_ms=1000 if mix_wall_clock and failure_mode != FailureMode.THREAD_DEADLOCK else 0,
+                    random_delay=mix_wall_clock and failure_mode != FailureMode.THREAD_DEADLOCK,
+                )
+                for failure_mode in [FailureMode.SIGKILL, FailureMode.SIGSTOP, FailureMode.THREAD_DEADLOCK]
+            ]
+        }
+        if precise_all_gather or (precise_p2p and ft_mode.ft_components == ("train",))
+        else create_cell_fault_forms(base_url=base_url, config=config)
+    )
+    if precise_p2p and ft_mode.ft_components == ("rollout",):
+        cell_fault_forms = {
+            "rollout": [
+                HookFaultForm(
+                    base_url=base_url,
+                    failure_mode=FailureMode.SIGSTOP if "sigstop" in victim.name else FailureMode.SIGKILL,
+                    hook="trainer_before_weight_send",
+                    lifetime_seconds=300,
+                    victim_form=victim,
+                    delay_ms=1000 if mix_wall_clock else 0,
+                    random_delay=mix_wall_clock,
+                )
+                for victim in cell_fault_forms["rollout"]
+            ]
+        }
+    if mix_wall_clock:
+        wall_clock_forms = create_cell_fault_forms(base_url=base_url, config=config)
+        cell_fault_forms = {kind: [*forms, *wall_clock_forms[kind]] for kind, forms in cell_fault_forms.items()}
     assert not Path(dump_dir).exists() or not any(
         Path(dump_dir).iterdir()
     ), f"Soak dump directory contains existing artifacts: {dump_dir}; choose a new run_id"
@@ -141,6 +206,26 @@ def run_ci(
                 )
             )
         )
+    if precise_all_gather or precise_p2p:
+        hook_event_dir = event_source(
+            injector.event_log.events, name="training_events", fallback=Path(dump_dir) / EVENTS_DIRNAME
+        )
+        training_events = read_events(hook_event_dir)
+        assert_hook_effects(
+            injector.event_log.events,
+            hook_events=[event for event in training_events if isinstance(event, FaultHookEvent)],
+        )
+        if precise_p2p and "rollout" in ft_mode.ft_components:
+            assert_remote_p2p_failures(
+                injector.event_log.events,
+                hook_events=[event for event in training_events if isinstance(event, FaultHookEvent)],
+                update_events=[event for event in training_events if isinstance(event, WeightUpdateResultEvent)],
+            )
+        if "train" in ft_mode.ft_components:
+            assert_hook_survivors(
+                injector.event_log.events,
+                steps=[event for event in training_events if isinstance(event, TrainGroupStepEndEvent)],
+            )
     assert_healing(
         ft_mode.ft_components,
         events=injector.event_log.events,

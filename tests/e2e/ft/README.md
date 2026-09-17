@@ -28,6 +28,11 @@
 - **Kubernetes**: the same random FT scenario accepts a Kubernetes backend through the launch configuration. Kubernetes execution requires shared storage, worker images and release-management credentials; the Ray CI lane does not provide those resources. Hot restart remains Kubernetes-only.
 - **Validation status**: registration is not execution evidence. This implementation has not run the scenarios, calibrated durations, or verified convergence on the CI machines.
 
+- **Precise topology**: real rollout engines, disaggregated TP2 trainers, and p2p weight transfer.
+- **Precise faults**: trainer all-gather hooks inject `sigkill`, `sigstop`, and training-thread deadlock; every enabled form must produce an independently observed effect and matching worker dispatch evidence.
+- **Precise recovery**: the normal healing and completed-tail assertions remain mandatory.
+- **Mixed injection**: `scenario_random_crash --precise-p2p --mix-wall-clock` (or `--precise-all-gather`) draws both hook and wall-clock forms through the same scheduler. Every enabled form must produce an effect; hook forms additionally require worker-side hit evidence.
+- **Calibration**: the deadlines and 4800-second CI estimate have not been calibrated by a run.
 
 - **Scenario logic**: `conftest_ft/scenario_<name>.py` — a typer app plus a `run_ci(mode)` runner.
 
@@ -50,6 +55,8 @@
 
 | Mode | Nodes | GPUs (train + rollout) | DP cells | Parallelism | Rollout | Model | `ft_components` | Why it exists |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `kill_train__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | real weight-update tensor all-gather fault hooks |
+| `kill_rollout__dp2_tp2` | 1 | 4 + 4 | 2 | TP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("rollout",)` | receiver faults triggered by trainer P2P hooks |
 | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 TP2 EP2 | debug data | 5-layer MoE | `("train",)` | TP + EP coverage |
 | `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 PP2 | debug data | 5-layer MoE | `("train",)` | PP coverage, via `--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2` |
 | `kill_train__dp4_cp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 4 | CP2 | debug data | 5-layer MoE | `("train",)` | multi-replica coverage (>= 4 cells); uneven split after a fault |

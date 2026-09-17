@@ -98,6 +98,8 @@ def test_random_soak_entries_reach_the_h200_plan(monkeypatch: pytest.MonkeyPatch
     names = [
         "test_random_crash__kill_rollout__dp4.py",
         "test_random_crash__kill_train_rollout__dp2_cp2.py",
+        "test_precise_p2p_mixed__kill_rollout__dp2_tp2.py",
+        "test_precise_all_gather_mixed__kill_train__dp2_tp2.py",
     ]
 
     for name in names:
