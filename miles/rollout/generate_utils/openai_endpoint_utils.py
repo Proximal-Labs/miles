@@ -113,7 +113,7 @@ class OpenAIEndpointTracer:
                 return await post_bytes_no_retry(
                     f"{self.base_url}/{operation}", body, timeout=_SESSION_REQUEST_TIMEOUT
                 )
-            except (TimeoutError, httpx.TransportError):
+            except (asyncio.TimeoutError, TimeoutError, httpx.TransportError):
                 if attempt:
                     logger.warning("Session retained after %s failed: %s", operation, self.base_url)
                     raise

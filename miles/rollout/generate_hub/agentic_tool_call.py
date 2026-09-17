@@ -24,6 +24,7 @@ Agent function contract:
 """
 
 import argparse
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -97,7 +98,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         try:
             result = await tracer.collect_samples(input.sample, **collect_kwargs)
         # Costs this sample, not the run; a non-2xx still raises RuntimeError.
-        except (TimeoutError, httpx.TransportError) as e:
+        except (asyncio.TimeoutError, TimeoutError, httpx.TransportError) as e:
             collect_failed = True
             logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
         else:

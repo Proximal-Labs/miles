@@ -254,3 +254,13 @@ async def test_agent_failure_does_not_assert_producer_completion(monkeypatch):
     output = await agentic_tool_call.generate(_generate_input())
     assert tracer.producer_finished is False
     assert output.samples[0].status == Sample.Status.ABORTED
+
+
+async def test_asyncio_collection_timeout_aborts_before_python_311(monkeypatch):
+    class LegacyAsyncTimeoutError(Exception):
+        pass
+
+    monkeypatch.setattr(agentic_tool_call, "asyncio", SimpleNamespace(TimeoutError=LegacyAsyncTimeoutError))
+    _patch_agent(monkeypatch, _Tracer(error=LegacyAsyncTimeoutError()))
+    output = await agentic_tool_call.generate(_generate_input())
+    assert output.samples[0].status == Sample.Status.ABORTED

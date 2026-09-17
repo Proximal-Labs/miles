@@ -18,6 +18,7 @@ import pytest
 from safetensors import SafetensorError
 
 import miles.utils.http_utils as http_utils
+from miles.rollout.generate_utils import openai_endpoint_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2, encode_samples
 from miles.utils.http_utils import post_bytes_no_retry
@@ -400,3 +401,21 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
 
     assert (await OpenAIEndpointTracer.create(args(True))).samples_wire_fields == COMPUTED_FIELDS
     assert (await OpenAIEndpointTracer.create(args("v2"))).samples_wire_fields == COMPUTED_FIELDS_V2
+
+
+async def test_v2_retries_asyncio_timeouts_before_python_311(monkeypatch):
+    class LegacyAsyncTimeoutError(Exception):
+        pass
+
+    monkeypatch.setattr(openai_endpoint_utils, "asyncio", SimpleNamespace(TimeoutError=LegacyAsyncTimeoutError))
+    attempts = []
+
+    async def post_bytes(*args, **kwargs):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise LegacyAsyncTimeoutError()
+        return b"finished"
+
+    monkeypatch.setattr(openai_endpoint_utils, "post_bytes_no_retry", post_bytes)
+    assert await _tracer()._post_finalized("finish", {"producer_finished": True}) == b"finished"
+    assert len(attempts) == 2
