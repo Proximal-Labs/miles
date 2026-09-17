@@ -344,6 +344,9 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
 
+    if trainer.role == CRITIC_ROLE:
+        ans.loss_type = "value_loss"
+
     if trainer.model_id is not None:
         ans.save = compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
