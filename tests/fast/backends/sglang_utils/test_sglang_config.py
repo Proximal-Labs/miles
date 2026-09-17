@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import pytest
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import (
     ServerGroupConfig,
     _compute_megatron_num_gpus,
@@ -285,7 +286,10 @@ class TestPrefillNumServersPath:
             _make_args(rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2)
         )
         groups = cfg.models[0].server_groups
-        assert [(group.worker_type, group.num_gpus) for group in groups] == [("prefill", 6), ("decode", 10)]
+        assert [(group.worker_type, group.num_gpus) for group in groups] == [
+            (WorkerType.PREFILL, 6),
+            (WorkerType.DECODE, 10),
+        ]
 
     def test_prefill_consuming_all_gpus_is_rejected(self):
         """prefill_num_servers leaving no decode gpus fails loudly."""
