@@ -1,4 +1,5 @@
 from argparse import Namespace
+from collections.abc import Sequence
 from dataclasses import fields
 from typing import Any, Self
 
@@ -126,6 +127,25 @@ class TrainerConfig(
     DashboardConfig,
     SglangFieldsConfig,
 ):
+    @classmethod
+    def common_value(cls, configs: Sequence[Self], name: str) -> Any:
+        if not configs:
+            raise ValueError(f"Cannot read common trainer field {name!r} from an empty trainer set")
+        values = []
+        for config in configs:
+            outer_values = dict(config)
+            backend_values = vars(config.trainer_backend)
+            if name in outer_values:
+                value = outer_values[name]
+            elif name in backend_values:
+                value = backend_values[name]
+            else:
+                raise ValueError(f"Trainer {config.trainer_id!r} has no field {name!r}")
+            values.append((config.trainer_id, value))
+        if any(value != values[0][1] for _, value in values[1:]):
+            raise ValueError(f"Trainer field {name!r} differs across trainers: {values!r}")
+        return values[0][1]
+
     @classmethod
     def from_all_config(cls, args: "AllConfig", *, trainer: MegatronTrainerConfig) -> Self:
         backend_values = (

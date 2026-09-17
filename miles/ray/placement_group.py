@@ -218,12 +218,15 @@ async def create_training_models(
     args, rollout_executor: BaseWorkerHandle
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     trainer_configs = compute_trainer_configs(args)
+    runtime_configs = [TrainerConfig.from_all_config(args, trainer=config) for config in trainer_configs]
+    TrainerConfig.common_value(runtime_configs, "global_batch_size")
+    TrainerConfig.common_value(runtime_configs, "micro_batch_size")
     handles = create_trainer_handles(args, trainer_configs=trainer_configs)
     resumed = await take_over_trainers(args, handles=handles)
 
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     actor_info = await create_training_model(
-        TrainerConfig.from_all_config(args, trainer=actor_config),
+        next(config for config in runtime_configs if config.trainer_id == actor_config.trainer_id),
         handle=handles[actor_config.trainer_id],
         trainer_id=actor_config.trainer_id,
         resumed=resumed,
@@ -234,7 +237,7 @@ async def create_training_models(
     if args.use_critic:
         [critic_config] = critic_configs
         critic_info = await create_training_model(
-            TrainerConfig.from_all_config(args, trainer=critic_config),
+            next(config for config in runtime_configs if config.trainer_id == critic_config.trainer_id),
             handle=handles[critic_config.trainer_id],
             trainer_id=critic_config.trainer_id,
             resumed=resumed,
