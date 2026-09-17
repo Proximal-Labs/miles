@@ -160,8 +160,6 @@ def commit_generation(
     finish_reason: str,
     context_id: str | None = None,
     generation_id: str | None = None,
-    retry_of: str | None = None,
-    supersedes: str | None = None,
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (captured at
     positioning time), then advance the view to the new node. Prefix
@@ -188,8 +186,6 @@ def commit_generation(
         finish_reason=finish_reason,
         context_id=context_id,
         generation_id=generation_id,
-        retry_of=retry_of,
-        supersedes=supersedes,
     )
     state.active_leaf = node
     return node

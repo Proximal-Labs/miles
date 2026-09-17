@@ -119,8 +119,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
         elif result.empty_reason == "incomplete":
             logger.warning("Session finalized with an incomplete trace: %s", tracer.base_url)
-        elif result.empty_reason == "no_trainable_tokens":
-            logger.warning("Session selection left no trainable tokens: %s", tracer.base_url)
         else:
             logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)

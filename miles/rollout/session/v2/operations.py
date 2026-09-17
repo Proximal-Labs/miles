@@ -1,43 +1,31 @@
-"""Session-owned generation tasks and explicit retry intent."""
+"""Session-owned generation tasks for idempotent request delivery."""
 
 import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import TypeAdapter, ValidationError
 from starlette.responses import Response
 
 from miles.rollout.session.errors import MessageValidationError, SessionConflictError
 from miles.rollout.session.v2.contexts import ContextId, SessionContext
 
-_INTENT_HEADERS = {
-    "x-miles-idempotency-key": "idempotency_key",
-    "x-miles-retry-of": "retry_of",
-    "x-miles-supersedes": "supersedes",
-}
+_IDEMPOTENCY_KEY = TypeAdapter(ContextId)
 
 
-class GenerationIntent(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    idempotency_key: ContextId | None = None
-    retry_of: ContextId | None = None
-    supersedes: ContextId | None = None
-
-
-def split_generation_headers(headers: dict) -> tuple[GenerationIntent, dict]:
-    intent = {}
+def split_idempotency_header(headers: dict) -> tuple[str | None, dict]:
+    key = None
     forwarded = {}
     for header, value in headers.items():
-        if header.lower() in _INTENT_HEADERS:
-            intent[_INTENT_HEADERS[header.lower()]] = value
+        if header.lower() == "x-miles-idempotency-key":
+            try:
+                key = _IDEMPOTENCY_KEY.validate_python(value)
+            except ValidationError as exc:
+                raise MessageValidationError(f"Invalid idempotency key: {exc}") from exc
         else:
             forwarded[header] = value
-    try:
-        return GenerationIntent.model_validate(intent), forwarded
-    except ValidationError as exc:
-        raise MessageValidationError(f"Invalid generation headers: {exc}") from exc
+    return key, forwarded
 
 
 def request_fingerprint(
@@ -47,7 +35,6 @@ def request_fingerprint(
     query: str,
     context: SessionContext | None,
     previous_response_id: str | None,
-    intent: GenerationIntent,
 ) -> str:
     try:
         canonical = json.dumps(
@@ -57,7 +44,6 @@ def request_fingerprint(
                 query,
                 context.model_dump() if context else None,
                 previous_response_id,
-                intent.model_dump(),
             ],
             sort_keys=True,
             allow_nan=False,

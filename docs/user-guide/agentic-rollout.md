@@ -288,7 +288,7 @@ Session metadata exposes the context registry and each node's stable
 `generation_id`, `context_id`, and `identity_source`. Leaf sample metadata carries
 the agent/context IDs. All contexts still belong to the same training episode.
 
-## Generation replay and retry selection (v2)
+## Generation delivery replay (v2)
 
 Use a fresh `X-Miles-Idempotency-Key` for each intended generation and reuse it
 only to retry delivery of the same request. Concurrent deliveries share one
@@ -299,24 +299,9 @@ key. Keys and responses live only for the retained session, with at most 1024
 keyed operations; there is no replay guarantee after release or server restart.
 
 Successful responses include `X-Miles-Generation-Id` on both protocol adapters.
-Use that ID in `X-Miles-Retry-Of` to identify a new sampling attempt, and in
-`X-Miles-Supersedes` when the harness deliberately replaces an earlier attempt.
-References must name a committed generation in the same context. Identical
-prompts or output tokens alone never deduplicate generations.
-
-The default keeps sampled retries. To exclude explicitly superseded generations:
-
-```bash
---session-sample-picker-path miles.rollout.session.v2.picker_hub.keep_all \
---session-sample-postprocessor-path miles.rollout.session.v2.postprocessor_hub.exclude_superseded
-```
-
-This policy masks excluded generations wherever they occur, retains their tokens
-as conditioning context, and removes rows with no trainable tokens. A retained
-descendant remains trainable. Shared-token ownership is assigned among surviving
-token occurrences after sequence caps. The exported `selection` metadata lists
-excluded generation IDs and the remaining trainable-token count; an empty result
-returns `empty_reason: "no_trainable_tokens"` and aborts the rollout.
+Unkeyed requests and fresh keys sample new generations, even when their prompts
+are identical. All sampled attempts remain available to the configured picker;
+this API does not choose which attempts should contribute to training.
 
 ## Example
 

@@ -32,8 +32,6 @@ class TrajectoryNode:
     children: list["TrajectoryNode"] = field(default_factory=list, repr=False)
     generation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     context_id: str | None = None
-    retry_of: str | None = None
-    supersedes: str | None = None
 
     @property
     def truncated(self) -> bool:
@@ -84,8 +82,6 @@ class SessionTree:
         finish_reason: str,
         context_id: str | None = None,
         generation_id: str | None = None,
-        retry_of: str | None = None,
-        supersedes: str | None = None,
     ) -> TrajectoryNode:
         if parent is not None and parent.context_id != context_id:
             raise SessionConflictError("Token ancestry cannot cross contexts; start a new root.")
@@ -107,8 +103,6 @@ class SessionTree:
             parent=parent,
             context_id=context_id,
             generation_id=generation_id or uuid.uuid4().hex,
-            retry_of=retry_of,
-            supersedes=supersedes,
         )
         self.nodes.append(node)
         if parent is None:
