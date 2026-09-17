@@ -37,7 +37,7 @@ class FaultHookRequest(FrozenStrictBaseModel):
     request_id: str = Field(min_length=1)
     instance_id: str = Field(min_length=1)
     hook: FaultHookName
-    mode: Literal["sigkill"]
+    mode: Literal["sigkill", "sigstop", "thread_deadlock"]
     action: Literal["inject", "observe"] = "inject"
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
 

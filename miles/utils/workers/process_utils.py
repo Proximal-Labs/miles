@@ -62,6 +62,35 @@ def kill_process_tree_and_wait(
     return list(handles)
 
 
+def stop_process_tree_and_wait(
+    process: subprocess.Popen, *, timeout_seconds: float = 5.0, root_pidfd: int | None = None
+) -> list[int]:
+    root = psutil.Process(process.pid)
+    deadline = time.monotonic() + timeout_seconds
+    with ExitStack() as resources, ExitStack() as rollback:
+        handles = {
+            root.pid: _freeze_process(
+                root,
+                resources=resources,
+                resume_resources=rollback,
+                deadline=deadline,
+                require_running=True,
+                expected_pidfd=root_pidfd,
+            )
+        }
+        while children := [child for child in root.children(recursive=True) if child.pid not in handles]:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Process tree did not stop before the injection deadline")
+            for child in children:
+                handles[child.pid] = _freeze_process(
+                    child, resources=resources, resume_resources=rollback, deadline=deadline, require_running=True
+                )
+        if any(select.select([fd], [], [], 0)[0] for fd in handles.values()):
+            raise ProcessLookupError("A stopped process exited before the tree observation completed")
+        rollback.pop_all()
+    return list(handles)
+
+
 def _freeze_process(
     observed: psutil.Process,
     *,
