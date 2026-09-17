@@ -1,5 +1,3 @@
-import argparse
-
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
@@ -13,10 +11,13 @@ class CustomMegatronPluginsConfig(BaseConfig):
     custom_megatron_init_path: A[str | None, Arg()] = None
     custom_megatron_before_log_prob_hook_path: A[str | None, Arg()] = None
     custom_megatron_before_train_step_hook_path: A[str | None, Arg()] = None
-
-    @classmethod
-    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
-
-        add_dsv4_arguments(parser)
-        super().add_arguments(parser=parser)
+    dsv4_impl: A[
+        str,
+        Arg(
+            choices=["miles", "megatron"],
+            help=(
+                "Which DeepSeek-V4 attention implementation to train with. 'miles' is the plugin path "
+                "and 'megatron' is Megatron's native dsv4_hybrid path."
+            ),
+        ),
+    ] = "megatron"

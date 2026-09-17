@@ -1,4 +1,5 @@
 import os
+from argparse import Namespace
 from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
@@ -179,7 +180,12 @@ def compute_trainer_num_cells(args, *, role: str) -> int:
         else (args.critic_num_nodes, args.critic_num_gpus_per_node)
     )
     total_gpus = num_nodes * num_gpus_per_node
-    return (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
+    backend_values = (
+        vars(args.backend)
+        if isinstance(args, TrainerConfig)
+        else args.raw_megatron.base_args if args.train_backend == "megatron" else vars(args.raw_fsdp)
+    )
+    return total_gpus // compute_megatron_world_size_except_dp(Namespace(**backend_values)) if args.indep_dp else 1
 
 
 def _compute_spec_trainer(

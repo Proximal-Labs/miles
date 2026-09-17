@@ -28,8 +28,12 @@ from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.checkpoint import load_checkpoint
 from miles.backends.megatron_utils.initialize import init
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.args.configs.fault_tolerance import FaultToleranceConfig
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.output import compute_and_save_output_info
 from miles.utils.debug_utils.run_megatron.worker.replay import (
@@ -44,27 +48,31 @@ from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
 def main() -> None:
     args, script = _parse_args()
-    _initialize_megatron(args)
+    trainer_args = _initialize_megatron(args=args, script=script)
 
     rank: int = dist.get_rank()
     if rank == 0:
-        _print_config(args, script)
+        _print_config(trainer_args, script)
 
     if script.source_patcher_config:
         _apply_source_patches(script.source_patcher_config)
 
     setup_replay_before_model(script)
-    model: list[Any] = _build_and_load_model(args, script)
+    model: list[Any] = _build_and_load_model(trainer_args, script)
 
     for m in model:
         dumper.register_non_intrusive_dumper(m)
 
-    load_replay_data(script, rank=rank, sequence_parallel=args.sequence_parallel)
+    load_replay_data(
+        script,
+        rank=rank,
+        sequence_parallel=trainer_args.backend.sequence_parallel,
+    )
 
     token_ids: list[int] = json.loads(script.token_ids_file.read_text())
     batch: dict[str, torch.Tensor] = prepare_batch(
         token_ids=token_ids,
-        batch_size=args.micro_batch_size,
+        batch_size=trainer_args.backend.micro_batch_size,
         cp_rank=get_parallel_state().cp.rank,
         cp_size=get_parallel_state().cp.size,
     )
@@ -73,7 +81,7 @@ def main() -> None:
         print(f"[worker] input_ids shape={batch['input_ids'].shape}", flush=True)
 
     captured_logits: torch.Tensor | None = _run_forward_backward(
-        args=args,
+        args=trainer_args,
         script=script,
         model=model,
         batch=batch,
@@ -124,7 +132,7 @@ def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
     return args, script_args
 
 
-def _initialize_megatron(args: argparse.Namespace) -> None:
+def _initialize_megatron(args: argparse.Namespace, script: WorkerScriptArgs) -> TrainerConfig:
     torch.distributed.init_process_group(backend="nccl")
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
@@ -136,22 +144,63 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     set_default_megatron_args(args)
     validate_args(args)
 
-    init(args)
+    trainer_args = _create_trainer_args(args=args, script=script)
+    init(trainer_args)
+    return trainer_args
 
 
-def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
+def _create_trainer_args(args: argparse.Namespace, script: WorkerScriptArgs) -> TrainerConfig:
+    parser = argparse.ArgumentParser(add_help=False)
+    FaultToleranceConfig.add_arguments(parser=parser)
+    backend_arg_names = {
+        name
+        for name in vars(args)
+        if not name.startswith("script_")
+        and name not in {"debug_deterministic_collective", "hf_checkpoint", "megatron_to_hf_mode"}
+    }
+    values = vars(parser.parse_args([])) | vars(args)
+    values.update(
+        backend=MegatronArgsNamespace(**{name: vars(args)[name] for name in backend_arg_names}),
+        sglang=SglangConfig(models=[], base_args={}),
+        train_backend="megatron",
+        trainer_id=script.role,
+        trainer_model_id=None,
+        trainer_role=script.role,
+        requested_load=args.load,
+        ckpt_step=None,
+        use_critic=script.role == "critic",
+        ci_enable_metrics_capture=False,
+        starts_inference_engines=False,
+        rollout_external=False,
+        rollout_batch_size=args.micro_batch_size,
+        eval_datasets=[],
+        eval_uses_snapshots=False,
+        lora_A_init_method="xavier",
+        lora_B_init_method="zero",
+        multi_lora=False,
+        multi_lora_dp_size=None,
+        custom_agent_function_path=None,
+        sglang_model_routers=None,
+        router_args={},
+    )
+    return TrainerConfig.model_validate({name: values[name] for name in TrainerConfig.model_fields if name in values})
+
+
+def _build_and_load_model(args: TrainerConfig, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
     # Forward-only runs skip DDP wrapping so the distributed-optimizer grad buffer
     # (tens-to-hundreds of GB for large MoE models) is never allocated -> avoids OOM.
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=script.run_backward)
+    with args.backend.mutable():
+        model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=script.run_backward)
 
-    if args.load is not None:
+    if args.backend.load is not None:
         load_checkpoint(
             model,
             optimizer=None,
             opt_param_scheduler=None,
             checkpointing_context=None,
             skip_load_to_model_and_opt=False,
+            args=args,
         )
 
     for m in model:
@@ -197,8 +246,8 @@ def _run_forward_backward(
         data_iterator=iter([batch]),
         model=model,
         num_microbatches=1,
-        seq_length=args.seq_length,
-        micro_batch_size=args.micro_batch_size,
+        seq_length=args.backend.seq_length,
+        micro_batch_size=args.backend.micro_batch_size,
         forward_only=not script.run_backward,
     )
 
@@ -209,12 +258,17 @@ def _run_forward_backward(
     return captured[0] if captured else None
 
 
-def _print_config(args: argparse.Namespace, script: WorkerScriptArgs) -> None:
-    print(f"[worker] seq_length={args.seq_length}, micro_batch_size={args.micro_batch_size}", flush=True)
+def _print_config(args: TrainerConfig, script: WorkerScriptArgs) -> None:
     print(
-        f"[worker] tp={args.tensor_model_parallel_size}, pp={args.pipeline_model_parallel_size}, "
-        f"cp={args.context_parallel_size}, ep={args.expert_model_parallel_size}, "
-        f"etp={args.expert_tensor_parallel_size}",
+        f"[worker] seq_length={args.backend.seq_length}, micro_batch_size={args.backend.micro_batch_size}",
+        flush=True,
+    )
+    print(
+        f"[worker] tp={args.backend.tensor_model_parallel_size}, "
+        f"pp={args.backend.pipeline_model_parallel_size}, "
+        f"cp={args.backend.context_parallel_size}, "
+        f"ep={args.backend.expert_model_parallel_size}, "
+        f"etp={args.backend.expert_tensor_parallel_size}",
         flush=True,
     )
     print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)

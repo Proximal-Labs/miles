@@ -160,6 +160,11 @@ def has_repetition(text: str) -> bool:
 
 
 def compute_rollout_step(args, rollout_id):
+    from miles.utils.args.runtime import TrainerConfig
+
     if args.wandb_always_use_train_step:
-        return rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+        global_batch_size = (
+            args.backend.global_batch_size if isinstance(args, TrainerConfig) else args.global_batch_size
+        )
+        return rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // global_batch_size
     return rollout_id

@@ -112,6 +112,8 @@ def _compute_config_for_logging(args):
 
 # https://docs.wandb.ai/guides/track/log/distributed-training/#track-all-processes-to-a-single-run
 def init_wandb_secondary(args, router_addr=None):
+    from miles.utils.args.runtime import TrainerConfig
+
     wandb_run_id = args.wandb_run_id
     if wandb_run_id is None:
         return
@@ -149,7 +151,7 @@ def init_wandb_secondary(args, router_addr=None):
     init_kwargs = {
         "id": wandb_run_id,
         "entity": args.wandb_team,
-        "project": args.wandb_project,
+        "project": args.backend.wandb_project if isinstance(args, TrainerConfig) else args.wandb_project,
         "config": config_values(args),
         "resume": "allow",
         "reinit": True,
