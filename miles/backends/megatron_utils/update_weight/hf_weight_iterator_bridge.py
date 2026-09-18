@@ -63,8 +63,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 return
 
             named_weights = self._postprocess_and_quantize(named_weights, "base")
-            # One unit per source Megatron param set: quantize emits weight + scales
-            # consecutively, so grouping by the (tuple of) source names keeps them together.
+            # Group by the (tuple of) source names so quantize's weight + scales land in one unit.
             for _megatron_name, group in itertools.groupby(named_weights, key=lambda item: item[2]):
                 unit = [(h, w) for h, w, _m in group if not is_lora_weight_name(h)]
                 if unit:
@@ -96,23 +95,14 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
     @staticmethod
     def _source_name_kwargs(export_fn) -> dict:
-        """Ask the bridge to report source Megatron parameter names when it can.
-
-        Megatron-Bridge main yields the plain two-field ``HFWeightTuple`` unless ``with_megatron_names=True``;
-        the radixark ``bridge`` branch always yields a third field and has no such keyword.
-        """
+        """Request source Megatron names via ``with_megatron_names`` when the bridge accepts it (main only)."""
         if "with_megatron_names" in inspect.signature(export_fn).parameters:
             return {"with_megatron_names": True}
         return {}
 
     @staticmethod
     def _source_names(item) -> tuple:
-        """Normalize the exported tuple's third field to a tuple of source Megatron parameter names.
-
-        Megatron-Bridge main reports 0 (HF-only passthrough tensor), 1 (direct conversion) or N (grouped-expert
-        export packing several Megatron params into one HF tensor) names in ``megatron_param_names``; the
-        radixark ``bridge`` branch reports a single ``megatron_param_name`` string.
-        """
+        """Normalize the third field to a tuple of 0/1/N source Megatron names (a single str on the bridge branch)."""
         source = item[2] if len(item) > 2 else None
         if source is None:
             return ()
@@ -124,8 +114,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         for item in named_weights:
             hf_param_name, weight = item[0], item[1]
             megatron_param_names = self._source_names(item)
-            # Padding and quantization rules key on a Megatron name; for a packed grouped-expert tensor every
-            # contributing expert lives in the same layer, so the first source decides.
+            # Padding/quantization rules key on a Megatron name; packed grouped-expert tensors use the first source.
             megatron_param_name = megatron_param_names[0] if megatron_param_names else None
             hf_name = hf_param_name.replace(".base_layer.", ".")
             weight = postprocess_hf_param(

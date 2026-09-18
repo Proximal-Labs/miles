@@ -380,8 +380,7 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-    # Megatron-Bridge main defaults share_expert_adapters=True (one adapter for all experts); miles trains
-    # per-expert adapters, so say so explicitly wherever the adapter class has the knob.
+    # Megatron-Bridge main defaults share_expert_adapters=True; miles trains per-expert adapters, so pass it explicitly.
     if "share_expert_adapters" in getattr(lora_cls, "__dataclass_fields__", {}):
         lora_kwargs["share_expert_adapters"] = False
     # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default

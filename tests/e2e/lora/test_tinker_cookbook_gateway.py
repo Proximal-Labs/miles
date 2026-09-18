@@ -13,10 +13,7 @@ register_cuda_ci(
 )
 
 COOKBOOK_PIN = "git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c"
-# The cookbook's own deps that the image does not already carry. Everything else it lists (torch, transformers,
-# datasets, ...) is preinstalled, and its `transformers<=5.5.4` pin must not be resolved: pip would downgrade the
-# image's transformers 5.12.1 to 5.5.4, which breaks `import megatron.bridge` (Exaone 4.5 bridge needs >=5.10)
-# for every later test in the same container.
+# Cookbook deps the image lacks; --no-deps keeps its transformers<=5.5.4 pin from downgrading the image's transformers.
 COOKBOOK_DEPS = "chz>=0.4.0 termcolor>=2.0.0 tml-renderers>=0.0.1"
 
 

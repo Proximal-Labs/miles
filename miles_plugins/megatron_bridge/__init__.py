@@ -29,9 +29,8 @@ def _install_bridge_pp_group_unwrap() -> None:
     every ``ProcessGroup`` in ``ReloadableProcessGroup`` for reload-safety; that
     wrapper is not in ``pg_group_ranks`` so ``get_group_rank`` raises
     ``"Group ... is not registered"``. Temporarily swap in the inner group for
-    the duration of the broadcast. Extra arguments (Bridge's ``cache_key``
-    keyword) are passed through untouched so the shim tracks upstream's
-    signature.
+    the duration of the broadcast.
+    Extra arguments such as Bridge's ``cache_key`` are forwarded untouched.
     """
     from megatron.bridge.models.conversion.param_mapping import MegatronParamMapping
 
