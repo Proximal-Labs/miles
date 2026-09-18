@@ -32,7 +32,8 @@ as HF-named chunks over CUDA IPC.
 | `--model-name` | Layers | Purpose | GPUs |
 |---|---|---|---|
 | `Kimi-K3` | 93 | the release | 64 (16 × 4), validated |
-| `Kimi-K3-4layer` | 4 (1 dense + 3 MoE) | smoke test and CI, default | one node; two for rollout TP16 |
+| `Kimi-K3-4layer-64experts` | 4 (1 dense + 3 MoE), 64 routed experts | smoke test and CI, default | one node |
+| `Kimi-K3-4layer` | 4 (1 dense + 3 MoE), all 896 experts | rollout TP16 and EP layouts of the release | one node; two for rollout TP16 |
 
 The name sets the checkpoint paths under `--model-dir` and the `megatron_model_type`;
 `--train-mode lora|full` picks the recipe.
@@ -57,13 +58,16 @@ The only external asset is the native MXFP4 checkpoint; the BF16 dequantization 
 ### 3.1 Four-layer prune (one node)
 
 ```bash
-python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer --task gsm8k
-python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer
-python scripts/run_kimi_k3.py prepare-torch-dist --model-name Kimi-K3-4layer
+python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer-64experts --task gsm8k
+python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer-64experts
+python scripts/run_kimi_k3.py prepare-torch-dist --model-name Kimi-K3-4layer-64experts
 ```
 
-`Pinaster/Kimi-K3-4layer` is the first dense layer plus three MoE layers of the release; it is
-what the `run-ci-model-scripts` recipes train.
+`Pinaster/Kimi-K3-4layer` is the first dense layer plus three MoE layers of the release;
+`Pinaster/Kimi-K3-4layer-64experts` keeps only the first 64 routed experts of each MoE layer
+(the router is sliced to match) so full-parameter training fits one node's host memory. The
+`run-ci-model-scripts` recipes train the 64-expert prune; the 896-expert prune is for layouts
+that depend on the release's expert count.
 
 ### 3.2 Full model
 

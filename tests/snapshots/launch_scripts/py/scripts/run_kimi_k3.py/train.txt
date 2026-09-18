@@ -44,7 +44,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --v-head-dim 128
   --qk-layernorm
   --attention-softmax-in-fp32
-  --num-experts 896
+  --num-experts 64
   --moe-layer-freq '[0,1,1,1]'
   --moe-ffn-hidden-size 3072
   --moe-latent-size 3584
@@ -61,8 +61,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-router-dtype fp32
   --moe-grouped-gemm
   --moe-permute-fusion
-  --hf-checkpoint <SANDBOX>/models/Kimi-K3-4layer
-  --ref-load <SANDBOX>/models/Kimi-K3-4layer-bf16_torch_dist
+  --hf-checkpoint <SANDBOX>/models/Kimi-K3-4layer-64experts
+  --ref-load <SANDBOX>/models/Kimi-K3-4layer-64experts-bf16_torch_dist
   --megatron-to-hf-mode raw
   --model-name kimi_k3 
   --lora-rank 16

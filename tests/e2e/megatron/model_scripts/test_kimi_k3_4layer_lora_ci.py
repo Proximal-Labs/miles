@@ -20,7 +20,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
-        model_name="Kimi-K3-4layer",
+        model_name="Kimi-K3-4layer-64experts",
         train_mode="lora",
         mode="normal",
         task="gsm8k",

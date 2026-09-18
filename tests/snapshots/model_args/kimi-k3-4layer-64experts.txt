@@ -47,7 +47,7 @@
 "--qk-layernorm"
 "--attention-softmax-in-fp32"
 "--num-experts"
-"896"
+"64"
 "--moe-layer-freq"
 "[0,1,1,1]"
 "--moe-ffn-hidden-size"

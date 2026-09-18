@@ -3,7 +3,7 @@ import os
 from model_args_utils import moe_layer_freq
 
 
-def model_args(nlayers: int | None = None) -> str:
+def model_args(nlayers: int | None = None, num_experts: int = 896) -> str:
     nlayers = nlayers if nlayers is not None else int(os.environ.get("MODEL_ARGS_NUM_LAYERS") or 93)
     return (
         "--spec miles_plugins.models.kimi_k3 get_kimi_k3_spec "
@@ -33,7 +33,7 @@ def model_args(nlayers: int | None = None) -> str:
         "--v-head-dim 128 "
         "--qk-layernorm "
         "--attention-softmax-in-fp32 "
-        "--num-experts 896 "
+        f"--num-experts {num_experts} "
         f"--moe-layer-freq {moe_layer_freq(nlayers=nlayers, first_k_dense_replace=1)} "
         "--moe-ffn-hidden-size 3072 "
         "--moe-latent-size 3584 "

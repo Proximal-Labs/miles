@@ -28,7 +28,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --v-head-dim 128
   --qk-layernorm
   --attention-softmax-in-fp32
-  --num-experts 896
+  --num-experts 64
   --moe-layer-freq '[0,1,1,1]'
   --moe-ffn-hidden-size 3072
   --moe-latent-size 3584
@@ -45,8 +45,8 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --moe-router-dtype fp32
   --moe-grouped-gemm
   --moe-permute-fusion
-  --hf-checkpoint <SANDBOX>/models/Kimi-K3-4layer-bf16
-  --save <SANDBOX>/models/Kimi-K3-4layer-bf16_torch_dist
+  --hf-checkpoint <SANDBOX>/models/Kimi-K3-4layer-64experts-bf16
+  --save <SANDBOX>/models/Kimi-K3-4layer-64experts-bf16_torch_dist
   --bf16
   --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1

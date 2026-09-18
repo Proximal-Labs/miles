@@ -1,9 +1,9 @@
 """Kimi K3 RL launcher: LoRA or full-parameter training on the native MXFP4 checkpoint.
 
-python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer
-python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer
-python scripts/run_kimi_k3.py prepare-torch-dist --model-name Kimi-K3-4layer
-python scripts/run_kimi_k3.py train --model-name Kimi-K3-4layer --train-mode lora
+python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer-64experts
+python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer-64experts
+python scripts/run_kimi_k3.py prepare-torch-dist --model-name Kimi-K3-4layer-64experts
+python scripts/run_kimi_k3.py train --model-name Kimi-K3-4layer-64experts --train-mode lora
 """
 
 import os
@@ -19,13 +19,19 @@ app = typer.Typer()
 
 _DEFAULT_MODEL_ORG = {
     "Kimi-K3": "moonshotai",
-    # 4-layer prune of the native MXFP4 checkpoint (1 dense + 3 MoE layers).
+    # prunes of the native MXFP4 checkpoint: the first dense layer plus three MoE layers, with all 896 routed
+    # experts or the first 64 of them
     "Kimi-K3-4layer": "Pinaster",
+    "Kimi-K3-4layer-64experts": "Pinaster",
 }
-_MEGATRON_MODEL_TYPE = {"Kimi-K3": "kimi-k3", "Kimi-K3-4layer": "kimi-k3-4layer"}
-_NUM_LAYERS = {"Kimi-K3": 93, "Kimi-K3-4layer": 4}
+_MEGATRON_MODEL_TYPE = {
+    "Kimi-K3": "kimi-k3",
+    "Kimi-K3-4layer": "kimi-k3-4layer",
+    "Kimi-K3-4layer-64experts": "kimi-k3-4layer-64experts",
+}
+_NUM_LAYERS = {"Kimi-K3": 93, "Kimi-K3-4layer": 4, "Kimi-K3-4layer-64experts": 4}
+_NUM_EXPERTS = {"Kimi-K3": 896, "Kimi-K3-4layer": 896, "Kimi-K3-4layer-64experts": 64}
 _NUM_ATTENTION_HEADS = 96
-_NUM_EXPERTS = 896
 _VALIDATED_FULL_MODEL_GPUS = 64
 
 _LAYERS = "decoder.layers.*"
@@ -47,7 +53,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_org: str = ""
-    model_name: Literal["Kimi-K3", "Kimi-K3-4layer"] = "Kimi-K3-4layer"
+    model_name: Literal["Kimi-K3", "Kimi-K3-4layer", "Kimi-K3-4layer-64experts"] = "Kimi-K3-4layer-64experts"
     train_mode: Literal["lora", "full"] = "lora"
     task: Literal["gsm8k", "dapo-math"] = "gsm8k"
     hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
@@ -129,9 +135,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 f"rollout_tp_size must divide {self.num_gpus} GPUs and {_NUM_ATTENTION_HEADS} attention heads, "
                 f"got {self.rollout_tp_size}"
             )
-        if self.rollout_tp_size % self.rollout_ep_size != 0 or _NUM_EXPERTS % self.rollout_ep_size != 0:
+        if self.rollout_tp_size % self.rollout_ep_size != 0 or self.num_experts % self.rollout_ep_size != 0:
             raise ValueError(
-                f"rollout_ep_size must divide rollout_tp_size and {_NUM_EXPERTS} experts, got {self.rollout_ep_size}"
+                f"rollout_ep_size must divide rollout_tp_size and {self.num_experts} experts, got {self.rollout_ep_size}"
             )
 
         if self.is_4layer:
@@ -166,11 +172,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     @property
     def is_4layer(self) -> bool:
-        return self.model_name == "Kimi-K3-4layer"
+        return self.model_name != "Kimi-K3"
 
     @property
     def num_layers(self) -> int:
         return _NUM_LAYERS[self.model_name]
+
+    @property
+    def num_experts(self) -> int:
+        return _NUM_EXPERTS[self.model_name]
 
     @property
     def num_gpus(self) -> int:
