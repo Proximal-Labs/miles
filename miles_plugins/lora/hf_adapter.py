@@ -24,6 +24,7 @@ MEGATRON_TO_HF_MODULES = {
     "linear_proj": ["o_proj"],
     "linear_fc1": ["gate_proj", "up_proj"],
     "linear_fc2": ["down_proj"],
+    "output_layer": ["lm_head"],
     "linear_q": ["q_proj"],
     "linear_k": ["k_proj"],
     "linear_v": ["v_proj"],

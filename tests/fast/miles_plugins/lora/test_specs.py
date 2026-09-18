@@ -155,6 +155,9 @@ class TestSupportedTargets:
     def test_mla_megatron_names_normalise_too(self):
         assert set(convert_target_modules_to_hf(["linear_q_down_proj"])) <= IMPLEMENTED_TARGETS
 
+    def test_output_layer_normalises_to_lm_head(self):
+        assert convert_target_modules_to_hf(["output_layer"]) == ["lm_head"]
+
     def test_hf_names_pass_through_unchanged(self):
         names = ["q_proj", "v_proj", "down_proj"]
         assert set(convert_target_modules_to_hf(names)) == set(names)
