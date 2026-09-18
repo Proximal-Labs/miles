@@ -5,11 +5,7 @@ from contextlib import suppress
 import uvicorn
 
 from miles.backends.megatron_utils.megatron_config import compute_trainer_args
-from miles.ray.placement_group import (
-    create_trainer_handles,
-    create_training_model,
-    take_over_trainers,
-)
+from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
 from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs

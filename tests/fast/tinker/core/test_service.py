@@ -730,6 +730,7 @@ async def test_a_dead_trainer_escapes_the_dispatch_loop(tmp_path, monkeypatch):
     run_task = asyncio.create_task(gateway.run())
     try:
         model_id = await created_model(gateway)
+
         async def _dead() -> bool:
             return True
 
