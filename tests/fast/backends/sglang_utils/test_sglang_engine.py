@@ -124,7 +124,9 @@ class TestLoraTargetModules:
     def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, tmp_path):
         """Inkling exposes module names the megatron-to-HF mapping cannot produce, so its spec
         hands SGLang the shorthand instead of naming its targets."""
-        args = make_engine_args(lora_rank=16, target_modules=["wq_du"], hf_checkpoint=self._inkling_checkpoint(tmp_path))
+        args = make_engine_args(
+            lora_rank=16, target_modules=["wq_du"], hf_checkpoint=self._inkling_checkpoint(tmp_path)
+        )
 
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
 
