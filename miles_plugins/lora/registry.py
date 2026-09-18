@@ -253,7 +253,7 @@ def preflight_native_lora(
         from mbridge.core.bridge import _MODEL_REGISTRY
 
         mbridge_registered = model_type in _MODEL_REGISTRY
-    except Exception:
+    except ImportError:
         mbridge_registered = False
 
     model_args_script = None
@@ -271,7 +271,7 @@ def preflight_native_lora(
                 ),
                 None,
             )
-        except Exception:
+        except ImportError:
             model_args_script = None
         if strict:
             assert model_args_script is not None, (

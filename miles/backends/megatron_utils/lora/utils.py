@@ -848,7 +848,7 @@ def _apply_training_state(
 
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
-    target_modules_hf: Any = (
+    target_modules_hf: list[str] | str = (
         target_modules_hf_for_sglang_rollout(args)
         if args.target_modules
         else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]

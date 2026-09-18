@@ -41,5 +41,5 @@ def _unpadded_vocab_size(hf_checkpoint: str | None) -> int | None:
         with open(os.path.join(hf_checkpoint, "config.json"), encoding="utf-8") as handle:
             config = json.load(handle)
         return (config.get("text_config") or config).get("unpadded_vocab_size")
-    except Exception:
+    except (OSError, ValueError, AttributeError):
         return None

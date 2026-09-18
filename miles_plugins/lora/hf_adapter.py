@@ -127,7 +127,7 @@ def mbridge_cross_check(model_type: str | None, layer_prefix: str) -> None:
     try:
         import miles_plugins.mbridge  # noqa: F401  (registers Miles bridge subclasses)
         from mbridge.core.bridge import _MODEL_REGISTRY
-    except Exception:
+    except ImportError:
         return
     bridge_cls = _MODEL_REGISTRY.get(model_type)
     if bridge_cls is None:
