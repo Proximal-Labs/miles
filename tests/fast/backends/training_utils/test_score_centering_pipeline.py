@@ -221,6 +221,32 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
         validate_score_centering_args(_args(**{field: value}))
 
 
+@pytest.mark.parametrize("session", ["v1", "v2"])
+@pytest.mark.parametrize("top_k", [21, 128])
+def test_large_session_heads_require_miles_router(session: str, top_k: int) -> None:
+    args = _args(use_session_server=session, score_centering_top_k=top_k, use_miles_router=False)
+    with pytest.raises(ValueError, match="require --use-miles-router"):
+        validate_score_centering_args(args)
+
+    args.use_miles_router = True
+    validate_score_centering_args(args)
+
+
+@pytest.mark.parametrize("session", ["v1", "v2"])
+def test_standard_openai_head_size_can_use_sglang_router(session: str) -> None:
+    validate_score_centering_args(_args(use_session_server=session, score_centering_top_k=20, use_miles_router=False))
+
+
+def test_large_native_heads_can_use_sglang_router() -> None:
+    validate_score_centering_args(_args(use_session_server=None, score_centering_top_k=128, use_miles_router=False))
+
+
+def test_other_losses_do_not_require_score_centering_router() -> None:
+    validate_score_centering_args(
+        _args(loss_type="policy_loss", use_session_server="v2", score_centering_top_k=128, use_miles_router=False)
+    )
+
+
 def test_missing_or_mismatched_probabilities_fail_before_training() -> None:
     sample = _turn([0], [2, 3], [0.5, 0.25])
     sample.rollout_log_probs[0] -= 0.1

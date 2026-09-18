@@ -57,6 +57,8 @@ Native SGLang generation, the legacy rollout path, and both session-server versi
 
 Evaluation requests skip this collection and may use independent sampling settings, including greedy decoding. The built-in agentic producer marks evaluation sessions when creating them; custom session clients should create them with `POST /sessions?evaluation=true`.
 
+Session rollouts with more than 20 candidates require `--use-miles-router`. The SGLang Rust router caps OpenAI `top_logprobs` at 20, while MilesRouter forwards the larger request to SGLang unchanged. This includes the default `k=128` with either session-server version. Native `/generate` rollouts support either router.
+
 Unused candidate slots and non-trained observation rows contain token ID `-1` and log probability `-inf`. Tool-observation masks, multi-turn merging, retries, trailing-token trimming, and truncation preserve row alignment. Session serialization and data-parallel sharding retain both arrays. Candidates stay on CPU until the trainer selects its context-parallel rows.
 
 Custom rollout producers must supply these fields with probabilities from the actual generation call. Missing candidates, duplicates, malformed padding, or disagreeing sampled/candidate probabilities fail validation. Rescoring old rollouts with newer weights is not a substitute. With the feature disabled, requests and the session wire format remain unchanged.
