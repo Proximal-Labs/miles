@@ -44,6 +44,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 1000
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 8
+    async_max_concurrent_samples: int | None = None
     global_batch_size: int = 64
     rollout_max_response_len: int = 16384
     max_seq_len: int = 65536
@@ -73,6 +74,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("learning_rate must be positive")
         if self.save_interval <= 0:
             raise ValueError("save_interval must be positive")
+        if self.async_max_concurrent_samples is not None and self.async_max_concurrent_samples < self.n_samples_per_prompt:
+            raise ValueError("async_max_concurrent_samples must allow at least one complete prompt group")
 
 
 def run_root(args: ScriptArgs) -> Path:
@@ -156,6 +159,8 @@ def train_args(args: ScriptArgs) -> str:
         f"--global-batch-size {args.global_batch_size} --balance-data "
         "--use-tis "
     )
+    if args.async_max_concurrent_samples is not None:
+        rollout_args += f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
     optimizer_args = f"--optimizer adam --lr {args.learning_rate} --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 --optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
     grpo_args = "--advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.01 --kl-loss-type k3 --entropy-coef 0.0 --eps-clip 0.2 --eps-clip-high 0.28 "
     perf_args = (
