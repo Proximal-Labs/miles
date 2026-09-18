@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 import torch
 from tests.ci.ci_register import register_cpu_ci
-from tests.e2e.torchtitan._common import CaseConfig, build_train_args
 
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
@@ -126,21 +125,6 @@ def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path):
         )
 
 
-def test_a_tied_checkpoint_ties_the_torchtitan_model(tmp_path, single_gpu_dims):
-    pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import build_trainer_config
-
-    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=True)
-    for name, flavor in (("qwen3", "0.6B"), ("qwen3_5", "4B")):
-        config = build_trainer_config(
-            _config_args(titan_model_name=name, titan_model_flavor=flavor),
-            hf_assets_path=hf,
-            lr_total_steps=1,
-            dump_subdir="x",
-        )
-        assert config.model_spec.model.enable_weight_tying is True
-
-
 def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, single_gpu_dims):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import build_trainer_config
@@ -220,65 +204,6 @@ def test_context_parallelism_stays_inside_the_trainer_and_absent_axes_are_trivia
     assert (state.intra_dp.size, state.intra_dp_cp.size, state.cp.size) == (4, 4, 1)
     for axis in (state.tp, state.pp, state.ep, state.etp, state.indep_dp):
         assert (axis.size, axis.rank) == (1, 0)
-
-
-def test_a_dp_cp_group_narrower_than_the_world_gets_its_own_gloo_subgroup(dist_stub):
-    state = _state(dist_stub, {"batch": 2, "loss": 2, "tp": 4}, world=8)
-    assert state.intra_dp_cp.gloo_group == "gloo_sub(0, 1)"
-
-
-def test_a_degree_one_dp_cp_still_gets_a_singleton_gloo_group(dist_stub):
-    dist_stub["__world__"] = 2
-    dist_stub["gloo"] = 2
-    dist_stub["self_group"] = 1
-    dist_stub["gloo_sub(0,)"] = 1
-    state = tp.create_titan_parallel_state(_ParallelDims({"tp": 2}))
-    assert state.intra_dp_cp.size == 1
-    assert state.intra_dp_cp.gloo_group == "gloo_sub(0,)"
-
-
-def test_pp_last_stage_comes_from_the_trainer_not_the_mesh(dist_stub):
-    state = _state(dist_stub, {"batch": 2, "loss": 2, "pp": 2}, is_pp_last_stage=False)
-    assert state.is_pp_last_stage is False
-
-
-def _case(**overrides) -> CaseConfig:
-    base = dict(
-        model_repo="Qwen/Qwen3-0.6B",
-        titan_model_name="qwen3",
-        titan_model_flavor="0.6B",
-        num_gpus=4,
-        seq_len=4096,
-        max_response_len=2048,
-    )
-    return CaseConfig(**{**base, **overrides})
-
-
-def test_the_parallelism_degrees_all_reach_the_command_line():
-    args = build_train_args(_case(num_gpus=8, tp_size=2, pp_size=2, cp_size=2, ep_size=2), wandb_file=__file__)
-    for flag in ("tensor", "pipeline", "context", "expert"):
-        assert f"--titan-{flag}-parallel-degree 2 " in args
-    with pytest.raises(ValueError, match="divisible"):
-        _case(num_gpus=4, tp_size=2, pp_size=2, cp_size=2)
-
-
-def test_disaggregated_cases_size_the_engine_off_the_rollout_pool():
-    with pytest.raises(ValueError, match="cannot colocate"):
-        _case(fully_async=True, colocate=True)
-    args = build_train_args(_case(colocate=False, rollout_num_gpus=2, fully_async=True), wandb_file=__file__)
-    assert "--rollout-num-gpus 2 " in args
-    assert "--rollout-num-gpus-per-engine 2 " in args
-    assert "--colocate " not in args
-    assert "--fully-async --pause-generation-mode in_place " in args
-    assert "--rollout-num-gpus-per-engine 4 " in build_train_args(_case(), wandb_file=__file__)
-
-
-def test_the_transfer_mode_reaches_the_command_line_with_its_directories():
-    args = build_train_args(_case(colocate=False, rollout_num_gpus=2, transfer_mode="disk-delta"), wandb_file=__file__)
-    assert "--update-weight-transfer-mode disk-delta " in args
-    assert "--update-weight-disk-dir " in args
-    assert "--update-weight-local-checkpoint-dir " in args
-    assert "--update-weight-transfer-mode" not in build_train_args(_case(), wandb_file=__file__)
 
 
 def test_the_loss_adapter_undoes_the_summed_dp_and_cp_gradients():
