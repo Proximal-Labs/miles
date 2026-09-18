@@ -16,6 +16,14 @@ updates and is not equivalent to recomputing that state with the new weights.
 The default remains `retract`; neither mode guarantees immediate reclamation
 of completed session trees.
 
+Terminus 2 summarization and linear-history recording are explicitly enabled
+in the Ray runtime environment. With the default budgets, its configured input
+budget is 49,152 tokens and each response is limited to 16,384 tokens. The
+65,536-token Miles sample cap is not itself a live-context compaction switch.
+Compacted histories must be retained as separate TITO v2 samples so later
+actions remain available to the trainer. The run manifest records these harness
+settings; check actual trial configurations and collected samples at startup.
+
 The rollout coordinator is pinned to the Ray head node. Start the Ray head on
 the node that can reach E2B's control plane and sandbox endpoints; connectivity
 from another allocation member is not sufficient. Verify sandbox creation,
