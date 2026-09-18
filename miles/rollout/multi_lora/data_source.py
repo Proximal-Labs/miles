@@ -2,7 +2,6 @@
 lives in the controller (``mark_batch_trained``); every adapter gets a
 ``num_step`` at registration, explicit or derived from ``num_epoch``."""
 
-import copy
 import logging
 from argparse import Namespace
 from collections import deque
@@ -56,15 +55,19 @@ class MultiLoRAAsyncDataSource(DataSource):
 
     def create_source(self, adapter: AdapterRun) -> RolloutDataSource:
         config = adapter.config
-        adapter_args = copy.copy(self.args)
-        adapter_args.prompt_data = config.data
-        adapter_args.input_key = config.input_key or self.args.input_key
-        adapter_args.label_key = config.label_key or self.args.label_key
-        adapter_args.metadata_key = config.metadata_key or self.args.metadata_key
-        adapter_args.save = config.save or self.args.save
-        adapter_args.load = config.save or self.args.load
-        adapter_args.n_samples_per_prompt = config.n_samples_per_prompt or self.args.n_samples_per_prompt
-        adapter_args.start_rollout_id = 0
+        adapter_args = type(self.args).model_validate(
+            dict(self.args)
+            | {
+                "prompt_data": config.data,
+                "input_key": config.input_key or self.args.input_key,
+                "label_key": config.label_key or self.args.label_key,
+                "metadata_key": config.metadata_key or self.args.metadata_key,
+                "save": config.save or self.args.save,
+                "load": config.save or self.args.load,
+                "n_samples_per_prompt": config.n_samples_per_prompt or self.args.n_samples_per_prompt,
+                "start_rollout_id": 0,
+            }
+        )
         return RolloutDataSource(adapter_args)
 
     def update_queue(self, active_names: set[str]) -> None:
