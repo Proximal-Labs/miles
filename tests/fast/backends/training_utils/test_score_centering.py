@@ -12,13 +12,17 @@ from miles.backends.training_utils.loss_hub.score_centering import (
 
 @pytest.mark.parametrize("mode", ["none", "tis", "mis"])
 @pytest.mark.parametrize("k", [2, 7])
-def test_gradient_matches_reconstructed_full_distribution(mode: str, k: int) -> None:
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+)
+def test_gradient_matches_reconstructed_full_distribution(mode: str, k: int, device: str) -> None:
     generator = torch.Generator().manual_seed(27)
-    logits = torch.randn(4, 7, generator=generator, dtype=torch.float64, requires_grad=True)
-    q = torch.softmax(torch.randn(4, 7, generator=generator, dtype=torch.float64) * 2, -1)
+    logits = torch.randn(4, 7, generator=generator, dtype=torch.float64).to(device).requires_grad_()
+    q = torch.softmax(torch.randn(4, 7, generator=generator, dtype=torch.float64).to(device) * 2, -1)
     q_head, ids = q.topk(k, dim=-1)
     sampled = q.argmin(-1)  # outside the retained head when k < vocabulary size
-    advantage = torch.tensor([1.7, -0.8, 0.0, 0.2], dtype=torch.float64)
+    advantage = torch.tensor([1.7, -0.8, 0.0, 0.2], dtype=torch.float64, device=device)
     logp = logits.log_softmax(-1)
     loss, _ = score_centering_loss(
         logp.gather(-1, sampled[:, None]).squeeze(-1),

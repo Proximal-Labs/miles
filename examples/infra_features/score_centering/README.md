@@ -77,6 +77,8 @@ python -m pytest tests/fast/backends/training_utils/test_score_centering.py \
     tests/fast/backends/training_utils/test_score_centering_pipeline.py
 MILES_TEST_DISTRIBUTED=1 python -m pytest \
     tests/fast/backends/training_utils/test_score_centering_distributed.py
+MILES_TEST_CUDA_DISTRIBUTED=1 python -m pytest \
+    tests/fast/backends/training_utils/test_score_centering_distributed.py
 ```
 
-The distributed test uses four CPU/Gloo processes (TP=2, CP=2), all three context layouts and weighting modes, plus BF16 selected-probability gradients. These are correctness tests, not a reproduction of the paper's GPU training results.
+The distributed tests use four CPU/Gloo processes or four CUDA/NCCL processes (TP=2, CP=2), all three context layouts and weighting modes, plus BF16 selected-probability gradients. The independent dense-gradient oracle also runs on CUDA when available. These are correctness tests, not a reproduction of the paper's GPU training results.
