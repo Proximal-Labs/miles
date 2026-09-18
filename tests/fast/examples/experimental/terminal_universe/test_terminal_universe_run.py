@@ -1,3 +1,5 @@
+"""Regression checks for the Terminal Universe launch configuration."""
+
 import json
 import shlex
 from pathlib import Path
