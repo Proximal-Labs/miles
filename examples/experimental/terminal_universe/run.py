@@ -231,6 +231,12 @@ def write_manifest(args: ScriptArgs, rendered_train_args: str) -> None:
             "archive_sha256": "375e179a0d05a6837b0215d022af9bec4eb43f7d60cc5614c26a0243ee0030da",
             "template_map_sha256": "30e171bd90fc05d72227e8b92fd3bccf432024caabf8dcd1434066a1a02a7e62",
         },
+        "harness": {
+            "enable_summarize": True,
+            "linear_history": True,
+            "max_input_tokens": args.max_seq_len - args.rollout_max_response_len,
+            "max_output_tokens": args.rollout_max_response_len,
+        },
     }
     (root / "run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -260,6 +266,10 @@ def execute(args: ScriptArgs) -> None:
         "AGENT_MAX_INPUT_TOKENS": str(args.max_seq_len - args.rollout_max_response_len),
         "AGENT_MAX_OUTPUT_TOKENS": str(args.rollout_max_response_len),
         "HARBOR_MAX_SEQ_LEN": str(args.max_seq_len),
+        # Both flags are required: summarize the active context and retain
+        # compacted histories as separate TITO v2 training branches.
+        "HARBOR_TERMINUS_2_ENABLE_SUMMARIZE": "true",
+        "HARBOR_TERMINUS_2_LINEAR_HISTORY": "true",
         "HARBOR_RESPONSE_LENGTH_POLICY": "abort",
         "HARBOR_AGENT_ALLOWED_HOSTS": args.router_external_host,
         # Terminus 2 calls the model from this process, not from its sandbox.
