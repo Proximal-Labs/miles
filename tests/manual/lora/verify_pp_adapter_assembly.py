@@ -17,7 +17,7 @@ import sys
 import torch
 import torch.distributed as dist
 
-from miles.backends.megatron_utils.lora_utils import pp_assemble_full_adapter
+from miles.backends.megatron_utils.lora.utils import pp_assemble_full_adapter
 from miles.backends.training_utils.parallel import ParallelState, set_parallel_state
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 

@@ -66,6 +66,7 @@
         "group": "Agentic Environments",
         "pages": [
          "user-guide/environments",
+         "user-guide/sandbox-providers",
          "user-guide/harbor",
          "user-guide/openenv",
          "user-guide/nemo-gym",
@@ -88,6 +89,13 @@
         "group": "DeepSeek",
         "pages": [
          "models/deepseek/index",
+         {
+          "group": "DeepSeek-V4.1",
+          "pages": [
+           "models/deepseek/deepseek-v4-1-flash"
+          ],
+          "expanded": false
+         },
          {
           "group": "DeepSeek-V4",
           "pages": [
@@ -137,6 +145,7 @@
           ],
           "expanded": false
          },
+         "models/qwen/qwen3-8-flash-next",
          "models/qwen/qwen3-next",
          {
           "group": "Qwen3",
@@ -153,6 +162,7 @@
         "group": "GLM",
         "pages": [
          "models/glm/index",
+         "models/glm/glm5-3-flash",
          "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
@@ -270,6 +280,7 @@
      "developer/index",
      "developer/contributor-guide",
      "developer/architecture",
+     "developer/adding-a-sandbox-provider",
      "developer/versions",
      "developer/debug",
      {
@@ -280,7 +291,8 @@
        "ci/01-label",
        "ci/02-docker-build",
        "ci/03-metric-history-gate",
-       "ci/04-release"
+       "ci/04-release",
+       "ci/05-command-identity"
       ]
      }
     ]
@@ -343,6 +355,14 @@
      "blog/index",
      "subscribe"
     ]
+   },
+   {
+    "tab": "Hardware",
+    "pages": [
+     "hardware-platforms/overview",
+     "hardware-platforms/nvidia-gpus",
+     "hardware-platforms/amd-gpus"
+    ]
    }
   ]
  },
@@ -366,21 +386,6 @@
   {
    "source": "/developer/experimental-features",
    "destination": "/user-guide/training-backend#fsdp"
-  },
-  {
-   "source": "/platforms/index",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/nvidia",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/amd",
-   "destination": "/getting-started/installation",
-   "permanent": true
   },
   {
    "source": "/advanced/fp8-low-precision",

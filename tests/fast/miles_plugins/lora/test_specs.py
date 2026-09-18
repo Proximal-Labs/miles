@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
+from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
 from miles_plugins.lora.spec.attention import GQAAttentionSpec, MLAAttentionSpec
 from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec
 
