@@ -39,7 +39,9 @@ def prepare():
         f"{VERIFIERS_VENV}/bin/python -m pip install "
         f"-r {command_utils.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
     )
-    U.exec_command_cpu("uv tool install 'prime==0.6.19'")
+    # prime 0.6.19 asks for prime-sandboxes>=0.2.32 with no ceiling, and 0.3.0 dropped
+    # CommandRequest, which prime_cli imports at module scope.
+    U.exec_command_cpu("uv tool install 'prime==0.6.19' --with 'prime-sandboxes<0.3'")
     if not VERIFIERS_DIR.exists():
         U.exec_command_cpu(
             f"git clone --depth 1 --branch v0.2.0 "
