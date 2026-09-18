@@ -29,6 +29,9 @@ from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.async_utils import maybe_await
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -103,7 +106,8 @@ class RolloutExecutor:
         init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        fn_args = compute_custom_function_config(args, self.args.data_source_path)
+        self.data_source = data_source_cls(fn_args)
         SampleOwnershipRecorder.install(
             args=args, data_source=self.data_source, current_rollout_id=lambda: self.rollout_id
         )
@@ -114,14 +118,17 @@ class RolloutExecutor:
                 self.generate_rollout = None
                 self.eval_generate_rollout = None
             else:
-                input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
-                self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+                fn_args = _compute_rollout_function_config(args, self.args.rollout_function_path)
+                rollout_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
+                self.generate_rollout = load_rollout_function(rollout_input, self.args.rollout_function_path)
                 if self.args.eval_function_path == self.args.rollout_function_path:
                     # Reuse the instance so train and eval share one state (and stateful
                     # rollout fns like FullyAsyncRolloutFn are not constructed twice).
                     self.eval_generate_rollout = self.generate_rollout
                 else:
-                    self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+                    fn_args = _compute_rollout_function_config(args, self.args.eval_function_path)
+                    eval_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
+                    self.eval_generate_rollout = load_rollout_function(eval_input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -248,10 +255,11 @@ class RolloutExecutor:
             if not self.use_legacy_rollout_v1:
                 result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
             else:
+                fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
                 result = await asyncio.to_thread(
                     call_rollout_fn,
                     self.eval_generate_rollout,
-                    self.args,
+                    fn_args,
                     rollout_id,
                     self.data_source,
                     evaluation=True,
@@ -315,8 +323,9 @@ class RolloutExecutor:
                 )
                 data = await maybe_await(self.generate_rollout(input))
             else:
+                fn_args = _compute_rollout_function_config(self.args, self.args.rollout_function_path)
                 data = await asyncio.to_thread(
-                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
+                    call_rollout_fn, self.generate_rollout, fn_args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
             data = data.samples
@@ -399,8 +408,9 @@ class RolloutExecutor:
             self._eval_fleet = None
             return
 
+        fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
         self._eval_fleet = RolloutExecutorEvalFleet(
-            self.args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
+            fn_args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
         )
 
 
@@ -409,6 +419,14 @@ def compute_rollout_checkpoint_dir(directory: str | Path, *, rollout_id: int) ->
 
 
 _T = TypeVar("_T")
+
+
+def _compute_rollout_function_config(args: BaseLeafConfig, function: CustomFunctionConfig) -> ImmutableNamespace:
+    return compute_custom_function_config(
+        args,
+        function,
+        nested_functions=(args.custom_generate_function_path, args.custom_agent_function_path, args.custom_rm_path),
+    )
 
 
 def _single_or_none(xs: Iterable[_T]) -> _T | None:

@@ -13,6 +13,7 @@ from miles.rollout.inference_rollout.inference_rollout_common import (
     compute_sampling_params,
     generate_and_rm,
 )
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.misc import as_completed_async
@@ -49,6 +50,9 @@ async def eval_rollout_single_dataset(
     *,
     kv_cache_namespace: str | None = None,
 ) -> dict[str, dict[str, list[Any]]]:
+    if (function := dataset_cfg.custom_generate_function_path) is not None:
+        state = copy.copy(state)
+        state.args = compute_custom_function_config(state.args, function)
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
@@ -91,7 +95,9 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
+            sample.generate_function_path = (
+                dataset_cfg.custom_generate_function_path.path if dataset_cfg.custom_generate_function_path else None
+            )
             stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())

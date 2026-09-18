@@ -392,7 +392,9 @@ def parse_args_and_get_parser(
     vars(args).setdefault("lora_B_init_method", "zero")
 
     assert parser is not None
-    resolve_custom_function_configs(args)
+    resolve_custom_function_configs(
+        args, extra_fields=((dataset, "custom_generate_function_path") for dataset in args.eval_datasets)
+    )
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
     values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {

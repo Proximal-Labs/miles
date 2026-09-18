@@ -19,6 +19,7 @@ from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
@@ -328,8 +329,15 @@ async def generate_and_rm(
 
             generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
             if generate_fn is not None:
+                fn_state = copy.copy(state)
+                fn_state.args = args
                 output = await generate_fn(
-                    GenerateFnInput(state=state, sample=sample, sampling_params=sampling_params, evaluation=evaluation)
+                    GenerateFnInput(
+                        state=fn_state,
+                        sample=sample,
+                        sampling_params=sampling_params,
+                        evaluation=evaluation,
+                    )
                 )
                 sample = output.samples
             else:
@@ -597,6 +605,9 @@ async def eval_rollout_single_dataset(
     """
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
+    if (function := dataset_cfg.custom_generate_function_path) is not None:
+        args = compute_custom_function_config(args, function)
+
     global EVAL_PROMPT_DATASET
 
     cache_key = dataset_cfg.cache_key + (args.hf_checkpoint, args.apply_chat_template, args.chat_template_path)
@@ -642,7 +653,9 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
+            sample.generate_function_path = (
+                dataset_cfg.custom_generate_function_path.path if dataset_cfg.custom_generate_function_path else None
+            )
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params

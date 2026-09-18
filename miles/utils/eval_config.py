@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from miles.utils.args.custom_function import CustomFunctionConfig
+
 _MISSING = object()
 
 # TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)
@@ -116,7 +118,7 @@ class EvalDatasetConfig:
     min_new_tokens: int | None = None
 
     # per-dataset custom generate function (e.g., for tool calling)
-    custom_generate_function_path: str | None = None
+    custom_generate_function_path: str | CustomFunctionConfig | None = None
 
     metadata_overrides: dict[str, Any] = field(default_factory=dict)
 

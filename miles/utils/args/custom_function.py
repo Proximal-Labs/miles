@@ -56,9 +56,9 @@ def add_user_provided_function_arguments(
     return parser
 
 
-def resolve_custom_function_configs(args: argparse.Namespace) -> None:
+def resolve_custom_function_configs(args: argparse.Namespace, *, extra_fields: Iterable[tuple[Any, str]] = ()) -> None:
     custom_arg_names: set[str] = set()
-    for info in _compute_custom_function_field_infos(args):
+    for info in _compute_custom_function_field_infos(args, extra_fields=extra_fields):
         assert info.name is not None
         config = None
         if (config_class := info.config_class) is not None:
@@ -68,7 +68,7 @@ def resolve_custom_function_configs(args: argparse.Namespace) -> None:
                 }  # config-access-exempt: schema-selected fields
             )
             custom_arg_names.update(config_class.model_fields)
-        setattr(args, info.name, CustomFunctionConfig(path=info.path, config=config))
+        setattr(info.target, info.name, CustomFunctionConfig(path=info.path, config=config))
 
     for name in custom_arg_names:
         if hasattr(args, name):  # config-access-exempt: schema-selected field
@@ -77,6 +77,7 @@ def resolve_custom_function_configs(args: argparse.Namespace) -> None:
 
 @dataclass(frozen=True)
 class _CustomFunctionFieldInfo:
+    target: Any
     name: str | None
     path: str
     fn: Any
@@ -84,21 +85,29 @@ class _CustomFunctionFieldInfo:
 
 
 def _compute_custom_function_field_infos(
-    args: argparse.Namespace, *, extra_paths: Iterable[str | None] = (), partial: bool = False
+    args: argparse.Namespace,
+    *,
+    extra_paths: Iterable[str | None] = (),
+    extra_fields: Iterable[tuple[Any, str]] = (),
+    partial: bool = False,
 ) -> list[_CustomFunctionFieldInfo]:
     from miles.utils.args.runtime import AllConfig
 
     paths = [
         (
+            args,
             name,
             getattr(args, name, None) if partial else getattr(args, name),
         )  # config-access-exempt: schema-selected field
         for name, field in AllConfig.model_fields.items()
         if field.annotation in {CustomFunctionConfig, CustomFunctionConfig | None}
     ]
-    paths.extend((None, path) for path in extra_paths)
+    paths.extend((None, None, path) for path in extra_paths)
+    paths.extend(
+        (target, name, getattr(target, name)) for target, name in extra_fields
+    )  # config-access-exempt: caller-selected custom function fields
     infos = []
-    for name, path in paths:
+    for target, name, path in paths:
         if path is None:
             continue
         try:
@@ -110,7 +119,7 @@ def _compute_custom_function_field_infos(
         if partial and fn is None:
             continue
         config_class = _compute_config_class(fn, path=path)
-        infos.append(_CustomFunctionFieldInfo(name=name, path=path, fn=fn, config_class=config_class))
+        infos.append(_CustomFunctionFieldInfo(target=target, name=name, path=path, fn=fn, config_class=config_class))
     return infos
 
 
