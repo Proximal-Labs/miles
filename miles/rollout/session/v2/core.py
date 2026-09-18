@@ -152,7 +152,7 @@ class SessionCoreV2(SessionCore):
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
+                body, self.config, self.registry.tito_tokenizer, evaluation=session.evaluation
             )
 
             request_messages = request_body.get("messages", [])

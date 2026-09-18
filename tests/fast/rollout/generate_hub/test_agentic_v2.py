@@ -65,7 +65,7 @@ def _session_metadata(spec_info=None):
 
 
 def _patch_agent(monkeypatch, tracer):
-    async def fake_create(args):
+    async def fake_create(args, *, evaluation=False):
         return tracer
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
@@ -212,7 +212,7 @@ class TestSessionServerAddrsValidation:
         """generate() raises the documented AssertionError when session_server_addrs is absent, null or empty, without creating a tracer."""
         created_for: list[object] = []
 
-        async def fake_create(args):
+        async def fake_create(args, *, evaluation=False):
             created_for.append(args)
             return _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
 

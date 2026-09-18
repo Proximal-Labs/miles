@@ -60,6 +60,22 @@ async def test_create_without_instance_id_on_args(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_evaluation_session_is_marked_at_creation(monkeypatch):
+    calls = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post") -> dict:
+        calls.append(url)
+        return {"session_id": "eval-session"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+    tracer = await OpenAIEndpointTracer.create(
+        SimpleNamespace(session_server_addrs=["127.0.0.1:12345"]), evaluation=True
+    )
+    assert calls == ["http://127.0.0.1:12345/sessions?evaluation=true"]
+    assert tracer.base_url.endswith("/sessions/eval-session")
+
+
+@pytest.mark.asyncio
 async def test_create_distributes_sessions_across_port_range(monkeypatch):
     """With a multi-port range, sessions land on more than one instance, and every
     request of a session (create, samples POST, DELETE) hits the port chosen

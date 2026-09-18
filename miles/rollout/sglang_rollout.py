@@ -16,6 +16,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.generate_utils.score_centering import append_score_centering_topk, configure_score_centering_request
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
@@ -33,6 +34,7 @@ from miles.utils.processing_utils import (
     load_processor,
     load_tokenizer,
 )
+from miles.utils.score_centering import score_centering_top_k
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
@@ -139,7 +141,9 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
-async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
+async def generate(
+    args: Namespace, sample: Sample, sampling_params: dict[str, Any], *, evaluation: bool = False
+) -> Sample:
     """Generate using traditional SGLang router with token-based workflow"""
     if args.ci_test:
         assert isinstance(sample.prompt, str)
@@ -181,6 +185,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
+    if not evaluation:
+        configure_score_centering_request(args, payload)
 
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
@@ -228,6 +234,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
+    if not evaluation:
+        append_score_centering_topk(sample, output["meta_info"], score_centering_top_k(args))
 
     # When partial rollout and masking off policy is enabled, update the loss mask
     if sample.loss_mask is not None:
@@ -309,7 +317,7 @@ async def generate_and_rm(
                 )
                 sample = output.samples
             else:
-                sample = await generate(args, sample, sampling_params)
+                sample = await generate(args, sample, sampling_params, evaluation=evaluation)
 
     if sink is not None:
         sink.attempt_end(sample)

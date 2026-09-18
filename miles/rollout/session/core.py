@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.score_centering import configure_score_centering_request
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
     MessageValidationError,
@@ -156,7 +157,7 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
-def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
+def prepare_chat_request(body: bytes, args, tito_tokenizer, *, evaluation: bool = False) -> tuple:
     """Parse and normalize a chat request body — the session-independent half
     of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
     ``(request_body, client_stream, tito_tokenizer)``; the tokenizer may be a
@@ -180,6 +181,11 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # setdefault) so agent-side overrides cannot break token accumulation.
     request_body["logprobs"] = True
     request_body["return_meta_info"] = True
+    if not evaluation:
+        try:
+            configure_score_centering_request(args, request_body, openai=True)
+        except ValueError as e:
+            raise MessageValidationError(str(e)) from e
     if getattr(args, "use_rollout_routing_replay", False):
         request_body["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
@@ -287,8 +293,9 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self) -> Response:
+    async def create_session(self, *, evaluation: bool = False) -> Response:
         session_id = self.registry.create_session()
+        self.registry.get_session(session_id).evaluation = evaluation
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     def _session_metadata(self, session_id: str, session) -> dict:
@@ -380,7 +387,7 @@ class SessionCore:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.config, self.registry.tito_tokenizer
+                body, self.config, self.registry.tito_tokenizer, evaluation=session.evaluation
             )
 
             request_messages = request_body.get("messages", [])

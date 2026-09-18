@@ -523,6 +523,8 @@ class FSDPTrainRayActor(TrainRayActor):
                             "returns",
                             "ref_log_probs",
                             "rollout_log_probs",
+                            "rollout_topk_token_ids",
+                            "rollout_topk_log_probs",
                         ],
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,
