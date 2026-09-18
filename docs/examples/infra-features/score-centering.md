@@ -85,3 +85,14 @@ MILES_TEST_CUDA_DISTRIBUTED=1 python -m pytest \
 ```
 
 The distributed tests use four CPU/Gloo processes or four CUDA/NCCL processes (TP=2, CP=2), all three context layouts and weighting modes, plus BF16 selected-probability gradients. The independent dense-gradient oracle also runs on CUDA when available. These are correctness tests, not a reproduction of the paper's GPU training results.
+
+For a real SGLang server, also run the opt-in protocol probe:
+
+```bash
+MILES_LIVE_SCORE_CENTERING_ENDPOINT=http://127.0.0.1:30000 \
+MILES_LIVE_SCORE_CENTERING_MODEL=/path/to/model \
+MILES_LIVE_SCORE_CENTERING_SERVED_MODEL=your-served-model \
+python -m pytest --confcutdir=tests/manual tests/manual/test_score_centering_live.py
+```
+
+Set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` on the server before starting it. The probe checks native and OpenAI response metadata using the production candidate collector and validator, and checks temperature scaling at 0.7, 1.0 and 1.3. It warms the shared prompt first so that cached and uncached prefills do not confound the temperature comparison. Set `MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR` to keep the raw responses.
