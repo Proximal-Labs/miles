@@ -2,7 +2,7 @@ from collections import deque
 from collections.abc import Iterator
 
 import torch
-from torch.distributed.tensor import DTensor
+from torch.distributed._functional_collectives import AsyncCollectiveTensor
 
 from miles.backends.fsdp_utils.adaptations.weight_bridge import get_param_transform
 from miles.backends.fsdp_utils.dtensor import gather_full_param
@@ -32,7 +32,7 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
         model_type = self.model.config.model_type
         while pending:
             name, param, full = pending.popleft()
-            if isinstance(param, DTensor):
+            if isinstance(full, AsyncCollectiveTensor):
                 full = full.wait()
             if not materialize:
                 continue

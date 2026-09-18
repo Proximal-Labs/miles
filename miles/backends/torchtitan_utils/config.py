@@ -31,6 +31,14 @@ def resolve_model_spec(args: Namespace):
     return registry(args.titan_model_flavor, attn_backend="flex")
 
 
+def _latest_step_dir(load_root: str, dump_subdir: str) -> str | None:
+    folder = os.path.join(load_root, "torchtitan", dump_subdir, "checkpoint")
+    if not os.path.isdir(folder):
+        return None
+    steps = [int(name.removeprefix("step-")) for name in os.listdir(folder) if name.startswith("step-")]
+    return os.path.join(folder, f"step-{max(steps)}") if steps else None
+
+
 def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps: int, dump_subdir: str):
     if args.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
@@ -50,8 +58,9 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
 
     config.hf_assets_path = hf_assets_path
-    dump_root = args.load or args.save or tempfile.mkdtemp(prefix="miles-torchtitan-")
-    config.dump_folder = os.path.join(dump_root, "torchtitan", dump_subdir)
+    config.dump_folder = os.path.join(
+        args.save or tempfile.mkdtemp(prefix="miles-torchtitan-"), "torchtitan", dump_subdir
+    )
 
     config.parallelism.data_parallel_replicate_degree = args.titan_data_parallel_replicate_degree
     config.parallelism.tensor_parallel_degree = args.titan_tensor_parallel_degree
@@ -101,8 +110,15 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     config.debug.seed = args.seed
 
     config.checkpoint.enable = True
-    config.checkpoint.initial_load_model_only = True
-    config.checkpoint.initial_load_in_hf = True
+    config.checkpoint.last_save_model_only = False
+    resume_from = _latest_step_dir(args.load, dump_subdir) if args.load else None
+    if resume_from is None:
+        config.checkpoint.initial_load_model_only = True
+        config.checkpoint.initial_load_in_hf = True
+    else:
+        config.checkpoint.initial_load_path = resume_from
+        config.checkpoint.initial_load_model_only = False
+        config.checkpoint.initial_load_in_hf = False
 
     config.metrics.enable_tensorboard = False
     config.metrics.enable_wandb = False

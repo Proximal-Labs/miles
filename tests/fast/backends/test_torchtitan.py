@@ -98,12 +98,14 @@ def _config_args(**overrides) -> Namespace:
 
 
 def _checkpoint_dir(tmp_path, **config) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3", **config}))
     return str(tmp_path)
 
 
 @pytest.fixture
 def single_gpu_dims(monkeypatch):
+    pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils import config as titan_config
 
     monkeypatch.setattr(
@@ -277,3 +279,47 @@ def test_the_transfer_mode_reaches_the_command_line_with_its_directories():
     assert "--update-weight-disk-dir " in args
     assert "--update-weight-local-checkpoint-dir " in args
     assert "--update-weight-transfer-mode" not in build_train_args(_case(), wandb_file=__file__)
+
+
+def test_the_loss_adapter_undoes_the_summed_dp_and_cp_gradients():
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.loss import RLLossAdapter
+
+    adapter = RLLossAdapter(RLLossAdapter.Config())
+    adapter.set_gradient_scale(1.0 / 8)
+    batch = {"tokens": torch.zeros(1)}
+    adapter.arm([batch], lambda pred, b: (pred.sum(), {"seen": b is batch}), is_training=True)
+    loss, _ = adapter(torch.full((2,), 4.0), torch.zeros(2, dtype=torch.long))
+    assert loss.item() == pytest.approx(1.0)
+    assert adapter.collect() == [{"seen": True}]
+
+
+def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path / "hf", tie_word_embeddings=False)
+    load_root = tmp_path / "load"
+    for step in (3, 12):
+        (load_root / "torchtitan" / "actor" / "checkpoint" / f"step-{step}").mkdir(parents=True)
+    save_root = tmp_path / "save"
+
+    config = build_trainer_config(
+        _config_args(load=str(load_root), save=str(save_root)),
+        hf_assets_path=hf,
+        lr_total_steps=1,
+        dump_subdir="actor",
+    )
+    assert config.dump_folder == str(save_root / "torchtitan" / "actor")
+    assert config.checkpoint.initial_load_path == str(load_root / "torchtitan" / "actor" / "checkpoint" / "step-12")
+    assert (config.checkpoint.initial_load_model_only, config.checkpoint.initial_load_in_hf) == (False, False)
+    assert config.checkpoint.last_save_model_only is False
+
+    fresh = build_trainer_config(
+        _config_args(load=str(tmp_path / "empty"), save=str(save_root)),
+        hf_assets_path=hf,
+        lr_total_steps=1,
+        dump_subdir="actor",
+    )
+    assert fresh.checkpoint.initial_load_path is None
+    assert (fresh.checkpoint.initial_load_model_only, fresh.checkpoint.initial_load_in_hf) == (True, True)

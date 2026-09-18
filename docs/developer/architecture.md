@@ -47,7 +47,7 @@ miles/
 │   ├── megatron_utils/   # Megatron actor, update_weight/ (HF iterator), checkpointing, fp32 markers
 │   ├── fsdp_utils/       # FSDP2 actor, adaptations/ per architecture, hf_weight_iterator.py,
 │   │                     # checkpoint.py (DCP save/resume)
-│   ├── torchtitan_utils/ # torchtitan actor, Trainer config tree, weight_bridge.py (HF iterator)
+│   ├── torchtitan_utils/ # torchtitan actor, Trainer config tree, hf_weight_iterator.py
 │   ├── sglang_utils/     # SGLang engine wrapper + argument glue
 │   └── training_utils/   # what the backends share: loss.py / loss_hub/, ParallelState,
 │                         # weight_update/ (engine session, transport protocols, WeightUpdater),

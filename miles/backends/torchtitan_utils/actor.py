@@ -7,10 +7,10 @@ import torch.distributed as dist
 
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.config import build_trainer_config
+from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
-from miles.backends.torchtitan_utils.weight_bridge import TitanHfWeightIterator
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.backends.training_utils.torch_native.routing_replay import enable as enable_routing_replay
@@ -67,7 +67,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.model_parts = self.trainer.model_parts
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel
-        self.trainer.enable_context_parallel_gather()
+        self.trainer.configure_loss_reduction()
         set_parallel_state(
             create_titan_parallel_state(self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage())
         )
@@ -100,6 +100,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
         ref_trainer = TitanTrainer(ref_config)
+        ref_trainer.configure_loss_reduction()
         ref_trainer.checkpointer.load()
         for part in ref_trainer.model_parts:
             part.eval()

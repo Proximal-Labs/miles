@@ -15,6 +15,7 @@ from miles.backends.training_utils.torch_native.step_runner import StepMetrics
 from miles.utils.hf_config import load_hf_config
 
 _FLEX_BLOCK = 128
+_CP_LENGTH_BUCKET = 1024
 
 
 class TitanTrainer(Trainer):
@@ -39,7 +40,7 @@ class TitanTrainer(Trainer):
                 )
             return target
         if self.parallel_dims.cp_enabled:
-            align = self.parallel_dims.cp * _FLEX_BLOCK
+            align = max(self.parallel_dims.cp * _FLEX_BLOCK, _CP_LENGTH_BUCKET)
             return n_tokens + (align - n_tokens % align) % align
         return n_tokens
 
@@ -165,9 +166,14 @@ class TitanTrainer(Trainer):
             grad_norm = grad_norm.full_tensor()
         return StepMetrics(grad_norm=float(grad_norm.item()), extra_metrics=self.lr_schedulers.get_metrics())
 
-    def enable_context_parallel_gather(self) -> None:
-        if not self.parallel_dims.cp_enabled:
+    def configure_loss_reduction(self) -> None:
+        dims = self.parallel_dims
+        self.loss_fn.set_gradient_scale(1.0 / (dims.dp_replicate * dims.dp_shard * dims.cp))
+        if not dims.cp_enabled:
             return
+        torch._dynamo.config.recompile_limit = max(
+            torch._dynamo.config.recompile_limit, 2 * (self.config.training.seq_len // _CP_LENGTH_BUCKET + 1)
+        )
         balancer_type = self.config.parallelism.context_parallel_load_balancer
         if balancer_type != "headtail":
             raise ValueError(

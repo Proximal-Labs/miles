@@ -26,11 +26,15 @@ class RLLossAdapter(BaseLoss):
         self._cp_mesh = None
         self._cp_balancer = "headtail"
         self._cp_restore: dict[int, torch.Tensor] = {}
+        self._grad_scale = 1.0
 
     def set_context_parallel(self, mesh, balancer_type: str) -> None:
         self._cp_mesh = mesh
         self._cp_balancer = balancer_type
         self._cp_restore = {}
+
+    def set_gradient_scale(self, scale: float) -> None:
+        self._grad_scale = scale
 
     def _restore_indices(self, seq_len: int, device) -> torch.Tensor:
         cached = self._cp_restore.get(seq_len)
@@ -75,6 +79,6 @@ class RLLossAdapter(BaseLoss):
         if self._is_training:
             loss, log_dict = self._closure(pred, batch)
             self._results[index] = log_dict
-            return loss, {}
+            return loss * self._grad_scale, {}
         self._results[index] = self._closure(pred, batch)
         return torch.zeros((), device=pred.device, dtype=torch.float32), {}
