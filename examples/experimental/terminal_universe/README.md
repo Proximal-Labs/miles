@@ -9,6 +9,13 @@ The default topology is one eight-GPU trainer node and two eight-GPU rollout
 nodes. It uses fully asynchronous GRPO, Qwen3.6 TITO v2, R3 routing replay, and
 `retract` pause generation.
 
+Task concurrency is independent of the training batch size. By default, Miles
+keeps up to 64 episodes active across the whole rollout fleet (eight prompts
+times eight samples). Pass `--async-max-concurrent-samples 128` to raise that
+limit to 128 while retaining 64 episodes per training batch. This allows more
+tasks to make progress while others wait for shell commands or tests; provision
+enough sandbox capacity for the higher number of simultaneous episodes.
+
 Pass `--pause-generation-mode in_place` to retain in-flight requests during
 weight updates. This also enables incremental R3 payloads in the session server,
 reducing repeated prefix storage. It preserves cached inference state across

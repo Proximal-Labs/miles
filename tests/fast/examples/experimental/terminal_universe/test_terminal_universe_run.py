@@ -13,7 +13,8 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 run = import_launch_script(REPO_ROOT / "examples" / "experimental" / "terminal_universe" / "run.py")
 
 
-def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("concurrency", [None, 128])
+def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, concurrency: int | None) -> None:
     captured: dict[str, Any] = {}
 
     def capture(**kwargs: Any) -> None:
@@ -29,6 +30,7 @@ def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monk
         output_dir=str(tmp_path),
         wandb_key="",
         pause_generation_mode="in_place",
+        async_max_concurrent_samples=concurrency,
     )
 
     run.execute(args)
@@ -48,6 +50,13 @@ def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monk
     assert argv[argv.index("--pause-generation-mode") + 1] == "in_place"
     assert argv[argv.index("--num-rollout") + 1] == "1000"
     assert argv[argv.index("--save-interval") + 1] == "50"
+    assert argv[argv.index("--rollout-batch-size") + 1] == "8"
+    assert argv[argv.index("--n-samples-per-prompt") + 1] == "8"
+    assert argv[argv.index("--global-batch-size") + 1] == "64"
+    if concurrency is None:
+        assert "--async-max-concurrent-samples" not in argv
+    else:
+        assert argv[argv.index("--async-max-concurrent-samples") + 1] == str(concurrency)
     manifest = json.loads((tmp_path / args.run_id / "run_manifest.json").read_text())
     assert manifest["harness"] == {
         "enable_summarize": True,
@@ -55,3 +64,9 @@ def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monk
         "max_input_tokens": 49152,
         "max_output_tokens": 16384,
     }
+
+
+@pytest.mark.parametrize("concurrency", [0, 7])
+def test_concurrency_budget_must_fit_one_prompt_group(concurrency: int) -> None:
+    with pytest.raises(ValueError, match="at least one complete prompt group"):
+        run.ScriptArgs(num_nodes=3, async_max_concurrent_samples=concurrency)
