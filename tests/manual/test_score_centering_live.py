@@ -1,6 +1,7 @@
 """Exercise the production score-centering contract against a live SGLang server.
 
 Set MILES_LIVE_SCORE_CENTERING_ENDPOINT and MILES_LIVE_SCORE_CENTERING_MODEL.
+MILES_LIVE_SCORE_CENTERING_TOP_K optionally selects the candidate count (default 128).
 This probe generates short responses; it does not train or modify the server.
 """
 
@@ -30,6 +31,8 @@ def live_responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     if not endpoint or not model:
         pytest.skip("set the live score-centering endpoint and local model path to opt in")
     endpoint = endpoint.rstrip("/")
+    top_k = int(os.environ.get("MILES_LIVE_SCORE_CENTERING_TOP_K", "128"))
+    assert top_k > 0, "The live probe requires a positive candidate count"
     artifact_dir = Path(
         os.environ.get("MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR") or tmp_path_factory.mktemp("score-centering-live")
     )
@@ -52,9 +55,9 @@ def live_responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         timeout=300,
     )
     warmup.raise_for_status()
-    outputs: dict[str, Any] = {"prompt": prompt}
+    outputs: dict[str, Any] = {"prompt": prompt, "top_k": top_k}
     for temperature in (0.7, 1.0, 1.3):
-        args = Namespace(loss_type="score_centering", score_centering_top_k=128, rollout_temperature=temperature)
+        args = Namespace(loss_type="score_centering", score_centering_top_k=top_k, rollout_temperature=temperature)
         payload = {
             "input_ids": prompt,
             "return_logprob": True,
@@ -64,7 +67,7 @@ def live_responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         response = requests.post(f"{endpoint}/generate", json=payload, timeout=300)
         response.raise_for_status()
         outputs[str(temperature)] = response.json()
-    args = Namespace(loss_type="score_centering", score_centering_top_k=128, rollout_temperature=1.0)
+    args = Namespace(loss_type="score_centering", score_centering_top_k=top_k, rollout_temperature=1.0)
     payload = {
         "model": os.environ.get("MILES_LIVE_SCORE_CENTERING_SERVED_MODEL", "default"),
         "messages": messages,
@@ -81,7 +84,7 @@ def live_responses(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     return outputs
 
 
-def _validate_metadata(meta: dict[str, Any], prompt: list[int]) -> None:
+def _validate_metadata(meta: dict[str, Any], prompt: list[int], top_k: int) -> None:
     generated = meta["output_token_logprobs"]
     assert generated, "The server must generate at least one token"
     sample = Sample(
@@ -89,20 +92,22 @@ def _validate_metadata(meta: dict[str, Any], prompt: list[int]) -> None:
         response_length=len(generated),
         rollout_log_probs=[item[0] for item in generated],
     )
-    append_score_centering_topk(sample, meta, 128)
-    validate_score_centering_sample(sample, 128)
-    assert np.all(sample.rollout_topk_token_ids >= 0), "This model should return all 128 candidates"
+    append_score_centering_topk(sample, meta, top_k)
+    validate_score_centering_sample(sample, top_k)
+    assert np.all(sample.rollout_topk_token_ids >= 0), "This model should return the requested candidates"
     assert np.all(np.isfinite(sample.rollout_topk_log_probs))
 
 
 @pytest.mark.parametrize("temperature", [0.7, 1.0, 1.3])
 def test_native_sampler_contract(live_responses: dict[str, Any], temperature: float) -> None:
-    _validate_metadata(live_responses[str(temperature)]["meta_info"], live_responses["prompt"])
+    _validate_metadata(
+        live_responses[str(temperature)]["meta_info"], live_responses["prompt"], live_responses["top_k"]
+    )
 
 
 def test_openai_sampler_contract(live_responses: dict[str, Any]) -> None:
     choice = live_responses["openai"]["choices"][0]
-    _validate_metadata(choice["meta_info"], live_responses["prompt"])
+    _validate_metadata(choice["meta_info"], live_responses["prompt"], live_responses["top_k"])
 
 
 @pytest.mark.parametrize("temperature", [0.7, 1.3])
@@ -117,7 +122,7 @@ def test_candidate_probabilities_include_temperature(live_responses: dict[str, A
         "cached_tokens"
     ), "Temperature comparison requires the same prefill cache layout"
     common = sorted(base.keys() & scaled.keys())
-    assert len(common) >= 100
+    assert len(common) >= min(100, max(1, 3 * live_responses["top_k"] // 4))
     differences = np.asarray([temperature * scaled[token] - base[token] for token in common])
     assert (
         np.ptp(differences) < 5e-3
