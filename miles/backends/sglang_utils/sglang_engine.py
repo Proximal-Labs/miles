@@ -9,9 +9,6 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.backends.megatron_utils.lora.utils import target_modules_hf_for_sglang_rollout
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
-from miles.ray.ray_actor import RayActor
-from miles.utils.env_report import collect_and_print_node_env_report
-from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
 
@@ -146,7 +143,7 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = target_modules_hf_for_sglang_rollout(args)
+        kwargs["lora_target_modules"] = target_modules_hf_for_sglang_rollout(args, engine_detected_ok=False)
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1

@@ -9,7 +9,7 @@ from tests.ci.ci_register import register_cuda_ci
 # rollout -> train -> adapter-sync loop with the CI checkers on (cross-engine
 # logprob agreement at abs_tol 0.03, step-0 ppo_kl).
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["lora-native"])
+register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["lora-native"], hardware=["hopper"])
 
 
 def _args() -> ScriptArgs:

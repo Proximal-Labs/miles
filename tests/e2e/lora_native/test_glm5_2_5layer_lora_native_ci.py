@@ -10,7 +10,7 @@ from tests.ci.ci_register import register_cuda_ci
 # loop. The logprobs checker is disabled like the other pruned-toy CIs: the
 # toy's rollout entropy legitimately exceeds the checker's real-model bound.
 
-register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-h200", labels=["lora-native"])
+register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-h200", labels=["lora-native"], hardware=["hopper"])
 
 
 def _args() -> ScriptArgs:

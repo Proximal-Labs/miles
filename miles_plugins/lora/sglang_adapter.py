@@ -31,25 +31,35 @@ def expand_sglang_target_modules(target_modules: Iterable[str]) -> list[str]:
     return targets
 
 
-def sglang_target_modules(args) -> list[str]:
+def sglang_target_modules(args, *, engine_detected_ok: bool = True) -> list[str]:
     """The ``lora_target_modules`` SGLang should be launched and synced with.
 
     A spec that declares ``sglang_lora_target_modules`` hands the engine that
-    literal list (Inkling's TML names are engine-detected via ``["all"]``);
-    everyone else expands the run's effective targets to SGLang's fused
-    families.
+    literal list (Inkling's TML names are engine-detected via ``["all"]``)
+    unless the caller refuses auto-detection; everyone else expands the run's
+    effective targets to SGLang's fused families.
     """
-    from miles_plugins.lora.config import LoRAConfig
-    from miles_plugins.lora.registry import _resolve_registered_spec, resolve_native_lora_config
+    from miles_plugins.lora.hf_adapter import convert_target_modules_to_hf
+    from miles_plugins.lora.registry import _resolve_registered_spec
 
-    if getattr(args, "hf_checkpoint", None):
-        _model_type, spec = _resolve_registered_spec(args.hf_checkpoint)
-        if spec.sglang_lora_target_modules is not None:
-            return list(spec.sglang_lora_target_modules)
-        effective_targets = resolve_native_lora_config(args).target_modules
-    else:
-        effective_targets = LoRAConfig.from_args(args).target_modules
-    return expand_sglang_target_modules(sorted(effective_targets))
+    model_type, spec = _resolve_registered_spec(args.hf_checkpoint)
+    if spec.sglang_lora_target_modules is not None:
+        assert engine_detected_ok, (
+            f"native LoRA serves {model_type} through engine-detected target names "
+            f"({list(spec.sglang_lora_target_modules)}), which cannot size per-slot multi-LoRA "
+            "buffers; use --megatron-to-hf-mode bridge for multi-LoRA."
+        )
+        return list(spec.sglang_lora_target_modules)
+
+    raw = args.target_modules or ()
+    if isinstance(raw, str):
+        raw = [target.strip() for target in raw.split(",")]
+    targets = frozenset(convert_target_modules_to_hf(list(raw)))
+    targets = spec.attention.normalize_targets(
+        targets, expanded_from_all_linear=bool(getattr(args, "_target_modules_expanded_from_all_linear", False))
+    )
+    spec.validate_targets(targets)
+    return expand_sglang_target_modules(sorted(targets))
 
 
 def export_lora_sglang_named(model_chunks: Sequence[nn.Module]) -> list[tuple[str, torch.Tensor]]:

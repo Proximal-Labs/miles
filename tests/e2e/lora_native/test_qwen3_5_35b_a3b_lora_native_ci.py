@@ -10,7 +10,7 @@ from tests.ci.ci_register import register_cuda_ci
 # checkers on. Also guards the raw-mode GDN backward: the registry's historical
 # instability note surfaces as grad_norm explosions from step 1 if it regresses.
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["lora-native"])
+register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["lora-native"], hardware=["hopper"])
 
 
 def _args() -> ScriptArgs:

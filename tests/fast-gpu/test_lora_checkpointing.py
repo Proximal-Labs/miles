@@ -22,6 +22,7 @@ register_cuda_ci(
     est_time=120,
     suite="stage-b-2-gpu-h200",
     labels=["lora-native"],
+    hardware=["hopper", "blackwell"],
 )
 
 _LR = 0.05

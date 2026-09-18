@@ -12,7 +12,7 @@ from tests.ci.ci_register import register_cuda_ci
 # like the other pruned-toy CIs: the toy's rollout entropy legitimately exceeds
 # the checker's real-model bound.
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["lora-native"])
+register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h200", labels=["lora-native"], hardware=["hopper"])
 
 
 def _args() -> ScriptArgs:
