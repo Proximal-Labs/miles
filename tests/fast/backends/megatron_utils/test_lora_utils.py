@@ -15,6 +15,8 @@ import torch
 
 import miles.backends.megatron_utils.lora.utils as lora_utils
 from miles.backends.megatron_utils.lora.utils import (
+    _HF_MODULE_NAMES,
+    _MLA_HF_TO_MEGATRON,
     _adapter_shard_name,
     _get_lora_class_name,
     _is_adapter_param_name,
@@ -63,6 +65,21 @@ def _make_lora_type(name: str):
     mock = MagicMock()
     type(mock).__name__ = name
     return mock
+
+
+class TestTargetNameTablesAgree:
+    """HF -> Megatron is declared here, the inverse in miles_plugins.lora.hf_adapter. A name
+    added to one table and missed by the other converts silently and reaches SGLang unmapped."""
+
+    @pytest.mark.parametrize("lora_type_name", ["LoRA", "CanonicalLoRA"])
+    def test_every_hf_name_survives_a_round_trip(self, lora_type_name):
+        lora_type = _make_lora_type(lora_type_name)
+        for hf_name in sorted(set(_HF_MODULE_NAMES) | set(_MLA_HF_TO_MEGATRON)):
+            megatron_names = convert_target_modules_to_megatron([hf_name], lora_type=lora_type)
+            assert hf_name in convert_target_modules_to_hf(megatron_names), (
+                f"{hf_name} converts to {megatron_names} but does not convert back; "
+                "add it to MEGATRON_TO_HF_MODULES or MEGATRON_MLA_TO_HF in the plugin"
+            )
 
 
 class TestConvertTargetModulesToMegatron:
