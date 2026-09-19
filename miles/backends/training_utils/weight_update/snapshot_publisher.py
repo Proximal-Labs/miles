@@ -26,16 +26,16 @@ class WeightPublisher:
         """Collectively write HF adapter files inside the caller's directory transaction."""
         path = Path(path)
         is_writer = dist.get_rank() == 0
-        tensors = {
+        adapter_tensors = {
             name: tensor.detach().contiguous().cpu()
             for name, tensor in self._iterator.materialize_adapter(adapter, materialize=is_writer).items()
         }
-        adapter_bytes = safetensors.torch.save(tensors) if is_writer else None
-        config = self._adapter_config
+        adapter_bytes = safetensors.torch.save(adapter_tensors) if is_writer else None
+        adapter_config = self._adapter_config
         if adapter is not None:
-            config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
+            adapter_config = adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
 
         if is_writer:
             path.mkdir(parents=True, exist_ok=True)
-            (path / "adapter_config.json").write_text(json.dumps(config))
+            (path / "adapter_config.json").write_text(json.dumps(adapter_config))
             (path / "adapter_model.safetensors").write_bytes(adapter_bytes)

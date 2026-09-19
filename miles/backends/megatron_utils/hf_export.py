@@ -134,11 +134,11 @@ def save_hf_model(
             with patch_megatron_model(model):
                 bridge.save_hf_pretrained(model, path=tmp_dir)
             torch.distributed.barrier(group=get_gloo_group())
-            empty = [False]
+            missing_weights = [False]
             if torch.distributed.get_rank() == 0:
-                empty[0] = not any(tmp_dir.glob("*.safetensors")) and not any(tmp_dir.glob("*.bin"))
-            torch.distributed.broadcast_object_list(empty, src=0, group=get_gloo_group())
-            if empty[0]:
+                missing_weights[0] = not any(tmp_dir.glob("*.safetensors")) and not any(tmp_dir.glob("*.bin"))
+            torch.distributed.broadcast_object_list(missing_weights, src=0, group=get_gloo_group())
+            if missing_weights[0]:
                 raise RuntimeError(
                     f"HF export to {path} produced no weight files — the megatron "
                     f"bridge likely has no mapping for this model architecture."
