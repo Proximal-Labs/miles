@@ -98,9 +98,11 @@ def _glm_dsa_targets(config):
 
 
 def _qwen_moe_mlp_targets(config, *, shared_expert=False):
+    # Qwen3MoE serializes its num_experts alias as num_local_experts.
+    num_experts = config["num_experts"] if "num_experts" in config else config["num_local_experts"]
     # These optional HF fields allow dense layers inside an otherwise MoE model.
     num_moe_layers = sum(
-        bool(config["num_experts"])
+        bool(num_experts)
         and layer_id not in config.get("mlp_only_layers", [])
         and (layer_id + 1) % config.get("decoder_sparse_step", 1) == 0
         for layer_id in range(config["num_hidden_layers"])
