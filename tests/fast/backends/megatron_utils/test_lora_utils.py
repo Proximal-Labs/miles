@@ -386,22 +386,11 @@ class TestBuildLoraSyncConfigUnderMultiLora:
 
 class TestSaveLoraCheckpointTrainingState:
     def _save(self, tmp_path, monkeypatch, *, no_save_optim, scheduler=None):
-        rank0 = SimpleNamespace(rank=0)
-        monkeypatch.setattr(
-            lora_utils, "get_parallel_state", lambda: SimpleNamespace(effective_dp=rank0, cp=rank0, tp=rank0, pp=rank0)
-        )
         monkeypatch.setattr(lora_utils, "write_lora_weights", lambda *_: None)
 
         adapter = torch.nn.Parameter(torch.ones(2))
         model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
-        args = Namespace(
-            hf_checkpoint="/nonexistent",
-            target_modules=None,
-            lora_rank=8,
-            lora_alpha=16,
-            lora_dropout=0.0,
-            no_save_optim=no_save_optim,
-        )
+        args = Namespace(no_save_optim=no_save_optim)
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
             model, args, str(tmp_path / "checkpoint"), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
