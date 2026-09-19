@@ -99,9 +99,9 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
                 if previous is not None:
                     parameters = parameters | previous.checkpoint_parameters
                 candidates[adapter] = _TargetModule(module, frozenset(parameters))
-        assert len(set(selected_adapters)) == 1, (
-            f"LoRA cannot select different projections across parameters in {mapping.megatron_param!r}"
-        )
+        assert (
+            len(set(selected_adapters)) == 1
+        ), f"LoRA cannot select different projections across parameters in {mapping.megatron_param!r}"
     assert candidates, "LoRA targets have no Megatron modules"
     hf_mapping.validate_coverage(covered_sources, targets)
     return candidates
