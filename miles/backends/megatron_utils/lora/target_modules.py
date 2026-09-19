@@ -77,6 +77,7 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
         assert all(
             selected for _, selected in selected_by_parameter.values()
         ), f"LoRA cannot select a subset of parameters in {mapping.megatron_param!r}"
+        selected_adapters = []
         for sources, selected in selected_by_parameter.values():
             covered_sources.update(selected)
             split = canonical and len(sources) > 1 and ".experts." not in module
@@ -92,11 +93,15 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
                     "use canonical_lora to select individual projections"
                 )
                 adapter_sources = {module: selected}
+            selected_adapters.append(frozenset(adapter_sources))
             for adapter, parameters in adapter_sources.items():
                 previous = candidates.get(adapter)
                 if previous is not None:
                     parameters = parameters | previous.checkpoint_parameters
                 candidates[adapter] = _TargetModule(module, frozenset(parameters))
+        assert len(set(selected_adapters)) == 1, (
+            f"LoRA cannot select different projections across parameters in {mapping.megatron_param!r}"
+        )
     assert candidates, "LoRA targets have no Megatron modules"
     hf_mapping.validate_coverage(covered_sources, targets)
     return candidates

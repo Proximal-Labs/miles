@@ -3160,7 +3160,10 @@ def miles_validate_args(args):
         hf_config = load_hf_config(args.hf_checkpoint)
         hf_mapping = HfWeightMapping.from_config(hf_config)
         hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_shapes]
-        if all(any(matches_hf_lora_target(module, target) for module in hf_modules) for target in args.target_modules):
+        if all(
+            any(matches_hf_lora_target(module, target) for module in hf_modules)
+            for target in args.target_modules + args.exclude_modules
+        ):
             args.hf_lora_targets = list(args.target_modules)
         elif args.megatron_to_hf_mode == "bridge":
             # Preserve explicit Megatron selectors without making ordinary HF selection depend on Bridge.

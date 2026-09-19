@@ -129,3 +129,13 @@ def test_absent_fused_alternative_does_not_reject_selection():
     ]
     selected = _resolve(["q_proj"], mappings, ["decoder.layers.0.self_attention.linear_q.weight"])
     assert set(selected) == {"decoder.layers.*.self_attention.linear_q"}
+
+
+def test_canonical_selection_cannot_expand_across_layers():
+    with pytest.raises(AssertionError, match="different projections"):
+        _resolve(
+            ["model.layers.0.self_attn.q_proj", "model.layers.1.self_attn.k_proj"],
+            [_QKV],
+            [f"decoder.layers.{layer}.self_attention.linear_qkv.weight" for layer in range(2)],
+            canonical=True,
+        )
