@@ -22,6 +22,7 @@ from miles.backends.megatron_utils.lora.utils import (
     create_lora_instance,
     patch_param_grad_buffer_for_colocate_mode_lora,
 )
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_config import load_hf_config
 from miles.utils.hf_weight_mapping import HfWeightMapping
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
@@ -190,8 +191,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     def apply_lora_hook(model_chunks):
         parameter_names = model_bridge._megatron_global_param_names_all_pp_ranks(model_chunks)
         # Bridge gathers PP names; LoRA coverage also needs experts owned by other EP ranks.
-        names_by_rank = [None] * dist.get_world_size()
-        dist.all_gather_object(names_by_rank, parameter_names)
+        ep = get_parallel_state().ep
+        names_by_rank = [None] * ep.size
+        dist.all_gather_object(names_by_rank, parameter_names, group=ep.group)
         parameter_names = set().union(*names_by_rank)
         candidates = resolve_megatron_lora_targets(
             args.hf_lora_targets,
