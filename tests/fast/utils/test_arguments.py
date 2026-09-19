@@ -853,6 +853,21 @@ def test_critic_rejects_reward_level_kl(tmp_path):
 
 
 class TestMultiLoRAValidation:
+    @pytest.fixture(autouse=True)
+    def _bridge_selector(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.arguments.HfWeightMapping.from_config",
+            lambda config: SimpleNamespace(parameter_shapes={}),
+        )
+        monkeypatch.setattr(
+            "miles.utils.arguments.load_hf_config",
+            lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
+        )
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.resolve_hf_lora_targets_from_bridge",
+            lambda checkpoint, targets, **kwargs: list(targets),
+        )
+
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
@@ -870,6 +885,23 @@ class TestMultiLoRAValidation:
             + extra
             + REQUIRED_ARGS
         )
+
+    def test_hf_selection_does_not_resolve_through_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.arguments.HfWeightMapping.from_config",
+            lambda config: SimpleNamespace(parameter_shapes={"model.layers.0.self_attn.q_proj.weight": (8, 8)}),
+        )
+
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("HF selection must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.resolve_hf_lora_targets_from_bridge",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", "q_proj"])
+        miles_validate_args(args)
+        assert args.hf_lora_targets == ["q_proj"]
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step
