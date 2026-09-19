@@ -187,22 +187,15 @@ async def _generate_eval(input: GenerateFnInput) -> GenerateFnOutput:
     if lora_rollout_enabled(args):
         request_kwargs["lora_path"] = LORA_ADAPTER_NAME
 
-    try:
-        agent_metadata = await agent(
-            base_url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
-            prompt=sample.prompt,
-            request_kwargs=request_kwargs,
-            metadata=sample.metadata,
-        )
-    except Exception:
-        logger.warning("Evaluation agent failed for sample %s", sample.index, exc_info=True)
-        agent_metadata = None
-
+    agent_metadata = await agent(
+        base_url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
+        prompt=sample.prompt,
+        request_kwargs=request_kwargs,
+        metadata=sample.metadata,
+    )
     sample.metadata.update(agent_metadata or {})
     sample.reward = (agent_metadata or {}).get("reward")
-    sample.status = Sample.Status.COMPLETED if sample.reward is not None else Sample.Status.ABORTED
-    if sample.reward is None:
-        logger.warning("Evaluation agent returned no reward for sample %s", sample.index)
+    sample.status = Sample.Status.COMPLETED
     return GenerateFnOutput(samples=sample)
 
 

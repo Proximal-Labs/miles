@@ -81,8 +81,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 - `metadata` contains the sample metadata. Training also adds session identifiers and
   configured `max_seq_len`. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
-  sample's metadata, or return `None` when there is nothing to add. Evaluation requires
-  a reward in this dictionary, as described below.
+  sample's metadata, or return `None` when there is nothing to add.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
@@ -91,7 +90,7 @@ For structured parsing, the payload may use SGLang's
 
 During evaluation, the wrapper calls the same agent directly against the configured inference router, including the separate eval fleet when enabled. It does not create a session or collect training samples. Each agent invocation returns one evaluation result, regardless of its internal branches or model calls.
 
-Return a dictionary containing `reward` (a scalar, or a dictionary selected by `--eval-reward-key`), plus any reports or metrics. The wrapper preserves this metadata and uses the reward directly. Returning `None`, omitting the reward, or raising an exception records an aborted trial with no reward; the standard eval logger reports its missing-reward ratio and counts it as zero. Evaluation does not run a response-based reward model on an uncollected transcript.
+Return `reward` in the agent's metadata to use it directly. Otherwise, the configured reward function runs as usual; it receives the prompt and metadata but no collected model transcript.
 
 Forward `request_kwargs` to the model API, including `chat_template_kwargs` and `lora_path` when supplied. Sampling settings retain their existing defaults and overrides, and stop-token text is trimmed from chat responses. Evaluation uses ordinary chat rendering rather than TITO token continuation. It does not inject training `max_seq_len` or session identifiers into agent metadata, and token-trajectory metrics are unavailable because no trajectory is collected. Agent-provided reports and metrics remain in the result metadata.
 
