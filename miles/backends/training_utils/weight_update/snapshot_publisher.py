@@ -23,7 +23,7 @@ class WeightPublisher:
 
     @torch.no_grad()
     def write_adapter(self, adapter: AdapterSpec | None, path: str | Path) -> None:
-        """Write adapter files inside a caller-owned checkpoint directory transaction."""
+        """Collectively write HF adapter files inside the caller's directory transaction."""
         path = Path(path)
         is_writer = dist.get_rank() == 0
         tensors = {

@@ -404,7 +404,7 @@ def create_lora_instance(args: Namespace):
 
 
 def write_lora_weights(model: Sequence[torch.nn.Module], args: Namespace, path: str | Path) -> None:
-    """Write a single HF adapter inside the caller's checkpoint directory transaction."""
+    """Collectively write a single HF adapter inside the caller's directory transaction."""
     # Inference processes import this module for config helpers without Megatron installed.
     from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 

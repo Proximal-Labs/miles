@@ -49,12 +49,9 @@ def export_hf_model_direct(
     quantization_config,
     megatron_local_weights,
 ) -> None:
-    """Export current weights as an HF checkpoint via miles' own megatron->HF converters.
+    """Collectively export HF shards into a directory prepared by the caller.
 
-    Same conversion machinery as the weight updater, so export coverage matches
-    weight-sync coverage (the bridge silently exports zero weights for specs it has
-    no mapping for, e.g. qwen3.5). Collective — all ranks must call it; rank 0 writes.
-    Runs inside ``save_hf_model``'s checkpoint phase, which owns the directory.
+    Uses the weight updater's converters; only global rank 0 writes files.
     """
     path = Path(path)
     is_writer = torch.distributed.get_rank() == 0
@@ -112,30 +109,17 @@ def save_hf_model(
     path: str | Path | None = None,
     raise_on_error: bool = False,
 ) -> None:
-    """Save Megatron model in HuggingFace format.
+    """Collectively publish an HF model, with an additional HF adapter for LoRA.
 
-    For LoRA models this saves both:
-    - A **merged** HF model (adapter weights folded into base) at ``{path}/``
-      so it can be loaded directly with ``AutoModelForCausalLM.from_pretrained``.
-    - An **adapter-only** HF PEFT checkpoint at ``{path}/adapter/``
-      so it can be loaded with ``PeftModel.from_pretrained``.
-
-    This function is collective — all ranks must call it. On success, global rank 0
-    writes a ``.complete`` marker file.
-
-    Args:
-        args: Runtime arguments.
-        model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
-        rollout_id (int): Rollout ID for path formatting.
-        path: Destination directory; defaults to ``args.save_hf.format(rollout_id)``.
-        raise_on_error: Re-raise export failures instead of logging them.
+    Writes a ``.complete`` marker before publication. Export errors are logged
+    unless ``raise_on_error`` is set.
     """
     should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
     path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
 
     def write_shards(tmp_dir: Path):
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
-            # LoRA keeps the bridge (adapter merging).
+            # LoRA needs Bridge to merge the adapter into the base weights
             hf_config = load_hf_config(args.hf_checkpoint)
             export_hf_model_direct(
                 args,
@@ -148,8 +132,6 @@ def save_hf_model(
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
             with patch_megatron_model(model):
-                # For LoRA models, merge_adapter_weights=True (default) merges
-                # adapter weights into base weights for a standalone HF model.
                 bridge.save_hf_pretrained(model, path=tmp_dir)
             torch.distributed.barrier(group=get_gloo_group())
             empty = [False]
@@ -164,7 +146,7 @@ def save_hf_model(
         if is_lora_model(model):
             write_lora_weights(model, args, tmp_dir / "adapter")
         if torch.distributed.get_rank() == 0:
-            # kept for readers that validate pre-existing dirs (is_complete_hf_export)
+            # eval readers also accept legacy directories and still require this marker
             (tmp_dir / HF_EXPORT_COMPLETE_MARKER).touch()
 
     try:
