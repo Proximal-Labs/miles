@@ -18,7 +18,9 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     resolve_placement,
 )
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
-from miles.utils.lora import validate_adapter_export
+from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_weight_mapping import HfWeightMapping
+from miles.utils.lora import is_lora_enabled, validate_adapter_export
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,11 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.hf_lora_mapping = (
+            HfWeightMapping.from_config(load_hf_config(self.args.hf_checkpoint))
+            if is_lora_enabled(self.args)
+            else None
+        )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
         if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
             self.weight_update_selector = "target"
@@ -51,7 +58,10 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             dist.all_gather_object(gathered_names, weight_names, group=pp.group)
             weight_names = [name for names in gathered_names for name in names]
         validate_adapter_export(
-            weight_names, self.args.hf_lora_targets, shared_outer=self.args.experts_shared_outer_loras
+            weight_names,
+            self.args.hf_lora_targets,
+            hf_mapping=self.hf_lora_mapping,
+            shared_outer=self.args.experts_shared_outer_loras,
         )
         if not materialize:
             return

@@ -117,8 +117,8 @@ means the ordinary model defaults, including when explicitly passed to Tinker.
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
 | `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
-| `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, HF leaf names or scoped registry patterns; Bridge also accepts Megatron selectors. |
-| `--exclude-modules` | none | Comma-separated HF leaf names or scoped registry patterns removed after selection; Bridge also accepts Megatron selectors. |
+| `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
+| `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
@@ -159,17 +159,27 @@ Inkling entries use its HF adapter export schema, which differs from its base
 checkpoint packing. Backend conversion must account for those representations;
 a layout entry is not a backend support claim.
 
-Ordinary LoRA and Tinker both use this selection policy. Bridge resolves HF
-module and packed-parameter names through its registry; adapter factories receive
-only the resolved Megatron targets. Explicit Megatron selectors also go through
-the registry. Missing mappings, missing modules, and skipped adapters fail at
-initialization. Scoped HF selectors must match registry patterns exactly;
-arbitrary layer subsets are not implemented by this converter.
+Ordinary LoRA and Tinker both use this selection policy. HF targets retain their
+meaning throughout training and serving. `miles/utils/hf_weight_mapping.py`
+uses Transformers conversion rules and a meta model's parameter shapes to relate
+checkpoint keys to the current HF model namespace, without loading base weights.
+This handles renaming, expert stacking, and gate/up concatenation; unsupported
+conversions fail explicitly. Custom models absent from native Transformers keep
+their existing checkpoint namespace and have pattern-level coverage checks.
+
+Bridge resolves mappings against parameters that actually exist across PP/EP
+ranks before checking fused selections. Explicit Megatron selectors retain a
+compatibility conversion at startup. Adapter factories receive only Megatron
+targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
+within a registry template are not implemented and are rejected.
 Standard LoRA requires all projections of a fused weight together;
-`canonical_lora` supports individual Q/K/V and gate/up selections.
-Exports check selected HF patterns and A/B pairing across ranks. These checks
-do not prove that every layer or expert within a wildcard was exported, or
-establish tensor-shape, numerical, or kernel compatibility.
+`canonical_lora` supports individual Q/K/V and dense gate/up selections.
+
+Export checks A/B pairing in the actual adapter format, then checks coverage in
+the HF model namespace. For native HF models, missing layers, expert indices,
+and constituents of stacked/concatenated parameters are rejected. The adapter
+file format is unchanged; these name-coverage checks do not establish tensor
+values, packed adapter shapes, numerical equivalence, or kernel compatibility.
 
 Tinker accepts explicit HF targets and exclusions only when the resulting layout
 consists of complete attention, MLP, and output-head groups. It derives the SDK

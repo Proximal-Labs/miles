@@ -5,14 +5,35 @@ import torch
 
 from miles.backends.megatron_utils.lora.target_modules import (
     resolve_megatron_lora_targets,
-    select_present_target_modules,
     validate_lora_target_adapters,
 )
 from miles.utils.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.hf_weight_mapping import HfWeightMapping
+
+
+class _Mapping(SimpleNamespace):
+    def resolve(self, captures):
+        def expand(name):
+            for value in captures:
+                name = name.replace("*", value, 1)
+            return name
+
+        hf = [self.hf_param] if isinstance(self.hf_param, str) else self.hf_param.values()
+        return _mapping(expand(self.megatron_param), *(expand(name) for name in hf))
 
 
 def _mapping(megatron, *hf):
-    return SimpleNamespace(megatron_param=megatron, hf_param=hf[0] if len(hf) == 1 else dict(enumerate(hf)))
+    return _Mapping(megatron_param=megatron, hf_param=hf[0] if len(hf) == 1 else dict(enumerate(hf)))
+
+
+def _resolve(targets, mappings, parameter_names, *, canonical=False, hf_mapping=None):
+    return resolve_megatron_lora_targets(
+        targets,
+        mappings,
+        parameter_names=set(parameter_names),
+        hf_mapping=hf_mapping or HfWeightMapping({}),
+        canonical=canonical,
+    )
 
 
 def _model(*names):
@@ -38,13 +59,12 @@ def test_scoped_attention_excludes_mtp():
     targets = resolve_hf_lora_targets({"model_type": "qwen3"}, train_attn=True, train_mlp=False, train_unembed=False)
     output = _mapping("decoder.layers.*.self_attention.linear_proj.weight", "model.layers.*.self_attn.o_proj.weight")
     mtp = _mapping("mtp.layers.*.self_attention.linear_proj.weight", "mtp.layers.*.self_attn.o_proj.weight")
-    candidates = resolve_megatron_lora_targets(targets, [_QKV, output, mtp], canonical=False)
     model = _model(
         "decoder.layers.0.self_attention.linear_qkv",
         "decoder.layers.0.self_attention.linear_proj",
         "mtp.layers.0.self_attention.linear_proj",
     )
-    selected = select_present_target_modules([model], candidates)
+    selected = _resolve(targets, [_QKV, output, mtp], [name for name, _ in model.named_parameters()])
     assert set(selected) == {
         "decoder.layers.*.self_attention.linear_qkv",
         "decoder.layers.*.self_attention.linear_proj",
@@ -61,10 +81,9 @@ def test_scoped_attention_excludes_mtp():
 def test_fused_selection_cannot_silently_expand():
     targets = ["model.layers.*.self_attn.q_proj"]
     with pytest.raises(AssertionError, match="requires all HF targets"):
-        resolve_megatron_lora_targets(targets, [_QKV], canonical=False)
-    candidates = resolve_megatron_lora_targets(targets, [_QKV], canonical=True)
-    model = _model("decoder.layers.0.self_attention.linear_qkv")
-    assert list(select_present_target_modules([model], candidates)) == ["decoder.layers.*.self_attention.linear_q"]
+        _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"])
+    candidates = _resolve(targets, [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"], canonical=True)
+    assert list(candidates) == ["decoder.layers.*.self_attention.linear_q"]
 
 
 @pytest.mark.parametrize("grouped", [True, False], ids=["grouped", "sequential"])
@@ -74,23 +93,39 @@ def test_expert_representations_are_alternatives(grouped):
         _mapping("decoder.layers.*.mlp.experts.linear_fc2.weight*", target + ".weight"),
         _mapping("decoder.layers.*.mlp.experts.local_experts.*.linear_fc2.weight", target + ".weight"),
     ]
-    candidates = resolve_megatron_lora_targets([target], mappings, canonical=False)
     module = "decoder.layers.0.mlp.experts." + ("linear_fc2" if grouped else "local_experts.0.linear_fc2")
-    selected = select_present_target_modules([_model(module)], candidates)
+    parameter = module + (".weight0" if grouped else ".weight")
+    selected = _resolve([target], mappings, [parameter])
     assert len(selected) == 1
     assert ("local_experts" in next(iter(selected))) != grouped
     with pytest.raises(AssertionError, match="no Megatron modules"):
-        select_present_target_modules([_model("decoder.layers.0.mlp.linear_fc2")], candidates)
+        _resolve([target], mappings, ["decoder.layers.0.mlp.linear_fc2.weight"])
 
 
 def test_missing_hf_mapping_is_not_a_megatron_passthrough():
-    with pytest.raises(AssertionError, match="no Bridge mapping"):
-        resolve_megatron_lora_targets(["model.layers.*.self_attn.unknown_proj"], [_QKV], canonical=False)
+    with pytest.raises(AssertionError, match="no Megatron modules"):
+        _resolve(
+            ["model.layers.*.self_attn.unknown_proj"], [_QKV], ["decoder.layers.0.self_attention.linear_qkv.weight"]
+        )
 
 
 def test_one_to_one_mapping_keeps_bridge_module_name():
     target = "model.layers.*.self_attn.o_proj"
     mapping = _mapping("decoder.layers.*.self_attention.output_projection.weight", target + ".weight")
-    candidates = resolve_megatron_lora_targets([target], [mapping], canonical=True)
+    candidates = _resolve(
+        [target], [mapping], ["decoder.layers.0.self_attention.output_projection.weight"], canonical=True
+    )
     assert list(candidates) == ["decoder.layers.*.self_attention.output_projection"]
-    assert next(iter(candidates.values())).hf_modules == {target}
+    assert next(iter(candidates.values())).checkpoint_parameters == {"model.layers.0.self_attn.o_proj.weight"}
+
+
+def test_absent_fused_alternative_does_not_reject_selection():
+    mappings = [
+        _mapping(
+            "decoder.layers.*.self_attention.fused_qkv.weight",
+            *(f"model.layers.*.self_attn.{p}_proj.weight" for p in ("q", "k", "v")),
+        ),
+        _mapping("decoder.layers.*.self_attention.linear_q.weight", "model.layers.*.self_attn.q_proj.weight"),
+    ]
+    selected = _resolve(["q_proj"], mappings, ["decoder.layers.0.self_attention.linear_q.weight"])
+    assert set(selected) == {"decoder.layers.*.self_attention.linear_q"}

@@ -1,7 +1,6 @@
 import json
 import re
 from argparse import Namespace
-from fnmatch import fnmatchcase
 from pathlib import Path
 
 LORA_ADAPTER_NAME = "miles_lora"
@@ -63,10 +62,12 @@ def get_adapter_target_modules(weight_names):
     return sorted({_split_adapter_weight_name(name)[0] for name in weight_names})
 
 
-def validate_adapter_export(weight_names, targets, *, shared_outer=False):
+def validate_adapter_export(weight_names, targets, *, hf_mapping, shared_outer=False):
     factors = {"A": set(), "B": set()}
+    modules = set()
     for name in weight_names:
         module, factor = _split_adapter_weight_name(name)
+        modules.add(module)
         if shared_outer:
             # Shared-outer factors omit the expert index on exactly one side.
             module = re.sub(r"\bexperts\.\d+\.", "experts.", module)
@@ -76,9 +77,23 @@ def validate_adapter_export(weight_names, targets, *, shared_outer=False):
         factors["A"] == factors["B"]
     ), f"Adapter export has unpaired A/B modules: {sorted(factors['A'] ^ factors['B'])}"
     if shared_outer:
-        targets = [target.replace(".experts.*.", ".experts.") for target in targets]
-    modules = factors["A"]
-    unexpected = {module for module in modules if not any(fnmatchcase(module, target) for target in targets)}
-    missing = {target for target in targets if not any(fnmatchcase(module, target) for module in modules)}
-    assert not unexpected, f"Adapter export includes unselected HF modules: {sorted(unexpected)}"
-    assert not missing, f"Adapter export is missing selected HF targets: {sorted(missing)}"
+        shared = {
+            re.sub(r"\bexperts\.\d+\.", "experts.", module)
+            for module in modules
+            if re.search(r"\bexperts\.\d+\.", module)
+        }
+        modules -= shared
+    parameters = {_adapter_base_parameter(module, hf_mapping.parameter_shapes) for module in modules}
+    hf_mapping.validate_coverage(parameters, targets)
+
+
+def _adapter_base_parameter(module, parameter_shapes):
+    if module in parameter_shapes:
+        return module
+    # PEFT target_parameters wraps packed expert tensors as base_layer (gate/up) and experts (down).
+    gate_up = module.removesuffix(".base_layer") + ".gate_up_proj"
+    if module.endswith(".base_layer") and gate_up in parameter_shapes:
+        return gate_up
+    if module + ".down_proj" in parameter_shapes:
+        return module + ".down_proj"
+    return module + ".weight"

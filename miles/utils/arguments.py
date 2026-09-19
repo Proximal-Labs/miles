@@ -22,9 +22,11 @@ from miles.utils.hf_lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     get_hf_lora_targets,
+    matches_hf_lora_target,
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
+from miles.utils.hf_weight_mapping import HfWeightMapping
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -3155,8 +3157,13 @@ def miles_validate_args(args):
 
     validate_multi_lora_args(args)
     if is_lora_enabled(args):
-        if args.megatron_to_hf_mode == "bridge":
-            # Resolving before actor creation gives trainer and engine the same HF selection.
+        hf_config = load_hf_config(args.hf_checkpoint)
+        hf_mapping = HfWeightMapping.from_config(hf_config)
+        hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_shapes]
+        if all(any(matches_hf_lora_target(module, target) for module in hf_modules) for target in args.target_modules):
+            args.hf_lora_targets = list(args.target_modules)
+        elif args.megatron_to_hf_mode == "bridge":
+            # Preserve explicit Megatron selectors without making ordinary HF selection depend on Bridge.
             from miles.backends.megatron_utils.lora.target_modules import resolve_hf_lora_targets_from_bridge
 
             args.hf_lora_targets = resolve_hf_lora_targets_from_bridge(
@@ -3166,7 +3173,7 @@ def miles_validate_args(args):
                 exclude_modules=args.exclude_modules,
             )
         else:
-            layout = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
+            layout = get_hf_lora_targets(hf_config.to_dict())
             args.hf_lora_targets = exclude_hf_lora_targets(
                 expand_hf_lora_targets(args.target_modules, layout), args.exclude_modules
             )

@@ -10,12 +10,12 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
+import torch.distributed as dist
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
 from miles.backends.megatron_utils.lora.target_modules import (
     resolve_megatron_lora_targets,
-    select_present_target_modules,
     validate_lora_target_adapters,
 )
 from miles.backends.megatron_utils.lora.utils import (
@@ -23,6 +23,7 @@ from miles.backends.megatron_utils.lora.utils import (
     patch_param_grad_buffer_for_colocate_mode_lora,
 )
 from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_weight_mapping import HfWeightMapping
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
@@ -184,17 +185,22 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     ), "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
     model_bridge = bridge._model_bridge
     model_bridge.hf_pretrained = bridge.hf_pretrained
-    target_candidates = resolve_megatron_lora_targets(
-        args.target_modules,
-        model_bridge.mapping_registry().get_all_mappings(),
-        canonical=args.lora_type == "canonical_lora",
-        exclude_modules=args.exclude_modules,
-    )
+    hf_mapping = HfWeightMapping.from_config(hf_config)
 
     def apply_lora_hook(model_chunks):
-        candidates = select_present_target_modules(model_chunks, target_candidates)
-        # export coverage excludes registry alternatives absent from the model
-        args.hf_lora_targets = sorted({target for module in candidates.values() for target in module.hf_modules})
+        parameter_names = model_bridge._megatron_global_param_names_all_pp_ranks(model_chunks)
+        # Bridge gathers PP names; LoRA coverage also needs experts owned by other EP ranks.
+        names_by_rank = [None] * dist.get_world_size()
+        dist.all_gather_object(names_by_rank, parameter_names)
+        parameter_names = set().union(*names_by_rank)
+        candidates = resolve_megatron_lora_targets(
+            args.hf_lora_targets,
+            model_bridge.mapping_registry().get_all_mappings(),
+            parameter_names=parameter_names,
+            hf_mapping=hf_mapping,
+            canonical=args.lora_type == "canonical_lora",
+            exclude_modules=args.exclude_modules,
+        )
         lora = create_adapter(args, target_modules=list(candidates))
         transformed = lora(model_chunks, training=True)
         validate_lora_target_adapters(transformed, candidates)

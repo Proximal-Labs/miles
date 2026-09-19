@@ -257,8 +257,7 @@ def parse_lora_targets(value: str | list[str] | None) -> list[str] | None:
 
 
 def matches_hf_lora_target(module: str, target: str) -> bool:
-    # Scoped selectors must match registry patterns exactly to keep appended MTP layers out.
-    return module == target if "." in target else fnmatchcase(module.rsplit(".", 1)[-1], target)
+    return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
 
 
 def exclude_hf_lora_targets(targets: list[str], exclusions: list[str]) -> list[str]:
