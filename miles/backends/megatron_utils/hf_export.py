@@ -149,14 +149,15 @@ def save_hf_model(
             # eval readers also accept legacy directories and still require this marker
             (tmp_dir / HF_EXPORT_COMPLETE_MARKER).touch()
 
+    if should_log:
+        logger.info(f"Saving model in HuggingFace format to {path}")
     try:
-        if should_log:
-            logger.info(f"Saving model in HuggingFace format to {path}")
         write_checkpoint_dir(path, write_shards)
-        if should_log:
-            logger.info(f"Successfully saved HuggingFace model to {path}")
     except Exception as e:
         if raise_on_error:
             raise
         if should_log:
             logger.error(f"Failed to save HuggingFace format: {e}")
+    else:
+        if should_log:
+            logger.info(f"Successfully saved HuggingFace model to {path}")
