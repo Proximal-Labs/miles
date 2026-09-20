@@ -73,13 +73,12 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     return None
 ```
 
-- `base_url` points to the policy endpoint; append `/v1/chat/completions`. Training URLs already include `/sessions/<id>`, while evaluation URLs point directly to the inference router.
+- Append `/v1/chat/completions` to `base_url`; Miles includes the session path when needed.
 - `prompt` is the input sample's OpenAI `messages` list.
 - `request_kwargs` contains the rollout sampling settings in
   `ChatCompletionRequest`-compatible form. For example, Miles maps
   `max_new_tokens` to `max_tokens`.
-- `metadata` contains the sample metadata. Training also adds session identifiers and
-  configured `max_seq_len`. Forward only the fields your environment needs.
+- `metadata` contains sample metadata, plus session identifiers and configured `max_seq_len` during training. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
   sample's metadata, or return `None` when there is nothing to add.
 
@@ -88,12 +87,9 @@ For structured parsing, the payload may use SGLang's
 
 ### Evaluation
 
-During evaluation, the wrapper calls the same agent directly against the configured inference router, including the separate eval fleet when enabled. It does not create a session or collect training samples. Each agent invocation returns one evaluation result, regardless of its internal branches or model calls.
+Evaluation calls the same agent directly through the inference router (or eval fleet), using ordinary chat rendering without a session or TITO trajectory collection. Each agent invocation produces one result; token-trajectory metrics are unavailable.
 
-Return `reward` in the agent's metadata to use it directly. Otherwise, the configured reward function runs as usual; it receives the prompt and metadata but no collected model transcript.
-
-Forward `request_kwargs` to the model API, including `chat_template_kwargs` and `lora_path` when supplied. Sampling settings retain their existing defaults and overrides, and stop-token text is trimmed from chat responses. Evaluation uses ordinary chat rendering rather than TITO token continuation. It does not inject training `max_seq_len` or session identifiers into agent metadata, and token-trajectory metrics are unavailable because no trajectory is collected. Agent-provided reports and metrics remain in the result metadata.
-
+Return `reward` in the agent's metadata, or let the configured reward function score the prompt and metadata. No model transcript is collected for scoring.
 
 ### Optional teardown hook
 
