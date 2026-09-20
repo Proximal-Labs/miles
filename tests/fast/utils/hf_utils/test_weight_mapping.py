@@ -1,7 +1,7 @@
 import pytest
 from transformers import Qwen3MoeConfig
 
-from miles.utils.hf_weight_mapping import HfWeightMapping
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import validate_adapter_export
 
 

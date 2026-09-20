@@ -4,8 +4,8 @@ from fnmatch import fnmatchcase
 
 import torch.distributed as dist
 
-from miles.utils.hf_lora_targets import matches_hf_lora_target
-from miles.utils.hf_weight_mapping import HfWeightMapping
+from miles.utils.hf_utils.lora_targets import matches_hf_lora_target
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 
 _CANONICAL_PROJECTIONS = {
     "q_proj": "linear_q",

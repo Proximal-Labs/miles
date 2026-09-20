@@ -1,7 +1,7 @@
 import argparse
 
-from miles.utils.hf_config import load_hf_config
-from miles.utils.hf_lora_targets import (
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     get_hf_lora_targets,

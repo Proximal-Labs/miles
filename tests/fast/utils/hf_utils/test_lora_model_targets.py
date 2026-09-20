@@ -4,7 +4,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
 
-from miles.utils.hf_lora_targets import _HF_LORA_MODELS, get_hf_lora_targets, resolve_hf_lora_targets
+from miles.utils.hf_utils.lora_targets import _HF_LORA_MODELS, get_hf_lora_targets, resolve_hf_lora_targets
 
 
 _NATIVE_MODELS = (

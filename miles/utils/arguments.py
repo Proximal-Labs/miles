@@ -17,8 +17,8 @@ from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_config
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
-from miles.utils.hf_config import is_dsa, load_hf_config
-from miles.utils.hf_lora_targets import (
+from miles.utils.hf_utils.config import is_dsa, load_hf_config
+from miles.utils.hf_utils.lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     get_hf_lora_targets,
@@ -26,7 +26,7 @@ from miles.utils.hf_lora_targets import (
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.hf_weight_mapping import HfWeightMapping
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp

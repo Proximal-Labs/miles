@@ -10,8 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles.utils.hf_config import load_hf_config
-from miles.utils.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
 
 logger = logging.getLogger(__name__)
 

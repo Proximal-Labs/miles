@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 from transformers.conversion_mapping import get_model_conversion_mapping
 from transformers.core_model_loading import Concatenate, MergeModulelist, WeightConverter, WeightRenaming
 
-from miles.utils.hf_lora_targets import matches_hf_lora_target
+from miles.utils.hf_utils.lora_targets import matches_hf_lora_target
 
 
 @dataclass(frozen=True)

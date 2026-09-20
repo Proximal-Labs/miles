@@ -103,7 +103,7 @@ LoRA training.
 </Warning>
 
 Omitting `--target-modules` or passing `all-linear` uses the model defaults from
-`miles/utils/hf_lora_targets.py`: attention + MLP, with model-specific exclusions
+`miles/utils/hf_utils/lora_targets.py`: attention + MLP, with model-specific exclusions
 and output-head defaults. Multi-LoRA without explicit targets selects all three
 training groups; Tinker controls them with `--tinker-train-attn/mlp/unembed`.
 An explicit target list overrides the default selection. `all-linear` always
@@ -128,7 +128,7 @@ means the ordinary model defaults, including when explicitly passed to Tinker.
 
 ### HF target source of truth
 
-`miles/utils/hf_lora_targets.py` owns **HF target groups and defaults** for all
+`miles/utils/hf_utils/lora_targets.py` owns **HF target groups and defaults** for all
 backends. It derives attention, MLP, and output-head paths from the model config,
 including nested text models, optional MLA projections, expert layouts, and
 hybrid attention. Vision towers, routers, norms, and GDN convolutions are excluded.
@@ -160,7 +160,7 @@ checkpoint packing. Backend conversion must account for those representations;
 a layout entry is not a backend support claim.
 
 Ordinary LoRA and Tinker both use this selection policy. HF targets retain their
-meaning throughout training and serving. `miles/utils/hf_weight_mapping.py`
+meaning throughout training and serving. `miles/utils/hf_utils/weight_mapping.py`
 uses Transformers conversion rules and a meta model's parameter shapes to relate
 checkpoint keys to the current HF model namespace, without loading base weights.
 This handles renaming, expert stacking, and gate/up concatenation; unsupported

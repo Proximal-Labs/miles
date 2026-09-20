@@ -18,8 +18,8 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     resolve_placement,
 )
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
-from miles.utils.hf_config import load_hf_config
-from miles.utils.hf_weight_mapping import HfWeightMapping
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import is_lora_enabled, validate_adapter_export
 
 logger = logging.getLogger(__name__)
