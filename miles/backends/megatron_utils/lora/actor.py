@@ -25,7 +25,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             model_name=type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
         )
-        self.weight_publisher = WeightPublisher(iterator, build_lora_config(args, target_modules=args.hf_lora_targets))
+        self.weight_publisher = WeightPublisher(iterator, build_lora_config(args, target_modules=args.lora_adapter_targets))
 
     @with_logs
     def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:

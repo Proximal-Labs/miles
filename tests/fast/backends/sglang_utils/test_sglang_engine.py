@@ -99,7 +99,7 @@ class TestComputeEngineLaunchCmd:
 
 class TestLoraTargetModules:
     @pytest.mark.parametrize(
-        "hf_targets",
+        "adapter_targets",
         [
             [f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
             [f"model.layers.*.linear_attn.in_proj_{projection}" for projection in ("qkv", "z", "b", "a")],
@@ -108,12 +108,13 @@ class TestLoraTargetModules:
         ids=["qkv", "gdn", "inkling"],
     )
     @pytest.mark.parametrize("multi_lora", [False, True], ids=["single", "multi"])
-    def test_hf_paths_survive_the_engine_cli(self, hf_targets, multi_lora):
+    def test_adapter_paths_survive_the_engine_cli(self, adapter_targets, multi_lora):
         args = make_engine_args(
             lora_rank=16,
-            hf_lora_targets=hf_targets,
+            lora_adapter_targets=adapter_targets,
+            hf_lora_targets=["model.language_model.layers.*.self_attn.q_proj"],
             multi_lora=multi_lora,
             multi_lora_n_adapters=4,
         )
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
-        assert set(targets) == set(hf_targets)
+        assert set(targets) == set(adapter_targets)

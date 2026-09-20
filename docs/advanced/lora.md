@@ -143,7 +143,7 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 | DeepSeek V2/V3, Kimi K2/K2.5 | MLA | Dense + routed + shared experts as configured | Attention + MLP |
 | DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
 | GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
-| Inkling | Q/K/V/R/O | Dense + routed + shared expert adapter projections | Attention + MLP + output head |
+| Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
 
 `resolve_hf_lora_targets()` selects targets in this order:
 
@@ -155,9 +155,14 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 `--exclude-modules` applies after selection.
 
 Packed expert entries identify HF parameters rather than `nn.Linear` modules.
-Inkling entries use its HF adapter export schema, which differs from its base
-checkpoint packing. Backend conversion must account for those representations;
-a layout entry is not a backend support claim.
+Inkling entries follow the native HF model namespace. Its native Megatron LoRA
+implementation maps the complete selection to its existing adapter names;
+`hf_lora_targets` retains the HF selection, while `lora_adapter_targets` supplies
+the native export validation, weight-sync config, and SGLang startup. Adapter
+factors, tensor packing, and checkpoint names are unchanged. The pinned
+Transformers version does not yet include native Inkling, so its HF structure
+is not covered by the native meta-model tests. A layout entry is not a backend
+support claim.
 
 Ordinary LoRA and Tinker both use this selection policy. HF targets retain their
 meaning throughout training and serving. `miles/utils/hf_utils/weight_mapping.py`
@@ -176,7 +181,7 @@ Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and dense gate/up selections.
 
 Export checks A/B pairing in the actual adapter format, then checks coverage in
-the HF model namespace. For native HF models, missing layers, expert indices,
+the HF model namespace for Bridge or the selected native adapter namespace for Inkling. For native HF models, missing layers, expert indices,
 and constituents of stacked/concatenated parameters are rejected. The adapter
 file format is unchanged; these name-coverage checks do not establish tensor
 values, packed adapter shapes, numerical equivalence, or kernel compatibility.

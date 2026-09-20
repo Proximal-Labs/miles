@@ -861,7 +861,7 @@ class TestMultiLoRAValidation:
         )
         monkeypatch.setattr(
             "miles.utils.arguments.load_hf_config",
-            lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
+            lambda path: SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"}),
         )
         monkeypatch.setattr(
             "miles.backends.megatron_utils.lora.target_modules.resolve_hf_lora_targets_from_bridge",

@@ -146,17 +146,21 @@ def _qwen3_5_moe_targets(config):
 
 
 def _inkling_targets(config):
-    # Inkling uses its HF adapter export schema, which differs from its base checkpoint packing.
-    attention = _prefix_paths("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud")
+    attention = _prefix_paths("self_attn", "q_proj", "k_proj", "v_proj", "r_proj", "o_proj")
+    # Older Inkling configs encode leading dense layers instead of mlp_layer_types.
+    layer_types = config.get("mlp_layer_types")
+    if layer_types is None:
+        layer_types = [
+            "dense" if layer < config["dense_mlp_idx"] else "sparse"
+            for layer in range(config["num_hidden_layers"])
+        ]
     mlp = []
-    # Despite its name, dense_mlp_idx is the number of leading dense layers.
-    num_dense_layers = config["dense_mlp_idx"]
-    if num_dense_layers > 0:
-        mlp.extend(_prefix_paths("mlp", "gate_up_proj", "down_proj"))
-    if num_dense_layers < config["num_hidden_layers"]:
-        mlp.extend(_prefix_paths("mlp.experts", "w1", "w3", "w2"))
+    if "dense" in layer_types:
+        mlp.extend(_DENSE_MLP)
+    if "sparse" in layer_types:
+        mlp.extend(_PACKED_EXPERTS)
         if config["n_shared_experts"]:
-            mlp.extend(_prefix_paths("mlp.shared_experts", "w1", "w3", "w2"))
+            mlp.extend(_SHARED_EXPERTS)
     return attention, tuple(mlp)
 
 
@@ -187,16 +191,11 @@ _HF_LORA_MODELS = {
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
-    "inkling_model": _HfLoraModelSpec(
-        _inkling_targets,
-        layer_prefix="language_model.layers.*",
-        unembed="language_model.lm_head",
-        default_train_unembed=True,
-    ),
+    "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
+    "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_mm_model": _HfLoraModelSpec(
         _inkling_targets,
-        layer_prefix="language_model.layers.*",
-        unembed="language_model.lm_head",
+        layer_prefix="model.language_model.layers.*",
         unwrap_text_config=True,
         default_train_unembed=True,
     ),

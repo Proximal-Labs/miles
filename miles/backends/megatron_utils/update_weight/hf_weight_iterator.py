@@ -30,11 +30,14 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.hf_lora_mapping = (
-            HfWeightMapping.from_config(load_hf_config(self.args.hf_checkpoint))
-            if is_lora_enabled(self.args)
-            else None
-        )
+        self.hf_lora_mapping = None
+        if is_lora_enabled(self.args):
+            # Raw Inkling exports use the native adapter namespace, not HF checkpoint conversions.
+            self.hf_lora_mapping = (
+                HfWeightMapping.from_config(load_hf_config(self.args.hf_checkpoint))
+                if self.args.megatron_to_hf_mode == "bridge"
+                else HfWeightMapping({})
+            )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
         if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
             self.weight_update_selector = "target"
@@ -59,7 +62,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             weight_names = [name for names in gathered_names for name in names]
         validate_adapter_export(
             weight_names,
-            self.args.hf_lora_targets,
+            self.args.lora_adapter_targets,
             hf_mapping=self.hf_lora_mapping,
             shared_outer=self.args.experts_shared_outer_loras,
         )

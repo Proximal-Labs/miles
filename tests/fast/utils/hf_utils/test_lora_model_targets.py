@@ -89,7 +89,7 @@ def _small_config(model_type, overrides):
 
 def test_native_model_coverage():
     # These entries use custom code, a Miles alias, or a version newer than the pinned Transformers.
-    non_native = {"deepseek_v32", "kimi_k2", "kimi_k25", "inkling_model", "inkling_mm_model"}
+    non_native = {"deepseek_v32", "kimi_k2", "kimi_k25", "inkling_model", "inkling_mm_model", "inkling_text"}
     assert set(_NATIVE_MODELS) == set(_HF_LORA_MODELS) - non_native
 
 
