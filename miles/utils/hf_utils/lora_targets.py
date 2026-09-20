@@ -151,8 +151,7 @@ def _inkling_targets(config):
     layer_types = config.get("mlp_layer_types")
     if layer_types is None:
         layer_types = [
-            "dense" if layer < config["dense_mlp_idx"] else "sparse"
-            for layer in range(config["num_hidden_layers"])
+            "dense" if layer < config["dense_mlp_idx"] else "sparse" for layer in range(config["num_hidden_layers"])
         ]
     mlp = []
     if "dense" in layer_types:

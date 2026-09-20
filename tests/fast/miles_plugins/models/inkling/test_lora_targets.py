@@ -6,11 +6,7 @@ import torch
 from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import get_adapter_target_modules, validate_adapter_export
-from miles_plugins.models.inkling.lora import (
-    _export_dense_mlp,
-    _export_experts,
-    resolve_inkling_adapter_targets,
-)
+from miles_plugins.models.inkling.lora import _export_dense_mlp, _export_experts, resolve_inkling_adapter_targets
 
 
 class _LocalGather:
@@ -30,8 +26,12 @@ def test_hf_mlp_selection_matches_existing_native_export(multimodal):
     assert f"{prefix}.layers.*.mlp.experts.gate_up_proj" in hf_targets
     tensor = torch.ones(2, 2)
     dense = SimpleNamespace(
-        hf_prefix="language_model.layers.0.mlp.", load_meta={"i_loc": 1},
-        fc1_A=tensor, fc1_B=tensor, fc2_A=tensor, fc2_B=tensor,
+        hf_prefix="language_model.layers.0.mlp.",
+        load_meta={"i_loc": 1},
+        fc1_A=tensor,
+        fc1_B=tensor,
+        fc2_A=tensor,
+        fc2_B=tensor,
     )
     experts = SimpleNamespace(
         hf_prefix="language_model.layers.1.mlp.experts.",

@@ -36,8 +36,7 @@ _HF_TO_ADAPTER_MODULES = {
 def resolve_inkling_adapter_targets(hf_config, targets):
     expected = resolve_hf_lora_targets(hf_config)
     assert set(targets) == set(expected), (
-        "Native Inkling LoRA requires its complete adapter layout; "
-        "omit --target-modules and --exclude-modules"
+        "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
     )
     adapter_targets = set()
     for target in targets:
@@ -45,9 +44,7 @@ def resolve_inkling_adapter_targets(hf_config, targets):
             adapter_targets.add("language_model.lm_head")
         else:
             _, module = target.split(".layers.*.", 1)
-            adapter_targets.update(
-                f"language_model.layers.*.{name}" for name in _HF_TO_ADAPTER_MODULES[module]
-            )
+            adapter_targets.update(f"language_model.layers.*.{name}" for name in _HF_TO_ADAPTER_MODULES[module])
     return sorted(adapter_targets)
 
 

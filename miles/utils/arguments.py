@@ -3183,7 +3183,11 @@ def miles_validate_args(args):
                 expand_hf_lora_targets(args.target_modules, layout), args.exclude_modules
             )
         args.lora_adapter_targets = list(args.hf_lora_targets)
-        if args.megatron_to_hf_mode == "raw" and hf_config.model_type in ("inkling_model", "inkling_mm_model", "inkling_text"):
+        if args.megatron_to_hf_mode == "raw" and hf_config.model_type in (
+            "inkling_model",
+            "inkling_mm_model",
+            "inkling_text",
+        ):
             args.lora_adapter_targets = resolve_inkling_adapter_targets(hf_config.to_dict(), args.hf_lora_targets)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
