@@ -35,9 +35,9 @@ _HF_TO_ADAPTER_MODULES = {
 
 def resolve_inkling_adapter_targets(hf_config, targets):
     expected = resolve_hf_lora_targets(hf_config)
-    assert set(targets) == set(expected), (
-        "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
-    )
+    assert set(targets) == set(
+        expected
+    ), "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
     adapter_targets = set()
     for target in targets:
         if target == "lm_head":
