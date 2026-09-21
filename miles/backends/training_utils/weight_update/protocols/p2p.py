@@ -134,12 +134,13 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
 
-        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+        self.is_sender = self.transfer_plan._gathered_dp_rank < sum(engine_gpu_counts)
 
         if self.is_sender:
             self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            targets = self.transfer_plan.plan_p2p()
+            targets = self.transfer_plan.plan_p2p(engine_gpu_counts=engine_gpu_counts)
             (
                 self.remote_weight_infos_by_session_id,
                 targets_to_session_id,
