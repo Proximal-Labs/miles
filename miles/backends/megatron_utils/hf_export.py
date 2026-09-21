@@ -1,20 +1,10 @@
-"""HF-format export of the live Megatron model.
+"""Backend selection and checkpoint publication for Megatron HF exports."""
 
-``export_hf_model_direct`` goes through miles' own megatron->HF converters (the
-weight updater's machinery), so export coverage always matches weight-sync
-coverage; ``save_hf_model`` picks between it and the Megatron-Bridge exporter
-(LoRA needs the bridge for adapter merging) and writes a ``.complete`` marker.
-Everything here is collective: all ranks must call it, global rank 0 writes.
-"""
-
-import json
 import logging
-import shutil
 from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
 
-import safetensors.torch
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
@@ -24,73 +14,12 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct impor
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
 from miles.utils.megatron_bridge_utils import patch_megatron_model
 
 logger = logging.getLogger(__name__)
-
-
-HF_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
-
-
-def _is_hf_metadata_file(path: Path) -> bool:
-    """Tokenizer/config files worth copying into an export — not weights, and not the
-    base checkpoint's weight index, which would clobber the one the export writes."""
-    return path.is_file() and path.suffix not in HF_WEIGHT_SUFFIXES and not path.name.endswith(".index.json")
-
-
-def export_hf_model_direct(
-    args,
-    model: Sequence[DDP],
-    path: str | Path,
-    *,
-    model_name: str,
-    quantization_config,
-    megatron_local_weights,
-) -> None:
-    """Collectively export HF shards into a directory prepared by the caller.
-
-    Uses the weight updater's converters; only global rank 0 writes files.
-    """
-    path = Path(path)
-    is_writer = torch.distributed.get_rank() == 0
-
-    iterator = HfWeightIteratorDirect(
-        args,
-        model,
-        placement=WeightUpdatePlacement(gather_pp=True),
-        model_name=model_name,
-        quantization_config=quantization_config,
-    )
-
-    weight_map: dict[str, str] = {}
-    total_size = 0
-    shard_index = 0
-    for hf_named_tensors in iterator.iter_hf_weights(megatron_local_weights):
-        if not is_writer:
-            continue
-        shard_index += 1
-        shard_name = f"model-{shard_index:05d}.safetensors"
-        shard_tensors = {}
-        for name, tensor in hf_named_tensors:
-            shard_tensors[name] = tensor.detach().to("cpu").contiguous()
-            weight_map[name] = shard_name
-            total_size += shard_tensors[name].numel() * shard_tensors[name].element_size()
-        safetensors.torch.save_file(shard_tensors, path / shard_name)
-        del shard_tensors
-
-    if is_writer:
-        assert weight_map, f"HF export to {path} produced no weights"
-        base_checkpoint = Path(args.hf_checkpoint)
-        if base_checkpoint.is_dir():
-            for meta_file in base_checkpoint.iterdir():
-                if _is_hf_metadata_file(meta_file):
-                    shutil.copy2(meta_file, path / meta_file.name)
-        else:
-            logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
-        index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-        (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
 
 
 @cache
@@ -121,13 +50,17 @@ def save_hf_model(
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
             # LoRA needs Bridge to merge the adapter into the base weights
             hf_config = load_hf_config(args.hf_checkpoint)
-            export_hf_model_direct(
+            iterator = HfWeightIteratorDirect(
                 args,
                 model,
-                tmp_dir,
+                placement=WeightUpdatePlacement(gather_pp=True),
                 model_name=type(hf_config).__name__.lower() if args.model_name is None else args.model_name,
                 quantization_config=getattr(hf_config, "quantization_config", None),
-                megatron_local_weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
+            )
+            SnapshotPublisher(iterator).write_model(
+                tmp_dir,
+                weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
+                hf_checkpoint=args.hf_checkpoint,
             )
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
