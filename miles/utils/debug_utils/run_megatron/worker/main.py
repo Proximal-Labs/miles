@@ -144,7 +144,7 @@ def _parse_args() -> tuple[TrainerConfig, WorkerScriptArgs]:
         standalone_argv.extend(("--load", str(script_args.ref_load), "--ref-load", str(script_args.ref_load)))
 
     with override_argv(standalone_argv):
-        args = parse_args()
+        args = parse_args(allow_random_init_hf_mismatch=True)
     assert args.train_backend == "megatron", "Standalone Megatron requires the Megatron backend"
     assert args.debug_train_only and not args.debug_rollout_only
     assert not args.offload_train and not args.colocate and not args.starts_inference_engines

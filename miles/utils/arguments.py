@@ -271,13 +271,19 @@ def get_miles_extra_args_provider(
 
 def parse_args(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+    *,
+    allow_random_init_hf_mismatch: bool = False,
 ) -> AllConfig:
-    args, _ = parse_args_and_get_parser(add_custom_arguments=add_custom_arguments)
+    args, _ = parse_args_and_get_parser(
+        add_custom_arguments=add_custom_arguments, allow_random_init_hf_mismatch=allow_random_init_hf_mismatch
+    )
     return args
 
 
 def parse_args_and_get_parser(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+    *,
+    allow_random_init_hf_mismatch: bool = False,
 ) -> tuple[AllConfig, argparse.ArgumentParser]:
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
@@ -308,7 +314,15 @@ def parse_args_and_get_parser(
             args.compress_ratios = getattr(
                 hf_config, "compress_ratios", None
             )  # config-access-exempt: model-family schemas differ in optional compress_ratios metadata
-            hf_validate_args(args, hf_config)
+            if not (
+                allow_random_init_hf_mismatch
+                and args.megatron_to_hf_mode == "raw"
+                and args.load is None
+                and args.ref_load is None
+                and args.critic_load is None
+                and args.megatron_config is None
+            ):
+                hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
                 args.indexer_rope_interleave = bool(
