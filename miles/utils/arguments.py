@@ -1338,7 +1338,7 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
-    if args.offload_train:
+    if args.train_backend == "megatron" and args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = True
 
@@ -1722,7 +1722,8 @@ def _maybe_apply_dumper_overrides(args) -> None:
     args.eval_interval = None
     args.save = None
     args.save_interval = None
-    args.save_retain_interval = None
+    if args.train_backend == "megatron":
+        args.save_retain_interval = None
 
 
 def resolve_fsdp_num_layers(hf_config) -> int | None:
