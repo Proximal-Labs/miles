@@ -99,10 +99,11 @@ def validate_score_centering_sample(sample: Sample, k: int) -> None:
         raise ValueError("Invalid score-centering logprobs or candidate padding")
     if (np.exp(logps.astype(np.float64)).sum(-1) > 1 + 1e-5).any():
         raise ValueError("Score-centering candidate probability mass exceeds one")
-    for row in ids:
-        present = row[row >= 0]
-        if len(np.unique(present)) != len(present):
-            raise ValueError("Duplicate score-centering candidate token IDs")
+    # Batched sorting avoids one Python/NumPy call per generated token. Repeated
+    # -1 padding is allowed; nonnegative candidate IDs must be unique per row.
+    sorted_ids = np.sort(ids, axis=-1)
+    if ((sorted_ids[:, 1:] >= 0) & (sorted_ids[:, 1:] == sorted_ids[:, :-1])).any():
+        raise ValueError("Duplicate score-centering candidate token IDs")
     sampled = np.asarray(sample.rollout_log_probs)
     if not np.isfinite(sampled[active]).all() or (sampled[active] > 0).any():
         raise ValueError("Invalid score-centering sampled-token logprobs")

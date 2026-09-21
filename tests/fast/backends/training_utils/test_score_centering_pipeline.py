@@ -386,3 +386,30 @@ def test_shared_advantages_loss_scaling_and_regularization(
     expected.backward()
     torch.testing.assert_close(logits.grad, reference_logits.grad, atol=1e-6, rtol=1e-5)
     assert normalizer == 1 and "entropy_loss" in metrics["keys"] and "kl_loss" in metrics["keys"]
+
+
+@pytest.mark.parametrize("candidates", [[2, 3, -1], [-1, 3, 2], [-1, 2, -1], [-1, -1, -1]])
+def test_candidate_validation_preserves_order_and_allows_repeated_padding(candidates: list[int]) -> None:
+    sample = _turn([0], [2, 3], [0.5, 0.25])
+    sample.rollout_topk_token_ids[:] = candidates
+    sample.rollout_topk_log_probs[:] = [
+        -np.inf if token == -1 else np.log(0.5 if token == 2 else 0.25) for token in candidates
+    ]
+    if all(token == -1 for token in candidates):
+        sample.loss_mask = [0, 0]
+    original_ids = sample.rollout_topk_token_ids.copy()
+    original_logps = sample.rollout_topk_log_probs.copy()
+    validate_score_centering_sample(sample, 3)
+    np.testing.assert_array_equal(sample.rollout_topk_token_ids, original_ids)
+    np.testing.assert_array_equal(sample.rollout_topk_log_probs, original_logps)
+
+
+@pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.parametrize("token", [0, 3])
+def test_candidate_validation_rejects_unsorted_duplicates(masked: bool, token: int) -> None:
+    sample = _turn([0], [2, 3], [0.5, 0.25])
+    sample.rollout_topk_token_ids[1] = [token, 2, token]
+    sample.rollout_topk_log_probs[1] = np.log([0.25, 0.5, 0.25])
+    sample.loss_mask[1] = 0 if masked else 1
+    with pytest.raises(ValueError, match="Duplicate"):
+        validate_score_centering_sample(sample, 3)
