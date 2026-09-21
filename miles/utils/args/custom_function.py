@@ -10,6 +10,9 @@ from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 
 
+_legacy_config_classes: dict[int, tuple[Any, type[BaseConfig]]] = {}
+
+
 class CustomFunctionConfig(BaseConfig):
     model_config = ConfigDict(frozen=True)
 
@@ -142,8 +145,9 @@ def _compute_config_class(fn: Any, *, path: str) -> type[BaseConfig] | None:
 
     add_arguments = getattr(fn, "add_arguments", None)  # config-access-exempt: legacy hook protocol discovery
     if callable(add_arguments):
-        fn.config_class = _adapt_legacy_custom_config(add_arguments)
-        return fn.config_class
+        if id(fn) not in _legacy_config_classes:
+            _legacy_config_classes[id(fn)] = (fn, _adapt_legacy_custom_config(add_arguments))
+        return _legacy_config_classes[id(fn)][1]
 
     return None
 
