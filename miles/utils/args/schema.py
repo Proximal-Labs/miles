@@ -25,7 +25,7 @@ class Arg:
     cli_name: str | None = None
     type_parser: Any = _UNSET
     nargs: str | int | None = None
-    required: bool = False
+    required: bool | None = None
     action: str | type[argparse.Action] | None = None
     const: Any = _UNSET
     metavar: str | tuple[str, ...] | None = None
