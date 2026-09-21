@@ -3,19 +3,13 @@
 Needs a Hopper (SM90+) GPU with both `fla` and `flash_qla`; skips otherwise.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 
 def load_backend_module():
-    module_path = Path(__file__).resolve().parents[2] / "miles_plugins" / "models" / "qwen_gdn_backend.py"
-    spec = importlib.util.spec_from_file_location("test_qwen_gdn_backend_module", module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    from miles.kernels.attention.delta_rule import backend
+
+    return backend
 
 
 def test_unknown_backend_raises_value_error():

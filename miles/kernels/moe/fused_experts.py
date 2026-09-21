@@ -9,7 +9,7 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     silu_and_mul,
 )
 
-from .fused_moe_triton_backward_kernels import invoke_fused_moe_backward_kernel
+from miles.kernels.moe.fused_moe_triton_backward_kernels import invoke_fused_moe_backward_kernel
 
 
 class GateUpProjFunction(torch.autograd.Function):
