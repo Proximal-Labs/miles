@@ -8,7 +8,7 @@ import safetensors.torch
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import write_snapshot_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.utils.multi_lora import AdapterSpec
 
@@ -30,7 +30,7 @@ class SnapshotPublisher:
         self._adapter_config = adapter_config
 
     def publish_adapter(self, adapter: AdapterSpec | None, path: str, metadata: dict | None = None) -> None:
-        write_checkpoint_dir(
+        write_snapshot_dir(
             path,
             lambda checkpoint_dir: self.write_adapter(adapter, checkpoint_dir),
             metadata=metadata,

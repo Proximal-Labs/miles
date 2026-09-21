@@ -1,4 +1,4 @@
-"""Collective checkpoint writes with coordinated failure cleanup."""
+"""Snapshot and native checkpoint directory writes."""
 
 # TODO: isolate checkpoint IO failures in Tinker; they still terminate the trainer cell.
 
@@ -15,6 +15,41 @@ from miles.utils.distributed_utils import get_gloo_group
 logger = logging.getLogger(__name__)
 
 
+def write_snapshot_dir(
+    path: str | Path,
+    write_weights: Callable[[Path], None],
+    metadata: dict | None = None,
+    *,
+    overwrite: bool = True,
+    completion_marker: str | None = None,
+) -> None:
+    """Write collectively with rank 0 as the sole file writer.
+
+    Finish all weight collectives before raising local write errors.
+    """
+    checkpoint_dir = prepare_checkpoint_dir(path, overwrite=overwrite)
+    writers_stopped = False
+    try:
+        try:
+            write_weights(checkpoint_dir)
+        finally:
+            if dist.is_initialized():
+                dist.barrier(group=get_gloo_group())
+            writers_stopped = True
+        if _rank() == 0:
+            if metadata is not None:
+                (checkpoint_dir / "META.json").write_text(json.dumps(metadata, indent=2))
+            if completion_marker is not None:
+                (checkpoint_dir / completion_marker).touch()
+    except Exception:
+        if writers_stopped:
+            try:
+                remove_checkpoint_dir(checkpoint_dir)
+            except OSError:
+                logger.exception(f"Failed to clean up snapshot {checkpoint_dir}")
+        raise
+
+
 def write_checkpoint_dir(
     path: str | Path,
     write_shards: Callable[[Path], None],
@@ -22,7 +57,7 @@ def write_checkpoint_dir(
     *,
     overwrite: bool = True,
 ) -> None:
-    """Replace a checkpoint directory collectively; callers must exclude concurrent readers.
+    """Write native checkpoint shards collectively; callers must exclude concurrent readers.
 
     All ranks must call. Writers must finish their collectives before raising local IO errors.
     """
@@ -42,19 +77,21 @@ def write_checkpoint_dir(
 
 
 def prepare_checkpoint_dir(path: str | Path, *, overwrite: bool = True) -> Path:
-    """Prepare on rank 0 and agree on errors before writers enter weight collectives."""
+    """Prepare on rank 0 and broadcast failures before entering weight collectives."""
     checkpoint_dir = Path(path)
-
-    def prepare_dir():
-        if _rank() == 0:
-            if not overwrite and (checkpoint_dir.exists() or checkpoint_dir.is_symlink()):
+    error = [None]
+    if _rank() == 0:
+        try:
+            if not overwrite and checkpoint_dir.exists():
                 raise FileExistsError(f"checkpoint {checkpoint_dir} already exists")
             remove_checkpoint_dir(checkpoint_dir)
             checkpoint_dir.mkdir(parents=True)
-
-    error = _run_checkpoint_phase(prepare_dir)
-    if error is not None:
-        raise error
+        except Exception as exc:
+            error[0] = exc
+    if dist.is_initialized():
+        dist.broadcast_object_list(error, src=0, group=get_gloo_group())
+    if error[0] is not None:
+        raise error[0]
     return checkpoint_dir
 
 
@@ -63,12 +100,7 @@ def remove_checkpoint_dir(path: str | Path) -> None:
     if _rank() != 0:
         return
     checkpoint_dir = Path(path)
-    if checkpoint_dir.is_symlink():
-        version_dir = checkpoint_dir.resolve()
-        checkpoint_dir.unlink()
-        if version_dir.exists():
-            shutil.rmtree(version_dir)
-    elif checkpoint_dir.exists():
+    if checkpoint_dir.exists():
         shutil.rmtree(checkpoint_dir)
 
 
