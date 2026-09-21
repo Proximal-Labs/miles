@@ -19,6 +19,7 @@
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
 | `scenario_realistic_gsm8k_fully_async` | `test_realistic_gsm8k_fully_async__kill_train_rollout.py`, no modes |
+| `scenario_inference_scaling` | `test_inference_scaling__kill_rollout.py`, no modes |
 
 - **Forced absences**, one reason each:
     - `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` is multi-node, and no multi-node CI lane exists.
@@ -42,6 +43,7 @@
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
 | `scenario_realistic_gsm8k_fully_async` | soak | same, through `train_async.py --fully-async` |
+| `scenario_inference_scaling` | soak | the engine pool grows and shrinks under a live run, and the run follows it |
 
 ### Modes
 
@@ -457,3 +459,44 @@ Same as the twin: model, parallelism, batch sizes, CLI and every assertion, by c
 - **Why `--pause-generation-mode in_place`**: the default retract mode can deadlock `flush_cache` under load, and a soak whose verdict is "training finished without hanging" cannot tell that deadlock from the failure it exists to catch.
 - **Asserted before the cluster comes up**: the mode has real engines and is not colocated. Recorded rollout data would prove nothing about generating while training, and `train_async.py` rejects colocation outright.
 - **Deliberately uncovered**: `train_async.py` without `--fully-async`, the strictly easier case, at tens of minutes to hours of 8-GPU time per soak.
+
+### `scenario_inference_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_inference_scaling__kill_rollout.py, no mode: the topology is pinned in the module
+Steps: 12 rollouts (NUM_ROLLOUTS)
+Layout: dense Qwen3-0.6B, 2 cells x CP2 on 4 train GPUs + 2 engines x 1 GPU, disaggregated,
+        --ft-components rollout, api server + mini ft controller as in the soaks; 7 GPUs at the peak
+
+Mechanism: the driver thread patches spec.replicas of the engine pool's LeaderWorkerSet (kubectl
+        patch, conftest_ft/scaling.py) while the run is training a scheduled rollout - the engines
+        are idle then, so nothing is mid-generation on the pod that goes away. Kubernetes creates
+        or deletes the highest group index, the inference controller sees the pod through its
+        watch and adds / removes the cell, the next weight update covers the new engine, and the
+        rollout executor re-reads the engine topology before every rollout.
+Schedule (SCHEDULE): 2 -> 3 engines while training rollout 2, 3 -> 2 while training rollout 7
+Timing: exact - the driver reads the run's own event log (rollout metrics = generation done,
+        train/grad_norm = training done, the engine checksum event = weights pushed) and fires only
+        while the run stands at the scheduled moment; a missed moment fails, it never fires late
+Landing: a resize shows in the run within LANDING_LAG_ROLLOUTS (3) rollouts, and no earlier
+
+Assertions:
+  1. Driver: every scheduled resize was applied, replicas read back as asked, the pool started at
+     the declared 2
+  2. Weight updates: the number of engines each InferenceEngineWeightChecksumEvent covers is 2
+     for rollouts before the first landing, 3 between the landings, 2 after the second, each
+     landing within the lag window of its resize, plus 2 for the update before rollout 0
+  3. Rollout executor topology: the engine gpu count the executor normalized rollout throughput
+     by, rebuilt per rollout as num_training_samples x response_len/mean / rollout_time /
+     effective_tokens_per_gpu_per_sec, follows the same schedule
+  4. Api server: the driver's GET /api/v1/cells readings list at most 3 rollout cells alive and
+     Serving at once, and exactly 2 when the run ends
+  5. Zero CellReconfigureEvents (no trainer cell moved), and train/grad_norm finite and nonzero
+     for all 12 rollouts
+```
+
+- **Why not relaunch with a new `--rollout-num-gpus`**: the launcher admits a relaunch whose only difference is a LeaderWorkerSet's `replicas` ("scaling"), but a changed size also changes the resolved `sglang` config every leaf payload carries (`server_groups[].num_gpus`) and the orchestrator's argv, so today it refuses the upgrade; resizing the workload directly is how an operator scales the pool until the size leaves the worker payloads.
+- **Why during training**: an engine deleted mid-generation is a crash the rollout ft path already covers in the soaks; the scaling question is whether the run follows a pool that changes size, so the resize lands where nothing is in flight.
+- **Why two independent witnesses of the size**: the checksum event counts the engines the trainer pushed to; the throughput denominator is what `InferenceRuntimeMutState` told the rollout executor. One agreeing with the schedule while the other does not is exactly the bug a refactor of the runtime topology would introduce.
+- **Why the lag window**: a pod takes seconds to be created and the reflector to see it; the update after the resize's own rollout may or may not include the new engine, the one after it must.
