@@ -48,6 +48,7 @@ Usage examples::
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
@@ -121,8 +122,10 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    sys.argv[1:] = _with_session_verify_defaults(sys.argv[1:])
-    args = parse_args(add_custom_arguments=session_verify_extras)
+    parser = session_verify_extras(argparse.ArgumentParser(add_help=False, allow_abbrev=False))
+    wrapper_args, remaining_args = parser.parse_known_args()
+    sys.argv[1:] = _with_session_verify_defaults(remaining_args)
+    args = parse_args(add_custom_arguments=_set_session_verify_defaults)
 
     # Resolve the family-owned capability before any GPU work starts so an
     # unsupported verifier schedule fails immediately.
@@ -151,7 +154,7 @@ def main() -> int:
     _print_action_table(allowed_roles, cycles=args.session_verify_cycles)
 
     try:
-        run_session_verify(args=args)
+        run_session_verify(args=args, assistant_text_threshold=wrapper_args.assistant_text_threshold)
     except Exception as e:
         print()
         print(f"Verdict: FAIL -- {type(e).__name__}: {e}", file=sys.stderr)
@@ -163,6 +166,11 @@ def main() -> int:
         "across all required driver actions."
     )
     return 0
+
+
+def _set_session_verify_defaults(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.set_defaults(**SESSION_VERIFY_INVARIANT_ARGS)
+    return parser
 
 
 if __name__ == "__main__":

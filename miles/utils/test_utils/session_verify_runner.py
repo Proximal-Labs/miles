@@ -234,7 +234,12 @@ def _session_verify_env(
     return env
 
 
-def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireFormat = "openai") -> None:
+def run_session_verify(
+    args: argparse.Namespace,
+    *,
+    wire_format: SessionWireFormat = "openai",
+    assistant_text_threshold: float | None = None,
+) -> None:
     """Boot ``miles`` rollout pipeline and run the session-verification driver.
 
     Returns nothing on success; raises ``AssertionError`` on TITO mismatch
@@ -258,6 +263,9 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     """
     if wire_format not in ("openai", "anthropic"):
         raise ValueError(f"unsupported session verification wire format: {wire_format}")
+
+    if assistant_text_threshold is None:
+        assistant_text_threshold = args.assistant_text_threshold
 
     backend = command_utils.default_config().create_backend()
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
@@ -284,7 +292,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
         )
         assert_session_verify_metrics(
             metrics_path,
-            assistant_text_threshold=args.assistant_text_threshold,
+            assistant_text_threshold=assistant_text_threshold,
             require_append_tool=wire_format == "openai",
         )
     except Exception:

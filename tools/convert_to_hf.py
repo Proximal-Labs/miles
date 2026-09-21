@@ -1,3 +1,6 @@
+import argparse
+import sys
+
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
@@ -5,6 +8,7 @@ from transformers import AutoModelForCausalLM
 
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
+from miles.utils.args.runtime import AllConfig
 from miles.utils.arguments import parse_args
 from miles.utils.hf_config import load_hf_config
 from miles.utils.processing_utils import load_tokenizer
@@ -26,7 +30,7 @@ def add_checkpoint_args(parser):
     return parser
 
 
-def main(args):
+def main(args: AllConfig, *, output_dir: str | None, check_same: bool) -> None:
     from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
     megatron_utils.init(
@@ -98,7 +102,7 @@ def main(args):
             args.hf_checkpoint, torch_dtype="auto", device_map="cpu", trust_remote_code=True
         )
 
-        if args.check_same:
+        if check_same:
             for name, param in hf_model.named_parameters():
                 if name in state_dict:
                     assert (
@@ -108,14 +112,16 @@ def main(args):
                 else:
                     print(f"Warning: {name} not found in state_dict")
 
-        if args.output_dir:
-            tokenizer.save_pretrained(args.output_dir)
+        if output_dir:
+            tokenizer.save_pretrained(output_dir)
             print(hf_model.load_state_dict(state_dict, strict=False))
-            hf_model.save_pretrained(args.output_dir)
+            hf_model.save_pretrained(output_dir)
 
     dist.barrier()
 
 
 if __name__ == "__main__":
-    args = parse_args(add_custom_arguments=add_checkpoint_args)
-    main(args)
+    parser = add_checkpoint_args(argparse.ArgumentParser(add_help=False, allow_abbrev=False))
+    checkpoint_args, sys.argv[1:] = parser.parse_known_args()
+    args = parse_args()
+    main(args, output_dir=checkpoint_args.output_dir, check_same=checkpoint_args.check_same)
