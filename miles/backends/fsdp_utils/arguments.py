@@ -32,6 +32,7 @@ class FSDPArgs:
     warmup_ratio: float = 0.03
 
     attn_implementation: str = "flash_attention_2"
+    padded_vocab_size: int | None = None
 
     # Logging
     wandb_project: str = "miles-fsdp"
