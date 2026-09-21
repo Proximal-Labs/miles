@@ -314,15 +314,18 @@ def parse_args_and_get_parser(
             args.compress_ratios = getattr(
                 hf_config, "compress_ratios", None
             )  # config-access-exempt: model-family schemas differ in optional compress_ratios metadata
-            if not (
-                allow_random_init_hf_mismatch
-                and args.megatron_to_hf_mode == "raw"
-                and args.load is None
-                and args.ref_load is None
-                and args.critic_load is None
-                and args.megatron_config is None
-            ):
-                hf_validate_args(args, hf_config)
+            hf_validate_args(
+                args,
+                hf_config,
+                validate_architecture=not (
+                    allow_random_init_hf_mismatch
+                    and args.megatron_to_hf_mode == "raw"
+                    and args.load is None
+                    and args.ref_load is None
+                    and args.critic_load is None
+                    and args.megatron_config is None
+                ),
+            )
 
             if is_dsa(hf_config):
                 args.indexer_rope_interleave = bool(
@@ -1743,7 +1746,7 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
     return num_layers
 
 
-def hf_validate_args(args, hf_config):
+def hf_validate_args(args: argparse.Namespace, hf_config: Any, *, validate_architecture: bool = True) -> None:
     def equal(x, y):
         return x == y
 
@@ -1770,6 +1773,9 @@ def hf_validate_args(args, hf_config):
     model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
+
+    if not validate_architecture:
+        return
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
