@@ -283,7 +283,8 @@
                 "MILES_POD_INDEX",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
-                "MILES_K8S_RELEASE"
+                "MILES_K8S_RELEASE",
+                "MILES_WORKER_METADATA"
               ]
             },
             "pattern": "^[ -<>-~]+$"
@@ -540,10 +541,17 @@
                 "MILES_POD_INDEX",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
-                "MILES_K8S_RELEASE"
+                "MILES_K8S_RELEASE",
+                "MILES_WORKER_METADATA"
               ]
             },
             "pattern": "^[ -<>-~]+$"
+          },
+          "type": "object"
+        },
+        "annotations": {
+          "additionalProperties": {
+            "type": "string"
           },
           "type": "object"
         },
@@ -659,7 +667,8 @@
                 "MILES_POD_INDEX",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
-                "MILES_K8S_RELEASE"
+                "MILES_K8S_RELEASE",
+                "MILES_WORKER_METADATA"
               ]
             },
             "pattern": "^[ -<>-~]+$"
