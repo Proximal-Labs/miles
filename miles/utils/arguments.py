@@ -300,6 +300,7 @@ def parse_args_and_get_parser(
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments_and_capture_parser)
+        training_backend_arg_names.update({"rank", "world_size", "_is_global_batch_size_explicitly_specified"})
         previous_arg_names = set(vars(args))
         args.compress_ratios = None
         if args.hf_checkpoint:
