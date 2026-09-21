@@ -134,6 +134,8 @@ class RolloutExecutor:
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
+            self._legacy_train_args = _compute_rollout_function_config(args, self.args.rollout_function_path)
+            self._legacy_eval_args = _compute_rollout_function_config(args, self.args.eval_function_path)
         self.custom_reward_post_process_func = None
         if (x := self.args.custom_reward_post_process_path) is not None:
             self.custom_reward_post_process_func = load_function(x)
@@ -259,7 +261,7 @@ class RolloutExecutor:
             if not self.use_legacy_rollout_v1:
                 result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
             else:
-                fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
+                fn_args = self._legacy_eval_args
                 result = await asyncio.to_thread(
                     call_rollout_fn,
                     self.eval_generate_rollout,
@@ -327,7 +329,7 @@ class RolloutExecutor:
                 )
                 data = await maybe_await(self.generate_rollout(input))
             else:
-                fn_args = _compute_rollout_function_config(self.args, self.args.rollout_function_path)
+                fn_args = self._legacy_train_args
                 data = await asyncio.to_thread(
                     call_rollout_fn, self.generate_rollout, fn_args, rollout_id, self.data_source, evaluation=False
                 )
