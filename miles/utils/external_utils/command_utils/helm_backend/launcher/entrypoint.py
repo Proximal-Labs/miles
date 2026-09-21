@@ -92,7 +92,9 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     ).serialize()
     installed_manifest = Helm.get_manifest(release, namespace)
     run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
-    env = train_env_vars(request, {}, config=config)
+    chart = chart_dir(repo_base_dir=repo_base_dir)
+    infra = InfraInfo.load(chart, list(config.helm_values))
+    env = train_env_vars(request, {}, config=config) | (infra.env or {})
     pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
     deploy_component = DeployComponent(args.deploy_component)
     assert (deploy_component, args.deploy_instance_id) == (config.deploy_component, config.deploy_instance_id), (
@@ -103,8 +105,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
     with override_env(env):
         specs = compute_specs(args)
-    chart = chart_dir(repo_base_dir=repo_base_dir)
-    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
+    shared_root = InfraInfo.shared_root(infra, namespace=namespace)
     run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
 
     if config.ci_run:
