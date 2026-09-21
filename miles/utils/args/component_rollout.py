@@ -8,11 +8,13 @@ from miles.utils.pydantic_utils import StrictBaseModel
 
 class InferenceRuntimeMutState(StrictBaseModel):
     engine_count: int = 0
+    engine_counts_by_model: dict[str, int] = Field(default_factory=dict)
     gpu_count: int = 0
     eval_engine_count: int = 0
 
     def set_(self, other: "InferenceRuntimeMutState") -> None:
         self.engine_count = other.engine_count
+        self.engine_counts_by_model = other.engine_counts_by_model
         self.gpu_count = other.gpu_count
         self.eval_engine_count = other.eval_engine_count
 

@@ -83,7 +83,7 @@ async def configure_sglang(args: Namespace) -> None:
 async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
     from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
 
-    expected_worker_count = args.sglang.models[0].num_server_cells
+    expected_worker_count = args.inference_runtime_mut_state.engine_counts_by_model[args.sglang.models[0].name]
 
     async def _attempt(_remaining_seconds: float) -> list[str]:
         worker_urls = await get_worker_urls(args)

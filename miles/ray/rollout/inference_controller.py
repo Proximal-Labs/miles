@@ -342,6 +342,7 @@ class InferenceController:
         eval_srv = self.servers.get("eval") if has_eval_engines else None
         return InferenceRuntimeImmutState(
             engine_count=len(engine_gpu_counts),
+            engine_counts_by_model={name: len(srv.server_cells) for name, srv in self.servers.items()},
             gpu_count=sum(engine_gpu_counts),
             eval_engine_count=len(eval_srv.engine_gpu_counts) if eval_srv is not None else 0,
         )
