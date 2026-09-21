@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import shlex
+from pathlib import Path
 from typing import Any
 
 from miles.utils.external_utils.colocate_pairing.config import PairingLayout
@@ -23,6 +25,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
     sentinel_to_placeholder,
     sentinels_to_placeholders,
 )
+from miles.utils.file_utils import atomic_write_text
 from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.connection_config import StaticConnConfig, build_worker_annotations
 from miles.utils.workers.naming import compute_port_name
@@ -73,7 +76,13 @@ def build_entry(
         object_name=naming.component_name(plan.release, spec.name),
         pool_id=spec.name,
         command=_with_prepare_cmd(
-            _command_of_spec(spec, context, static_connections=static_connections, launch_record=plan.launch_record),
+            _command_of_spec(
+                spec,
+                context,
+                static_connections=static_connections,
+                launch_record=plan.launch_record,
+                worker_config_dir=plan.worker_config_dir,
+            ),
             spec,
             plan=plan,
         ),
@@ -183,18 +192,28 @@ def _command_of_spec(
     *,
     static_connections: StaticConnConfig,
     launch_record: str | None,
+    worker_config_dir: Path,
 ) -> list[str]:
     match spec:
         case BaseCommandSpec():
             return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
         case BaseServeSpec():
-            return _serve_command(spec, static_connections=static_connections, launch_record=launch_record)
+            return _serve_command(
+                spec,
+                static_connections=static_connections,
+                launch_record=launch_record,
+                worker_config_dir=worker_config_dir,
+            )
         case _:
             raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
 
 
 def _serve_command(
-    spec: BaseServeSpec, *, static_connections: StaticConnConfig, launch_record: str | None
+    spec: BaseServeSpec,
+    *,
+    static_connections: StaticConnConfig,
+    launch_record: str | None,
+    worker_config_dir: Path,
 ) -> list[str]:
     interpreter_prefix = python_argv_prefix()
     workers_per_pod = spec.scheduling.workers_per_pod()
@@ -204,12 +223,18 @@ def _serve_command(
         args=worker_args.model_dump(mode="json"),
         static_connections=static_connections,
     )
+    config_json = worker_config.model_dump_json()
+    config_digest = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
+    config_file = worker_config_dir / f"{config_digest}.json"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path=config_file, text=config_json)
+
     serve = [
         *interpreter_prefix,
         "-m",
         _SERVE_MODULE,
-        "--config",
-        worker_config.model_dump_json(),
+        "--config-file",
+        str(config_file),
     ]
     if workers_per_pod == 1:
         return serve

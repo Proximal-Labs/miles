@@ -135,6 +135,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             state_file=str(state_file) if state_file is not None else "",
             orchestrator_command=orchestrator_command,
             worker_argv=pod_argv,
+            worker_config_dir=run_directory / "worker-configs",
             env=env,
             colocate=bool(args.colocate),
             mooncake_plan=_compute_mooncake_plan(args),

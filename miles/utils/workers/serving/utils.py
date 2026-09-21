@@ -7,6 +7,7 @@ import socket
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from miles.utils.args.schema import validate_complete_config
 from miles.utils.workers.serving.worker_config import ServeWorkerConfig
@@ -59,8 +60,13 @@ def split_worker_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 
 def parse_own_args(own_argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve one pool of a miles run")
-    parser.add_argument("--config", required=True, help="Runtime config of this pool as serialized ServeWorkerConfig")
-    return parser.parse_args(own_argv)
+    config = parser.add_mutually_exclusive_group(required=True)
+    config.add_argument("--config", help="Runtime config of this pool as serialized ServeWorkerConfig")
+    config.add_argument("--config-file", type=Path, help="Path to the serialized ServeWorkerConfig")
+    args = parser.parse_args(own_argv)
+    if args.config_file is not None:
+        args.config = args.config_file.read_text(encoding="utf-8")
+    return args
 
 
 def parse_serve_worker_config(value: str) -> ServeWorkerConfig:

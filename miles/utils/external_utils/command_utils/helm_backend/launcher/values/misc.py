@@ -53,6 +53,7 @@ class LaunchPlan(FrozenStrictBaseModel):
     state_file: str
     orchestrator_command: list[str]
     worker_argv: list[str]
+    worker_config_dir: Path
     env: dict[str, str] = {}
     launch_record: str | None = None
     colocate: bool = False
