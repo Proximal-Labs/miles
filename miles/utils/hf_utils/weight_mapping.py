@@ -17,7 +17,8 @@ class HfWeightMapping:
 
     @classmethod
     def from_config(cls, config):
-        for auto_model in (AutoModelForCausalLM, AutoModelForImageTextToText):
+        # VLMs may also register a CausalLM compatibility class that drops the vision/text namespace.
+        for auto_model in (AutoModelForImageTextToText, AutoModelForCausalLM):
             if type(config) in auto_model._model_mapping:
                 # Only structure is needed; never allocate or load base weights.
                 with torch.random.fork_rng(devices=[]), torch.device("meta"):

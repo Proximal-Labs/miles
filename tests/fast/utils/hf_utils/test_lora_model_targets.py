@@ -5,6 +5,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
 
 from miles.utils.hf_utils.lora_targets import _HF_LORA_MODELS, get_hf_lora_targets, resolve_hf_lora_targets
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 
 
 _NATIVE_MODELS = (
@@ -134,6 +135,12 @@ def test_targets_match_native_hf_model(model_type, overrides):
     }
     assert projections
     assert all(param.is_meta for param in model.parameters())
+    hf_mapping = HfWeightMapping.from_config(config)
+    assert hf_mapping.parameter_shapes == {
+        name: tuple(param.shape)
+        for name, param in model.named_parameters(remove_duplicate=False)
+        if param.ndim in (2, 3)
+    }
     layout = get_hf_lora_targets(config.to_dict())
     for group in (layout.attention, layout.mlp, layout.unembed):
         assert group
