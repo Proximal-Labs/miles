@@ -51,9 +51,12 @@ class BaseConfig(StrictBaseModel):
                 )
 
 
-def validate_complete_config(config_class: type[_ConfigT], payload: Mapping[str, Any]) -> _ConfigT:
+def validate_complete_config(
+    config_class: type[_ConfigT], payload: Mapping[str, Any], *, allow_model_instances: bool = False
+) -> _ConfigT:
+    model_instance_ids = _collect_model_instance_ids(payload) if allow_model_instances else frozenset()
     config = config_class.model_validate(payload)
-    _validate_complete_value(value=config, path=config_class.__name__)
+    _validate_complete_value(value=config, path=config_class.__name__, model_instance_ids=model_instance_ids)
     return config
 
 
@@ -132,8 +135,10 @@ def _infer_type_parser(annotation: Any) -> Callable[[str], Any]:
     return annotation
 
 
-def _validate_complete_value(*, value: Any, path: str) -> None:
+def _validate_complete_value(*, value: Any, path: str, model_instance_ids: frozenset[int] = frozenset()) -> None:
     if isinstance(value, BaseModel):
+        if id(value) in model_instance_ids:
+            return
         fields = type(value).model_fields
         if isinstance(value, BaseConfig):
             omitted = value._suppressed_fields - value.model_fields_set
@@ -143,10 +148,22 @@ def _validate_complete_value(*, value: Any, path: str) -> None:
             raise ValueError(f"Incomplete configuration {path}: missing fields {sorted(missing)}")
         for name, field in fields.items():
             if field.exclude is not True:
-                _validate_complete_value(value=value.__getattribute__(name), path=f"{path}.{name}")
+                _validate_complete_value(
+                    value=value.__getattribute__(name), path=f"{path}.{name}", model_instance_ids=model_instance_ids
+                )
     elif isinstance(value, Mapping):
         for name, item in value.items():
-            _validate_complete_value(value=item, path=f"{path}[{name!r}]")
+            _validate_complete_value(value=item, path=f"{path}[{name!r}]", model_instance_ids=model_instance_ids)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _validate_complete_value(value=item, path=f"{path}[{index}]")
+            _validate_complete_value(value=item, path=f"{path}[{index}]", model_instance_ids=model_instance_ids)
+
+
+def _collect_model_instance_ids(value: Any) -> frozenset[int]:
+    if isinstance(value, BaseModel):
+        return frozenset({id(value)})
+    if isinstance(value, Mapping):
+        value = value.values()
+    elif not isinstance(value, (list, tuple)):
+        return frozenset()
+    return frozenset(model_id for item in value for model_id in _collect_model_instance_ids(item))

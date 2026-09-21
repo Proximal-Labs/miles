@@ -3,7 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Self
 
-from pydantic import ConfigDict, SerializeAsAny, create_model, model_validator
+from pydantic import ConfigDict, SerializeAsAny, ValidationInfo, create_model, model_validator
 
 from miles.utils.args.schema import BaseConfig, validate_complete_config
 from miles.utils.function_registry import load_function
@@ -18,13 +18,19 @@ class CustomFunctionConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _validate_config(cls, values: Any) -> Any:
+    def _validate_config(cls, values: Any, info: ValidationInfo) -> Any:
         if not isinstance(values, dict) or not isinstance(values.get("config"), dict):
             return values
         fn = load_function(values["path"])
         config_class = _compute_config_class(fn, path=values["path"])
         assert config_class is not None
-        return values | {"config": validate_complete_config(config_class, values["config"])}
+        return values | {
+            "config": validate_complete_config(
+                config_class,
+                values["config"],
+                allow_model_instances=bool(info.context and info.context.get("allow_model_instances")),
+            )
+        }
 
     def __reduce__(self) -> tuple[Any, tuple[dict[str, Any]]]:
         values = {"path": self.path, "config": None if self.config is None else dict(self.config)}
@@ -161,4 +167,4 @@ class _LegacyCustomFunctionConfig(BaseConfig):
 
 
 def _restore_custom_function_config(values: dict[str, Any]) -> CustomFunctionConfig:
-    return CustomFunctionConfig.model_validate(values)
+    return CustomFunctionConfig.model_validate(values, context={"allow_model_instances": True})
