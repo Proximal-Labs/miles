@@ -289,7 +289,7 @@ async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> byt
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
-    if args.inference_runtime_mut_state.engine_count == 0 and not args.eval_uses_snapshots:
+    if not args.starts_inference_engines and not args.eval_uses_snapshots:
         return
 
     initial_engine_count = (
