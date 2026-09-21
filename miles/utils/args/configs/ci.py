@@ -5,12 +5,12 @@ class CiConfig(BaseConfig):
     ci_enable_metrics_capture: bool
 
     ci_inject_missing_prefetched_batch_bug: A[
-        bool, Arg(help="Discard the restored prefetched batch to test sample ownership failure detection.")
+        bool, Arg(omit_default=True, help="Discard the restored prefetched batch to test sample ownership failure detection.")
     ] = False
-    ci_test: A[bool, Arg()] = False
-    ci_disable_kl_checker: A[bool, Arg()] = False
-    ci_disable_logprobs_checker: A[bool, Arg()] = False
-    ci_disable_weight_update_checker: A[bool, Arg()] = False
+    ci_test: A[bool, Arg(omit_default=True)] = False
+    ci_disable_kl_checker: A[bool, Arg(omit_default=True)] = False
+    ci_disable_logprobs_checker: A[bool, Arg(omit_default=True)] = False
+    ci_disable_weight_update_checker: A[bool, Arg(omit_default=True)] = False
     ci_metric_checker_key: A[str | None, Arg()] = None
     ci_metric_checker_threshold: A[float | None, Arg()] = None
     ci_metric_checker_expect_num: A[
@@ -22,5 +22,5 @@ class CiConfig(BaseConfig):
     ] = None
     ci_save_grad_norm: A[str | None, Arg()] = None
     ci_load_grad_norm: A[str | None, Arg()] = None
-    ci_save_model_hash: A[bool, Arg()] = False
-    ci_check_model_hash: A[bool, Arg()] = False
+    ci_save_model_hash: A[bool, Arg(omit_default=True)] = False
+    ci_check_model_hash: A[bool, Arg(omit_default=True)] = False

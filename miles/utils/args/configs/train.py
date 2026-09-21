@@ -71,6 +71,7 @@ class TrainConfig(BaseConfig):
     rematerialize_param_from_master_weight: A[
         bool,
         Arg(
+            omit_default=True,
             help=(
                 "Colocate CPU memory optimization. Drop the actor's parameter weight backup "
                 "during inference, and rebuild it from the optimizer's master weights on the "
@@ -83,7 +84,7 @@ class TrainConfig(BaseConfig):
     ] = False
     check_rematerialize_param_from_master_weight: A[
         bool,
-        Arg(help="Debug: SHA256-verify the first two rematerialize cycles are bit-identical."),
+        Arg(omit_default=True, help="Debug: SHA256-verify the first two rematerialize cycles are bit-identical."),
     ] = False
     megatron_to_hf_mode: A[
         str,
@@ -141,7 +142,7 @@ class TrainConfig(BaseConfig):
     ] = None
     recompute_loss_function: A[
         bool,
-        Arg(help="Whether to enable recompute loss function to save memory during training."),
+        Arg(omit_default=True, help="Whether to enable recompute loss function to save memory during training."),
     ] = False
     log_probs_chunk_size: A[int, Arg(help="Chunk size to compute log probs to save memory")] = -1
     indep_dp: A[

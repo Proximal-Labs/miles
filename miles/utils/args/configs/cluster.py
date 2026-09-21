@@ -195,6 +195,7 @@ class ClusterConfig(BaseConfig):
     stream_optimizer_state_to_disk: A[
         bool,
         Arg(
+            omit_default=True,
             help=(
                 "Hold optimizer state in files on node-local NVMe, for when it does not fit the "
                 "GPU *while the step runs*; --offload-train-target=disk cannot help there.\n"

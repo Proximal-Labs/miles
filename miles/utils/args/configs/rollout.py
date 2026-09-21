@@ -64,6 +64,7 @@ class RolloutRelatedConfig(BaseConfig):
     namespaced_radix_cache: A[
         bool | None,
         Arg(
+            omit_default=True,
             action=argparse.BooleanOptionalAction,
             help=(
                 "Whether every generation request carries a radix cache key naming the rollout call "
@@ -359,7 +360,7 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = "retract"
-    keep_old_actor: A[bool, Arg(help="Whether to keep the rollout model on training process")] = False
+    keep_old_actor: A[bool, Arg(omit_default=True, help="Whether to keep the rollout model on training process")] = False
 
     rollout_data_postprocess_path: A[
         CustomFunctionConfig | None,

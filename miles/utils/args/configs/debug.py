@@ -147,7 +147,7 @@ class DebugConfig(BaseConfig):
         ),
     ] = ["train_overall"]
     memory_recorder: A[str, Arg(choices=["torch", "memray"])] = "torch"
-    check_weight_update_equal: A[bool, Arg()] = False
+    check_weight_update_equal: A[bool, Arg(omit_default=True)] = False
     check_weight_update_selector: A[
         str,
         Arg(
@@ -170,6 +170,7 @@ class DebugConfig(BaseConfig):
     check_weight_update_allow_quant_error: A[
         bool,
         Arg(
+            omit_default=True,
             help=(
                 "When comparing weights after update, allow quantized tensors to differ "
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space)."
@@ -189,10 +190,11 @@ class DebugConfig(BaseConfig):
             )
         ),
     ] = False
-    save_local_weight_checksum: A[bool, Arg(help="Save per-rank local weight checksum per-step.")] = False
+    save_local_weight_checksum: A[bool, Arg(omit_default=True, help="Save per-rank local weight checksum per-step.")] = False
     enable_event_analyzer: A[
         bool,
         Arg(
+            omit_default=True,
             help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step."
         ),
     ] = False
@@ -210,7 +212,7 @@ class DebugConfig(BaseConfig):
         int | None,
         Arg(help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI)."),
     ] = None
-    enable_witness: A[bool, Arg(help="Enable forward/backward pass witness.")] = False
+    enable_witness: A[bool, Arg(omit_default=True, help="Enable forward/backward pass witness.")] = False
     witness_buffer_size: A[
         int,
         Arg(help="Maximum number of unique witness IDs before recycling."),
