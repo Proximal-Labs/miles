@@ -3,7 +3,7 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import UnionType
-from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
+from typing import Annotated, Any, ClassVar, TypeVar, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.fields import FieldInfo
@@ -36,6 +36,7 @@ class Arg:
 # Adapted from sglang/srt/arg_groups/arg_utils.py:add_cli_args_from_dataclass.
 class BaseConfig(StrictBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    _suppressed_fields: ClassVar[frozenset[str]] = frozenset()
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
@@ -134,6 +135,9 @@ def _infer_type_parser(annotation: Any) -> Callable[[str], Any]:
 def _validate_complete_value(*, value: Any, path: str) -> None:
     if isinstance(value, BaseModel):
         fields = type(value).model_fields
+        if isinstance(value, BaseConfig):
+            omitted = value._suppressed_fields - value.model_fields_set
+            fields = {name: field for name, field in fields.items() if name not in omitted}
         missing = {name for name, field in fields.items() if field.exclude is not True} - value.model_fields_set
         if missing:
             raise ValueError(f"Incomplete configuration {path}: missing fields {sorted(missing)}")

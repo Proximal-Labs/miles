@@ -1,7 +1,7 @@
 import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 from pydantic import ConfigDict, SerializeAsAny, create_model, model_validator
 
@@ -134,18 +134,29 @@ def _adapt_legacy_custom_config(add_arguments: Callable[[argparse.ArgumentParser
     fields = {
         action.dest: (
             Any,
-            ... if action.required or action.default == argparse.SUPPRESS else action.default,
+            ... if action.required else action.default,
         )
         for action in parser._actions
         if action.dest != argparse.SUPPRESS
     }
-    config_class = create_model("LegacyCustomFunctionConfig", __base__=BaseConfig, **fields)
+    config_class = create_model("LegacyCustomFunctionConfig", __base__=_LegacyCustomFunctionConfig, **fields)
+    config_class._suppressed_fields = frozenset(
+        action.dest for action in parser._actions if not action.required and action.default == argparse.SUPPRESS
+    )
 
     def _add_arguments(parser: argparse.ArgumentParser) -> Any:
         return add_arguments(parser)
 
     config_class.add_arguments = _add_arguments
     return config_class
+
+
+class _LegacyCustomFunctionConfig(BaseConfig):
+    @model_validator(mode="after")
+    def _omit_suppressed_fields(self) -> Self:
+        for name in self._suppressed_fields - self.model_fields_set:
+            self.__dict__.pop(name, None)
+        return self
 
 
 def _restore_custom_function_config(values: dict[str, Any]) -> CustomFunctionConfig:
