@@ -140,6 +140,7 @@ class TrainerSpec(BaseServeSpec):
     worker_type: ClassVar[str] = "trainer"
     config_class = TrainerConfig
     args: TrainerConfig
+    fp8_scales: str
     category: str = POOL_CATEGORY_TRAINER_ENGINE
     deploy_component: DeployComponent = DeployComponent.TRAINER
 
@@ -157,8 +158,14 @@ class TrainerSpec(BaseServeSpec):
         total_gpus = num_nodes * num_gpus_per_node
         num_cells = compute_trainer_num_cells(config, role=config.trainer_role)
         assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
+        fp8_scales = (
+            x
+            if (x := os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")) is not None
+            else default_fp8_block_scaling_fp32_scales()
+        )
         return cls(
             args=config,
+            fp8_scales=fp8_scales,
             name=compute_trainer_pool_id(config.trainer_id),
             port_infos=[
                 PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True),
@@ -180,12 +187,7 @@ class TrainerSpec(BaseServeSpec):
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
-        fp8_scales = (
-            x
-            if (x := os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")) is not None
-            else default_fp8_block_scaling_fp32_scales()
-        )
-        return compute_trainer_env_vars(ctx.args, ctx, fp8_scales=fp8_scales)
+        return compute_trainer_env_vars(ctx.args, ctx, fp8_scales=self.fp8_scales)
 
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
         return dict(
