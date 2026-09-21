@@ -4,6 +4,7 @@ import ray
 from ray.actor import ActorHandle
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.runtime import AllConfig
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -34,7 +35,9 @@ def get_backend_capability(args) -> BackendCapability:
 
     # TODO: temporary hack to be removed in later ops
     if isinstance(args, AllConfig) and ClusterBackend(args.cluster_backend) is ClusterBackend.KUBERNETES:
-        static_connections = build_static_conn_config(specs=compute_specs(args))
+        static_connections = build_static_conn_config(
+            specs=compute_specs(args), scaling=ScalingConfig.slice_from(args)
+        )
 
     return factory.get_backend_capability(
         static_connections=static_connections, cluster_backend=ClusterBackend(args.cluster_backend)
