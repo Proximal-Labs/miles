@@ -19,6 +19,7 @@ ROLLOUT_EXECUTOR_WORKER_CLASS = "miles.ray.rollout.rollout_executor.RolloutExecu
 @dataclass(kw_only=True)
 class RolloutExecutorSpec(BaseServeSpec):
     worker_type = "rollout"
+    config_class = RolloutConfig
     args: RolloutConfig
     name: str = ROLLOUT_EXECUTOR_POOL_ID
     worker_class: str = ROLLOUT_EXECUTOR_WORKER_CLASS

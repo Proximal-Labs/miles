@@ -16,6 +16,7 @@ MULTI_LORA_CONTROLLER_WORKER_CLASS = "miles.ray.multi_lora.controller.MultiLoRAC
 @dataclass(kw_only=True)
 class MultiLoraControllerSpec(BaseServeSpec):
     worker_type = "multi_lora"
+    config_class = MultiLoraConfig
     args: MultiLoraConfig
     name: str = MULTI_LORA_CONTROLLER_POOL_ID
     worker_class: str = MULTI_LORA_CONTROLLER_WORKER_CLASS

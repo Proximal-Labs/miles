@@ -52,6 +52,7 @@ INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS = "miles.utils.workers.registration
 @dataclass(kw_only=True)
 class InferenceControllerSpec(BaseServeSpec):
     worker_type = "inference_controller"
+    config_class = InferenceControllerConfig
     args: InferenceControllerConfig
     name: str = INFERENCE_CONTROLLER_POOL_ID
     platform_access: PlatformAccess = PlatformAccess.READ
@@ -85,6 +86,7 @@ class InferenceControllerSpec(BaseServeSpec):
 @dataclass(kw_only=True)
 class InferenceRegistrationReporterSpec(BaseServeSpec):
     worker_type = "inference_registration_reporter"
+    config_class = InferenceControllerConfig
     args: InferenceControllerConfig
     name: str = INFERENCE_REGISTRATION_REPORTER_POOL_ID
     deploy_component: DeployComponent = DeployComponent.INFERENCE

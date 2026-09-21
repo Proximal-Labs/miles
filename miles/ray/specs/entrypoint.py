@@ -11,7 +11,20 @@ from miles.ray.specs.train import TrainerControllerSpec, TrainerSpec
 from miles.utils.arguments import parse_args
 from miles.utils.workers.serving.utils import override_argv
 from miles.utils.workers.types import DeployComponent
-from miles.utils.workers.worker_spec import BaseSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, BaseSpec
+
+
+SERVE_SPEC_CLASSES: dict[str, type[BaseServeSpec]] = {
+    cls.worker_type: cls
+    for cls in (
+        RolloutExecutorSpec,
+        MultiLoraControllerSpec,
+        InferenceControllerSpec,
+        InferenceRegistrationReporterSpec,
+        TrainerControllerSpec,
+        TrainerSpec,
+    )
+}
 
 
 def compute_specs(args) -> list[BaseSpec]:

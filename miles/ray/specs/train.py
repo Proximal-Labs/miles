@@ -50,6 +50,7 @@ _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 @dataclass(kw_only=True)
 class TrainerControllerSpec(BaseServeSpec):
     worker_type = "trainer_controller"
+    config_class = TrainerConfig
     args: TrainerConfig
     deploy_component: DeployComponent = DeployComponent.TRAINER
     platform_access: PlatformAccess = PlatformAccess.READ_DELETE
@@ -140,6 +141,7 @@ def trainer_controller_cell_id(trainer_id: str) -> str:
 @dataclass(kw_only=True)
 class TrainerSpec(BaseServeSpec):
     worker_type = "trainer"
+    config_class = TrainerConfig
     args: TrainerConfig
     category: str = POOL_CATEGORY_TRAINER_ENGINE
     deploy_component: DeployComponent = DeployComponent.TRAINER

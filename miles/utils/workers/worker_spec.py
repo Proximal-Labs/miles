@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, model_validator
 
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -160,9 +161,15 @@ class BaseCommandSpec(BaseSpec):
 
 @dataclass(kw_only=True)
 class BaseServeSpec(BaseSpec):
+    worker_type: ClassVar[str]
+    config_class: ClassVar[type[BaseLeafConfig]]
     worker_class: str
     port_infos: list[PortInfo] = field(default_factory=lambda: [DEFAULT_RPC_PORT_INFO])
     concurrency_groups: dict[str, int] | None = None
+
+    @classmethod
+    @abstractmethod
+    def create(cls, config: Any) -> Self: ...
 
     @abstractmethod
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]: ...
