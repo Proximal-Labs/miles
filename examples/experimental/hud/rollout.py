@@ -61,7 +61,7 @@ class HudConfig(BaseConfig):
     hud_shot_width: A[int, Arg()] = 512
     hud_max_tokens_per_turn: A[int, Arg()] = 512
     hud_max_sandboxes: A[int, Arg()] = 32
-    hud_episode_timeout_s: A[int, Arg()] = 1800
+    hud_episode_timeout_s: A[float, Arg()] = 1800.0
     hud_daytona_key_file: A[str | None, Arg()] = None
     hud_system_prompt: A[str | None, Arg()] = None
 
