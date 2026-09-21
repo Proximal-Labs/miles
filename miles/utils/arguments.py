@@ -3467,6 +3467,7 @@ def miles_validate_args(args):
         if args.eval_hf_dir is None:
             if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
                 args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
+                logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "
