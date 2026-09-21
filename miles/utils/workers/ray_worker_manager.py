@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.ray.specs.inference import INFERENCE_ENGINE_ENV_OVERRIDE_KEYS
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import wrap_ipv6
@@ -58,7 +60,8 @@ class RayWorkerManager:
 
     @staticmethod
     def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
-        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
+        env_overrides = {key: os.environ[key] for key in INFERENCE_ENGINE_ENV_OVERRIDE_KEYS if key in os.environ}
+        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME, runtime_env={"env_vars": env_overrides}).remote()
         ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
         return obj
 
