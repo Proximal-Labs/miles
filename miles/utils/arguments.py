@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+from string import Formatter
 from typing import Any
 
 import yaml
@@ -3464,6 +3465,10 @@ def miles_validate_args(args):
                 "the training rollout function cannot evaluate snapshots."
             )
         if args.eval_hf_dir is None:
+            assert any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)), (
+                "Reusing --save-hf checkpoints for eval requires a {rollout_id} format field "
+                "in the path. Set --eval-hf-dir for independent snapshots."
+            )
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "
