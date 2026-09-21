@@ -456,7 +456,7 @@ def _train(args: ScriptArgs) -> None:
     sglang_args += "--sglang-moe-runner-backend marlin "
     if args.is_4layer:
         sglang_args += (
-            "--sglang-cuda-graph-bs 1 2 4 8 16 "
+            "--sglang-cuda-graph-bs-decode 1 2 4 8 16 "
             "--sglang-mem-fraction-static 0.7 "
             "--sglang-disable-shared-experts-fusion "
         )
