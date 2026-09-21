@@ -12,6 +12,7 @@ import torch.distributed.checkpoint as dist_cp
 from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
+from miles.backends.megatron_utils.megatron_to_hf.offline_config import build_offline_conversion_config
 from miles.utils.hf_config import load_hf_config
 
 
@@ -105,6 +106,7 @@ def get_named_params(args, state_dict):
 def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None):
     # for miles update_weight compatible
     args.sglang_enable_ep_moe = False
+    conversion_config = build_offline_conversion_config(args)
 
     print(f"start saving to {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
@@ -115,7 +117,7 @@ def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_siz
     for name, param in get_named_params(args, state_dict):
         if vocab_size:
             param = remove_padding(name, param, vocab_size)
-        converted_named_tensors = convert_to_hf(args, model_name, name, param)
+        converted_named_tensors = convert_to_hf(conversion_config, model_name, name, param)
         for converted_name, converted_param in converted_named_tensors:
             tensor_size = converted_param.numel() * converted_param.element_size()
             if tensor_size + current_size > chunk_size:

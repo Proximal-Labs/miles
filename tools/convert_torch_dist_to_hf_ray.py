@@ -104,6 +104,7 @@ from typing_extensions import override
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
+from miles.backends.megatron_utils.megatron_to_hf.offline_config import build_offline_conversion_config
 from miles.utils.hf_config import load_hf_config as _load_hf_config
 
 DEFAULT_DIRECT_MOE_GROUP_SIZE = 2 * 1024**3
@@ -982,13 +983,14 @@ def prepare_whole_source_task_tensors(
 ) -> PreparedTaskTensors:
     load_result = load_tensor_chunk(input_dir, set(task.keys), metadata)
     state_dict = load_result.state_dict
+    conversion_config = build_offline_conversion_config(megatron_args)
 
     groups: list[PreparedTensorGroup] = []
     try:
         for name, param in get_named_params(megatron_args, state_dict):
             if getattr(megatron_args, "vocab_size", None) is not None:
                 param = m2hf.remove_padding(name, param, megatron_args.vocab_size)
-            converted_named_tensors = m2hf._convert_to_hf_core(megatron_args, model_name, name, param)
+            converted_named_tensors = m2hf._convert_to_hf_core(conversion_config, model_name, name, param)
             groups.append(PreparedTensorGroup(name, tuple(converted_named_tensors)))
         return PreparedTaskTensors(
             tuple(groups),
@@ -1007,6 +1009,7 @@ def write_prepared_tensor_groups(
     max_file_bytes: int,
     cuda_device_id: int | None,
 ) -> tuple[tuple[ShardManifest, ...], int]:
+    conversion_config = build_offline_conversion_config(megatron_args)
     current_tensors: dict[str, torch.Tensor] = {}
     current_size = 0
     shard_idx = 0
@@ -1020,7 +1023,7 @@ def write_prepared_tensor_groups(
                 torch.cuda.set_device(cuda_device_id)
             converted_named_tensors = tuple(
                 m2hf.quantize_params(
-                    megatron_args, group.source_name, list(converted_named_tensors), quantization_config
+                    conversion_config, group.source_name, list(converted_named_tensors), quantization_config
                 )
             )
         shard_idx, current_size, added_size = append_to_shards(
