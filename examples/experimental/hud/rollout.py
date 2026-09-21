@@ -29,6 +29,7 @@ Wire with:
   --custom-generate-function-path examples.experimental.hud.rollout.generate
   --custom-rm-path examples.experimental.hud.rollout.reward_func
   --hud-env-dir /root/v6browser
+  --hud-snapshot-name miles-hud-v6browser
 """
 
 from __future__ import annotations
