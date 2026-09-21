@@ -23,10 +23,12 @@ def write_checkpoint_dir(
 ) -> None:
     """Write collectively, then atomically point ``path`` at the completed version.
 
-    All ranks must call. Readers may still hold an older version, so retain it.
+    All ranks must call. Any rank's failure raises on every rank and discards the
+    staged version. Readers may still hold an older version, so retain it.
     """
     final_dir = Path(path)
     tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
+    version_dir = final_dir.parent / f"_version_{final_dir.name}_{uuid4().hex}"
 
     def make_tmp_dir():
         if _rank() == 0:
@@ -48,23 +50,48 @@ def write_checkpoint_dir(
             return
         if metadata is not None:
             (tmp_dir / "META.json").write_text(json.dumps(metadata, indent=2))
-        version_dir = final_dir.parent / f"_version_{final_dir.name}_{uuid4().hex}"
         os.replace(tmp_dir, version_dir)
         tmp_dir.symlink_to(version_dir.name, target_is_directory=True)
         os.replace(tmp_dir, final_dir)
 
-    make_tmp_dir()
-    _barrier()
-    write_shards(tmp_dir)
-    _barrier()
-    publish_dir()
-    _barrier()
+    def discard():
+        # publish_dir points final_dir at version_dir last, so on failure version_dir is unpublished
+        if _rank() != 0:
+            return
+        if tmp_dir.is_symlink():
+            tmp_dir.unlink()
+        elif tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        if version_dir.exists():
+            shutil.rmtree(version_dir)
+
+    _run_phase(make_tmp_dir, discard)
+    _run_phase(lambda: write_shards(tmp_dir), discard)
+    _run_phase(publish_dir, discard)
+
+
+def _run_phase(step: Callable[[], None], discard: Callable[[], None]) -> None:
+    """Run one collective step; a failure on any rank raises on every rank once all ranks have stopped."""
+    error = None
+    try:
+        step()
+    except Exception as e:
+        error = e
+    message = None if error is None else f"{type(error).__name__}: {error}"
+    if dist.is_initialized():
+        group = get_gloo_group()
+        messages: list[str | None] = [None] * dist.get_world_size(group=group)
+        dist.all_gather_object(messages, message, group=group)
+    else:
+        messages = [message]
+    if not any(messages):
+        return
+    discard()
+    if error is not None:
+        raise error
+    failed_rank = next(rank for rank, m in enumerate(messages) if m is not None)
+    raise RuntimeError(f"checkpoint write failed on rank {failed_rank}: {messages[failed_rank]}")
 
 
 def _rank() -> int:
     return dist.get_rank() if dist.is_initialized() else 0
-
-
-def _barrier() -> None:
-    if dist.is_initialized():
-        dist.barrier(group=get_gloo_group())
