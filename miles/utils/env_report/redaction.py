@@ -64,6 +64,8 @@ def redact_arg(name: str, value: Any) -> Any:
         return redact_env_vars({key: str(item) for key, item in value.items()})
     if name in _URL_ARG_NAMES and isinstance(value, str):
         return _redact_url_userinfo(value)
+    if name == "router_args" and isinstance(value, dict):
+        return {key: redact_arg(name=f"router_{key}", value=item) for key, item in value.items()}
     if name not in _SECRET_ARG_NAMES:
         return value
     return _redact_secret_value(value)
