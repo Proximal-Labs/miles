@@ -404,7 +404,11 @@ def parse_args_and_get_parser(
     vars(args).setdefault("lora_B_init_method", "zero")
 
     assert parser is not None
-    resolve_custom_function_configs(args)
+    resolve_custom_function_configs(
+        args,
+        owned_arg_names=training_backend_arg_names
+        | {action.dest for action in parser._actions if action.dest.startswith(("sglang_", "eval_sglang_"))},
+    )
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
     sglang = SglangConfig.parse_args(args)

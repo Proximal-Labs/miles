@@ -1,7 +1,7 @@
 import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 from pydantic import ConfigDict, SerializeAsAny, ValidationInfo, create_model, model_validator
 
@@ -62,17 +62,31 @@ def add_user_provided_function_arguments(
     return parser
 
 
-def resolve_custom_function_configs(args: argparse.Namespace) -> None:
+def resolve_custom_function_configs(
+    args: argparse.Namespace, *, owned_arg_names: set[str] | None = None
+) -> None:
+    from miles.utils.args.configs.router import RouterConfig
+    from miles.utils.args.runtime import AllConfig
+
+    owned_arg_names = (
+        AllConfig.model_fields.keys()
+        | (owned_arg_names or set())
+        | RouterConfig.arg_names()
+        | {"custom_config_path", "megatron_config"}
+    )
     custom_arg_names: set[str] = set()
     for info in _compute_custom_function_field_infos(args):
         config = None
         if (config_class := info.config_class) is not None:
+            field_names = config_class.model_fields.keys()
+            if issubclass(config_class, _LegacyCustomFunctionConfig):
+                field_names = field_names - (config_class._default_only_fields & owned_arg_names)
             config = config_class.model_validate(
                 {
-                    key: getattr(args, key) for key in config_class.model_fields if hasattr(args, key)
+                    key: getattr(args, key) for key in field_names if hasattr(args, key)
                 }  # config-access-exempt: schema-selected fields
             )
-            custom_arg_names.update(config_class.model_fields)
+            custom_arg_names.update(field_names)
         setattr(args, info.name, CustomFunctionConfig(path=info.path, config=config))
 
     for name in custom_arg_names:
@@ -146,10 +160,13 @@ def _adapt_legacy_custom_config(add_arguments: Callable[[argparse.ArgumentParser
         for action in parser._actions
         if action.dest != argparse.SUPPRESS
     }
+    default_only_fields = parser._defaults.keys() - fields.keys() - {argparse.SUPPRESS}
+    fields.update({name: (Any, parser._defaults[name]) for name in default_only_fields})
     config_class = create_model("LegacyCustomFunctionConfig", __base__=_LegacyCustomFunctionConfig, **fields)
+    config_class._default_only_fields = frozenset(default_only_fields)
     config_class._suppressed_fields = frozenset(
         action.dest for action in parser._actions if not action.required and action.default == argparse.SUPPRESS
-    )
+    ) | config_class._default_only_fields
 
     def _add_arguments(parser: argparse.ArgumentParser) -> Any:
         return add_arguments(parser)
@@ -159,6 +176,8 @@ def _adapt_legacy_custom_config(add_arguments: Callable[[argparse.ArgumentParser
 
 
 class _LegacyCustomFunctionConfig(BaseConfig):
+    _default_only_fields: ClassVar[frozenset[str]] = frozenset()
+
     @model_validator(mode="after")
     def _omit_suppressed_fields(self) -> Self:
         for name in self._suppressed_fields - self.model_fields_set:
