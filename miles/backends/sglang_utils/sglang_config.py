@@ -292,7 +292,7 @@ class SglangConfig(FrozenStrictBaseModel):
             for group in model.server_groups
             if group.worker_type != WorkerType.PLACEHOLDER
         ]
-        return _list_of_dicts_get(values, name)
+        return _list_of_dicts_get(values or [self.base_args], name)
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
