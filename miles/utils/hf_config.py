@@ -14,6 +14,7 @@ The default behavior is exactly the same as `AutoConfig.from_pretrained`.
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
+from string import Formatter
 
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
@@ -117,6 +118,13 @@ def is_dsa(hf_config) -> bool:
 
 # Written by HF exports after all ranks finish, so consumers can tell finished from partial.
 HF_EXPORT_COMPLETE_MARKER = ".complete"
+
+
+def get_hf_save_path(save_hf: str, rollout_id: int) -> str:
+    path = save_hf.format(rollout_id=rollout_id)
+    if any(field == "rollout_id" for _, field, _, _ in Formatter().parse(save_hf)):
+        return path
+    return str(Path(path) / f"step_{rollout_id}")
 
 
 def is_complete_hf_export(path: str | Path) -> bool:

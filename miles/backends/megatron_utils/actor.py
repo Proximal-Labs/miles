@@ -30,7 +30,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_config import get_hf_save_path, load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -738,7 +738,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
             hf_checkpoint_dir = (
-                self.args.save_hf.format(rollout_id=rollout_id)
+                get_hf_save_path(self.args.save_hf, rollout_id)
                 if self.args.save_hf is not None and self.role == "actor"
                 else None
             )

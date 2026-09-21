@@ -6,6 +6,8 @@ from collections import deque
 
 import ray
 
+from miles.utils.hf_config import get_hf_save_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,7 @@ class EvalDispatcher:
         require_marker = hf_dir is None
         if hf_dir is None:
             if self.args.eval_hf_dir is None:
-                hf_dir = self.args.save_hf.format(rollout_id=rollout_id)
+                hf_dir = get_hf_save_path(self.args.save_hf, rollout_id)
             else:
                 hf_dir = os.path.join(self.args.eval_hf_dir, f"step_{rollout_id}")
                 try:

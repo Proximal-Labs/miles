@@ -1376,7 +1376,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Path to save the model in HuggingFace format when using Megatron backend. "
-                    "The model will be saved to `save_hf.format(rollout_id)`. "
+                    "Saves under step_{rollout_id}/ unless the path contains a {rollout_id} "
+                    "format field, in which case the formatted path is used directly. "
                 ),
             )
             parser.add_argument(

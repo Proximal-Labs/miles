@@ -14,7 +14,7 @@ from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER
+from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, get_hf_save_path
 from miles.utils.megatron_bridge_utils import patch_megatron_model
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def save_hf_model(
     unless ``raise_on_error`` is set.
     """
     should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
-    path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
+    path = Path(path if path is not None else get_hf_save_path(args.save_hf, rollout_id))
 
     def write_shards(tmp_dir: Path):
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
