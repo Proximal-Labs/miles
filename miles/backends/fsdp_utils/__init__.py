@@ -14,7 +14,6 @@ except ImportError as e:
     _FSDP_AVAILABLE = False
 
 if _FSDP_AVAILABLE:
-    from .actor import FSDPTrainRayActor
     from .arguments import load_fsdp_args
 else:
 
@@ -25,9 +24,8 @@ else:
             "For installation instructions, refer to: https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html"
         )
 
-    FSDPTrainRayActor = _raise_import_error
     load_fsdp_args = _raise_import_error
 
-__all__ = ["load_fsdp_args", "FSDPTrainRayActor"]
+__all__ = ["load_fsdp_args"]
 
 logging.getLogger().setLevel(logging.WARNING)
