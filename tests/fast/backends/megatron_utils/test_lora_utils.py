@@ -393,8 +393,13 @@ class TestSaveLoraCheckpointTrainingState:
         args = Namespace(no_save_optim=no_save_optim)
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
-            model, args, str(tmp_path / "checkpoint"), publisher=publisher,
-            optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
+            model,
+            args,
+            str(tmp_path / "checkpoint"),
+            publisher=publisher,
+            optimizer=optimizer,
+            opt_param_scheduler=scheduler,
+            iteration=3,
         )
         return sorted(path.name for path in (tmp_path / "checkpoint").iterdir())
 

@@ -860,9 +860,7 @@ def save(
         disable_forward_pre_hook(model)
 
     if is_lora_model(model):
-        save_checkpoint_with_lora(
-            iteration, model, optimizer, opt_param_scheduler, publisher=snapshot_publisher
-        )
+        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler, publisher=snapshot_publisher)
     else:
         save_checkpoint(
             iteration,
