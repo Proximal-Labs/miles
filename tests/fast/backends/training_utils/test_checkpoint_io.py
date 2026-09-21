@@ -23,9 +23,7 @@ def test_directory_errors_propagate(error, tmp_path, monkeypatch):
 @pytest.mark.parametrize("crash_after_write", [True, False])
 def test_crashed_overwrite_leaves_no_metadata(tmp_path, crash_after_write):
     checkpoint = tmp_path / "checkpoint"
-    write_checkpoint_dir(
-        checkpoint, lambda directory: (directory / "old").write_text("old"), metadata={"step": 1}
-    )
+    write_checkpoint_dir(checkpoint, lambda directory: (directory / "old").write_text("old"), metadata={"step": 1})
 
     def overwrite_and_crash():
         def write_shards(directory):
@@ -42,9 +40,7 @@ def test_crashed_overwrite_leaves_no_metadata(tmp_path, crash_after_write):
     assert not (checkpoint / "old").exists()
     assert not (checkpoint / "META.json").exists()
 
-    write_checkpoint_dir(
-        checkpoint, lambda directory: (directory / "value").write_text("retry"), metadata={"step": 2}
-    )
+    write_checkpoint_dir(checkpoint, lambda directory: (directory / "value").write_text("retry"), metadata={"step": 2})
     assert (checkpoint / "value").read_text() == "retry"
     assert (checkpoint / "META.json").exists()
     assert list(tmp_path.iterdir()) == [checkpoint]
