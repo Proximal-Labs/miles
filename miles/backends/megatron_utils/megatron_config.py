@@ -5,7 +5,7 @@ import os
 import re
 from argparse import Namespace
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 import pydantic
 import yaml
@@ -228,7 +228,11 @@ class MegatronTrainerConfig(FrozenStrictBaseModel):
 
 class MegatronConfig(FrozenStrictBaseModel):
     trainers: list[MegatronTrainerConfig]
-    base_args: dict[str, Any] = {}
+    base_args: Annotated[
+        dict[str, Any],
+        pydantic.BeforeValidator(_ConfigNamespaceValueCodec.deserialize),
+        pydantic.PlainSerializer(_ConfigNamespaceValueCodec.serialize, when_used="json"),
+    ] = {}
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
