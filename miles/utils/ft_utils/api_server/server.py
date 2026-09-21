@@ -9,7 +9,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 
-from miles.ray.specs.inference import compute_engine_pool_ids
+from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
@@ -45,6 +45,7 @@ def start_api_server(
                 operations=cell_operations,
                 controllers=list(trainer_models.values()),
                 pool_ids=[compute_trainer_pool_id(trainer_id) for trainer_id in trainer_models],
+                category=None,
             )
         )
 
@@ -58,7 +59,8 @@ def start_api_server(
                 cell_type="rollout",
                 operations=cell_operations,
                 controllers=[inference_controller],
-                pool_ids=compute_engine_pool_ids(args),
+                pool_ids=None,
+                category=POOL_CATEGORY_INFERENCE_ENGINE,
             )
         )
 
