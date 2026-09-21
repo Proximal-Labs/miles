@@ -87,7 +87,9 @@ def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
         else:
             arg_type = f.type
 
-        if arg_type is bool:
+        if f.name in {"no_load_optim", "no_load_rng", "no_save_optim"}:
+            parser.add_argument(f"--{f.name.replace('_', '-')}", action="store_true", default=f.default)
+        elif arg_type is bool:
             parser.add_argument(
                 f"--{f.name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=f.default
             )
