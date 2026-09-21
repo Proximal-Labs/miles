@@ -39,9 +39,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
     separate in_proj_qkv (for Q,K,V) and in_proj_z (for Z).
     """
 
-    def __init__(self, config, layer_idx: int, args):
+    def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
-        self.gdn_backend = args.linear_attention_backend
+        self.gdn_backend = "fla" if args is None else args.linear_attention_backend
         self.chunk_gated_delta_rule = get_chunk_gated_delta_rule(self.gdn_backend)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
