@@ -23,8 +23,8 @@ class RayCellOperations(BaseCellOperations):
         self._resolve_inference_controller = resolve_inference_controller
         self._inference_controller: BaseWorkerHandle | None = None
 
-    async def cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
-        return await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
+    async def cell_infos(self, *, pool_ids: list[str] | None, category: str | None) -> dict[str, CellInfo]:
+        return await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids, category=category)
 
     async def suspend(self, *, cell_id: str) -> None:
         if _is_trainer_cell_id(cell_id):
