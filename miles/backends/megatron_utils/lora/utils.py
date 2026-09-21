@@ -430,17 +430,10 @@ def save_lora_checkpoint(
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             }
 
-        write_error = None
-        try:
-            torch.save(adapter_state, tmp_dir / f"adapter_megatron_rank{global_rank}.pt")
-            if training_state is not None:
-                torch.save(training_state, tmp_dir / f"training_state_rank{global_rank}.pt")
-        except Exception as exc:
-            # All ranks must still join the adapter gather before reporting a local write failure.
-            write_error = exc
         publisher.write_adapter(None, tmp_dir)
-        if write_error is not None:
-            raise write_error
+        torch.save(adapter_state, tmp_dir / f"adapter_megatron_rank{global_rank}.pt")
+        if training_state is not None:
+            torch.save(training_state, tmp_dir / f"training_state_rank{global_rank}.pt")
 
     write_checkpoint_dir(save_dir, write_shards)
     return str(save_dir)
