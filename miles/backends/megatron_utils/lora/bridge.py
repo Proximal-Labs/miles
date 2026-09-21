@@ -150,7 +150,6 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.moe_router_load_balancing_type = "none"
     if is_multi_lora_enabled(args):
         assert not args.enable_mtp_training, "Multi-LoRA does not support MTP training"
-        # Multi-LoRA optimizes the requested loss without Bridge's auxiliary MTP loss.
         provider.mtp_num_layers = None
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
