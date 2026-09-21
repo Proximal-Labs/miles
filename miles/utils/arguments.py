@@ -371,7 +371,10 @@ def parse_args_and_get_parser(
                 "calculate_per_token_loss",
                 "ckpt_step",
                 "clip_grad",
+                "finetune",
                 "load",
+                "mtp_loss_scaling_factor",
+                "mtp_num_layers",
                 "rank",
                 "world_size",
             }
