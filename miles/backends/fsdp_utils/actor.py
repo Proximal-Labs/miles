@@ -327,6 +327,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def sleep(self) -> None:
         """Pause CUDA memory for all tracked tensors."""
         if not self.args.offload_train:
+            clear_memory()
             return
 
         print_memory("before offload model")
