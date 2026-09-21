@@ -159,6 +159,9 @@ def _parse_args() -> tuple[TrainerConfig, WorkerScriptArgs]:
     trainers = [trainer for trainer in args.raw_megatron.trainers if trainer.role == script_args.role]
     assert len(trainers) == 1, "Standalone Megatron requires exactly one trainer for the requested role"
     trainer_args = compute_trainer_config(args, trainers[0])
+    if args.requested_load is not None:
+        with trainer_args.backend.mutable():
+            trainer_args.backend.load = args.requested_load
     assert trainer_args.backend.world_size == world_size
     assert not trainer_args.offload_train
     return trainer_args, script_args
