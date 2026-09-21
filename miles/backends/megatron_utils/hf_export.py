@@ -60,7 +60,9 @@ def save_hf_model(
             torch.distributed.barrier(group=get_gloo_group())
             missing_weights = [False]
             if torch.distributed.get_rank() == 0:
-                missing_weights[0] = not any(checkpoint_dir.glob("*.safetensors")) and not any(checkpoint_dir.glob("*.bin"))
+                missing_weights[0] = not any(checkpoint_dir.glob("*.safetensors")) and not any(
+                    checkpoint_dir.glob("*.bin")
+                )
             torch.distributed.broadcast_object_list(missing_weights, src=0, group=get_gloo_group())
             if missing_weights[0]:
                 raise RuntimeError(

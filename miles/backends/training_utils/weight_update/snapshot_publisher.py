@@ -31,7 +31,10 @@ class SnapshotPublisher:
 
     def publish_adapter(self, adapter: AdapterSpec | None, path: str, metadata: dict | None = None) -> None:
         write_checkpoint_dir(
-            path, lambda checkpoint_dir: self.write_adapter(adapter, checkpoint_dir), metadata=metadata, overwrite=False
+            path,
+            lambda checkpoint_dir: self.write_adapter(adapter, checkpoint_dir),
+            metadata=metadata,
+            overwrite=False,
         )
 
     @torch.no_grad()
