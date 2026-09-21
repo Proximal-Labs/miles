@@ -73,7 +73,7 @@ def _decode_routed_experts(args, encoded: str, token_count: int, start_len: int 
     return np.frombuffer(pybase64.b64decode(encoded.encode("ascii")), dtype=np.int32).reshape(
         row_count,
         args.num_layers,
-        args.moe_router_topk,
+        args.raw_megatron.base_args["moe_router_topk"],
     )
 
 
