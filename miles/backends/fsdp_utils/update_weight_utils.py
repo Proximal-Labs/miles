@@ -66,6 +66,7 @@ class UpdateWeight(abc.ABC):
         self.model = model
         self.weight_version = 0
         self.conn_status = ConnStatusManager()
+        self._ipc_gather_group = None
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -161,8 +162,15 @@ class UpdateWeightFromTensor(UpdateWeight):
         # Here we assume the gpu id of rollout engines and train actors are the same.
         if engine_gpu_counts is None or engine_gpu_offsets is None:
             raise ValueError("Colocated weight transfer requires runtime GPU counts and offsets")
+        if self._ipc_gather_group is not None:
+            dist.destroy_process_group(self._ipc_gather_group)
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        self._ipc_engine = None
         for engine, start_rank, count in zip(self.rollout_engines, engine_gpu_offsets, engine_gpu_counts, strict=True):
             end_rank = start_rank + count
+            if start_rank < 0 or end_rank > dist.get_world_size():
+                raise ValueError("FSDP CUDA IPC requires each engine to be colocated with training ranks")
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(
                 ranks=group_ranks,
@@ -175,6 +183,8 @@ class UpdateWeightFromTensor(UpdateWeight):
                 self.tp_rank = dist.get_rank() - start_rank
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+        if self._ipc_gather_group is None:
+            return
         monkey_patch_torch_reductions()
         logger.info("Using flattened tensor bucket")
         named_tensors_by_dtypes = {}
