@@ -1,15 +1,11 @@
 import argparse
 
-from pydantic import Field
-
 from miles.utils.args.schema import A, Arg, BaseConfig
-from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend
 
 
 # Ray
 class ClusterConfig(BaseConfig):
-    static_connections: StaticConnConfig = Field(default_factory=StaticConnConfig)
     starts_inference_engines: bool
     rollout_external: bool
 

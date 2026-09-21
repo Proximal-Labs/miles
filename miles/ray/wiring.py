@@ -8,7 +8,7 @@ from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.runtime import AllConfig
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.connection_config import build_static_conn_config
+from miles.utils.workers.connection_config import StaticConnConfig, build_static_conn_config
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
@@ -30,18 +30,14 @@ async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> 
         ray.kill(worker_manager_handle)
 
 
-def get_backend_capability(args) -> BackendCapability:
-    static_connections = args.static_connections
-
-    # TODO: temporary hack to be removed in later ops
-    if isinstance(args, AllConfig) and ClusterBackend(args.cluster_backend) is ClusterBackend.KUBERNETES:
-        static_connections = build_static_conn_config(
-            specs=compute_specs(args), scaling=ScalingConfig.slice_from(args)
-        )
-
-    return factory.get_backend_capability(
-        static_connections=static_connections, cluster_backend=ClusterBackend(args.cluster_backend)
+def get_backend_capability(args: AllConfig) -> BackendCapability:
+    cluster_backend = ClusterBackend(args.cluster_backend)
+    static_connections = (
+        build_static_conn_config(specs=compute_specs(args), scaling=ScalingConfig.slice_from(args))
+        if cluster_backend is ClusterBackend.KUBERNETES
+        else StaticConnConfig()
     )
+    return factory.get_backend_capability(static_connections=static_connections, cluster_backend=cluster_backend)
 
 
 def _launch_ray_worker_manager(args):
