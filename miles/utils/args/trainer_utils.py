@@ -22,8 +22,14 @@ def compute_trainer_config(all_config: AllConfig, trainer: MegatronTrainerConfig
     values = vars(trainer_args)
 
     backend_cls = MegatronArgsNamespace if all_config.train_backend == "megatron" else FsdpArgsNamespace
-    values["backend"] = backend_cls(
-        **{name: values[name] for name in base_backend_values.keys() | TrainerBackendTraitConfig.model_fields.keys()}
-    )
+    backend_values = {
+        name: values[name] for name in base_backend_values.keys() | TrainerBackendTraitConfig.model_fields.keys()
+    }
+    if all_config.train_backend == "megatron":
+        backend_values["export_metadata"] = {
+            "hf_checkpoint": trainer_args.hf_checkpoint,
+            "extra_high_precision_layers_megatron": list(trainer_args.extra_high_precision_layers_megatron),
+        }
+    values["backend"] = backend_cls(**backend_values)
 
     return TrainerConfig.model_validate({name: values[name] for name in TrainerConfig.model_fields if name in values})

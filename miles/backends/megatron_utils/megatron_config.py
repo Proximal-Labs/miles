@@ -182,6 +182,7 @@ class _RawMegatronConfig(FrozenStrictBaseModel):
 
 class MegatronArgsNamespace(EnhancedArgparseNamespace):
     backend_name: Literal["megatron"]
+    export_metadata: dict[str, str | list[str] | None]
     _mutable_fields: ClassVar[frozenset[str]] = frozenset(
         {
             "ckpt_format",
@@ -204,9 +205,15 @@ class MegatronArgsNamespace(EnhancedArgparseNamespace):
         }
     )
 
-    def __init__(self, *, backend_name: Literal["megatron"] = "megatron", **values: Any) -> None:
+    def __init__(
+        self,
+        *,
+        backend_name: Literal["megatron"] = "megatron",
+        export_metadata: dict[str, str | list[str] | None] | None = None,
+        **values: Any,
+    ) -> None:
         assert backend_name == "megatron", f"Invalid Megatron backend name: {backend_name!r}"
-        super().__init__(backend_name=backend_name, **values)
+        super().__init__(backend_name=backend_name, export_metadata=export_metadata or {}, **values)
 
 
 class MegatronTrainerConfig(FrozenStrictBaseModel):

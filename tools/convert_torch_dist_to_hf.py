@@ -103,10 +103,10 @@ def get_named_params(args, state_dict):
         yield from get_layer_param(args, name, param)
 
 
-def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None):
+def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None, origin_hf_dir: str | None = None):
     # for miles update_weight compatible
     args.sglang_enable_ep_moe = False
-    conversion_config = build_offline_conversion_config(args)
+    conversion_config = build_offline_conversion_config(args, origin_hf_dir=origin_hf_dir)
 
     print(f"start saving to {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
@@ -211,7 +211,15 @@ if __name__ == "__main__":
     )
     print(f"model loaded in {time.time()-t:.2f} sec.")
 
-    save_tensors(megatron_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
+    save_tensors(
+        megatron_args,
+        args.model_name,
+        state_dict,
+        args.output_dir,
+        args.chunk_size,
+        args.vocab_size,
+        origin_hf_dir=args.origin_hf_dir,
+    )
 
     if args.origin_hf_dir:
         copy_assets(args.origin_hf_dir, args.output_dir)
