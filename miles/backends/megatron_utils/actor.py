@@ -274,7 +274,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _init_training_state(self) -> None:
         args = self.args
-        self._init_weight_components(
+        self._init_weight_updater_and_publisher(
             update_weights=not args.debug_train_only,
             publish_snapshots=(
                 args.save_hf is not None
@@ -283,7 +283,7 @@ class MegatronTrainRayActor(TrainRayActor):
             ),
         )
 
-    def _init_weight_components(self, *, update_weights: bool, publish_snapshots: bool) -> None:
+    def _init_weight_updater_and_publisher(self, *, update_weights: bool, publish_snapshots: bool) -> None:
         args = self.args
         model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
         quantization_config = getattr(self.hf_config, "quantization_config", None)

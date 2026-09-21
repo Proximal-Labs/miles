@@ -13,7 +13,7 @@ from miles.utils.tracking_utils.structured_log import with_logs
 class MultiLoRATrainRayActor(MegatronTrainRayActor):
     def _init_training_state(self) -> None:
         self.slot_optimizers: dict[int, SlotOptimizer] = {}
-        self._init_weight_components(update_weights=False, publish_snapshots=True)
+        self._init_weight_updater_and_publisher(update_weights=False, publish_snapshots=True)
 
     @with_logs
     def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
