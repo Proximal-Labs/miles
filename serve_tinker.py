@@ -27,7 +27,7 @@ async def serve(args):
     assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
-    hf_config = load_hf_config(args.hf_checkpoint)
+    hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
