@@ -11,6 +11,7 @@ from argparse import Namespace
 from dataclasses import dataclass
 
 import torch.distributed as dist
+from megatron.core.tensor_parallel import ColumnParallelLinear
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
@@ -22,7 +23,6 @@ from miles.backends.megatron_utils.lora.utils import (
     create_lora_instance,
     patch_param_grad_buffer_for_colocate_mode_lora,
 )
-from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
@@ -138,6 +138,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         List of DDP-wrapped model chunks with LoRA applied.
     """
     from megatron.bridge import AutoBridge
+    from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
     from megatron.bridge.training.config import DistributedDataParallelConfig
 
     hf_config = load_hf_config(args.hf_checkpoint)
@@ -189,11 +190,17 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     hf_mapping = HfWeightMapping.from_config(hf_config)
 
     def apply_lora_hook(model_chunks):
-        parameter_names = model_bridge._megatron_global_param_names_all_pp_ranks(model_chunks)
-        # Bridge gathers PP names; LoRA coverage also needs experts owned by other EP ranks.
-        ep = get_parallel_state().ep
-        names_by_rank = [None] * ep.size
-        dist.all_gather_object(names_by_rank, parameter_names, group=ep.group)
+        parameter_names = set(model_bridge._megatron_global_param_names_all_pp_ranks(model_chunks))
+        # Tied output layers own no weight but can still carry an independent adapter.
+        for vp_stage, chunk in enumerate(model_chunks):
+            for name, module in chunk.named_modules():
+                if isinstance(module, ColumnParallelLinear) and module.weight is None:
+                    parameter_names.add(
+                        _megatron_local_name_to_global(model_chunks, chunk.config, f"{name}.weight", vp_stage)
+                    )
+        # Include tied layers and experts owned by other PP/EP ranks without changing Bridge's weight inventory.
+        names_by_rank = [None] * dist.get_world_size()
+        dist.all_gather_object(names_by_rank, parameter_names)
         parameter_names = set().union(*names_by_rank)
         candidates = resolve_megatron_lora_targets(
             args.hf_lora_targets,
