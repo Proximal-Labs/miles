@@ -162,6 +162,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    if is_multi_lora_enabled(args):
+        assert not args.enable_mtp_training, "Multi-LoRA does not support MTP training"
+        # Multi-LoRA optimizes the requested loss without Bridge's auxiliary MTP loss.
+        provider.mtp_num_layers = None
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
