@@ -96,7 +96,7 @@ def _compute_custom_function_field_infos(
     ]
     infos = []
     for name, path in paths:
-        if path is None:
+        if path is None or isinstance(path, CustomFunctionConfig):
             continue
         try:
             fn = load_function(path)

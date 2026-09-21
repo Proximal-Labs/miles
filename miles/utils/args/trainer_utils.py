@@ -7,6 +7,7 @@ from miles.backends.megatron_utils.megatron_config import (
     compute_trainer_args,
 )
 from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
+from miles.utils.args.custom_function import resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig, TrainerConfig
 
 
@@ -16,7 +17,9 @@ def compute_trainer_config(all_config: AllConfig, trainer: MegatronTrainerConfig
         all_config.raw_megatron.base_args if all_config.train_backend == "megatron" else vars(all_config.raw_fsdp)
     )
     base_args = Namespace(**(dict(all_config) | base_backend_values))
-    values = vars(compute_trainer_args(args=base_args, trainer=trainer))
+    trainer_args = compute_trainer_args(args=base_args, trainer=trainer)
+    resolve_custom_function_configs(trainer_args)
+    values = vars(trainer_args)
 
     backend_cls = MegatronArgsNamespace if all_config.train_backend == "megatron" else FsdpArgsNamespace
     values["backend"] = backend_cls(
