@@ -317,7 +317,7 @@ class InferenceController:
 
     # -------------------------- eval fleet -----------------------------
 
-    @lock_exempt
+    @with_lock
     async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
         return self._eval_fleet.info if self._eval_fleet is not None else None
 
