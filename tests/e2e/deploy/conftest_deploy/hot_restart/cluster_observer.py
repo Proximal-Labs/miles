@@ -56,6 +56,7 @@ class ClusterSnapshot(FrozenStrictBaseModel):
     workloads: tuple[WorkloadFact, ...]
     trainer_boot_uuid: str | None
     reads_missing: tuple[str, ...] = ()
+    commands_of_pod_uid: dict[str, tuple[str, ...]] = {}
 
     @property
     def workload_names(self) -> tuple[str, ...]:
@@ -82,6 +83,7 @@ class ClusterObserver:
     attempts: int = 0
     failures: int = 0
     release_seen_up: bool = False
+    commands_of_pod_uid: dict[str, tuple[str, ...]] = field(default_factory=dict)
     _settled_workloads: frozenset[str] | None = field(default=None, init=False)
     _topology_read_before: tuple[frozenset[str], frozenset[str]] | None = field(default=None, init=False)
 
@@ -107,6 +109,7 @@ class ClusterObserver:
                 f"failed rather than a run whose pods changed"
             )
             return
+        self.commands_of_pod_uid.update(snapshot.commands_of_pod_uid)
         if snapshot.describes_gone_release:
             logger.warning(
                 f"Observed {self.release} with {len(snapshot.pods)} pod(s) and {len(snapshot.workloads)} "
@@ -119,7 +122,7 @@ class ClusterObserver:
 
         self.release_seen_up = True
         self.attempts += 1
-        self.snapshots.append(snapshot)
+        self.snapshots.append(snapshot.model_copy(update={"commands_of_pod_uid": {}}))
 
     def _describes_settled_release(self, snapshot: ClusterSnapshot) -> bool:
         workload_names = frozenset(snapshot.workload_names)
@@ -201,6 +204,7 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
         workloads=tuple(sorted(workloads, key=lambda one: (one.kind, one.name))),
         trainer_boot_uuid=boot_uuid,
         reads_missing=tuple(kind for kind, payload in payload_of_kind.items() if payload is None),
+        commands_of_pod_uid=parse_pod_commands(pods) if pods is not None else {},
     )
 
 
@@ -242,6 +246,15 @@ def parse_pod_facts(payload: dict) -> tuple[PodFact, ...]:
         for item in payload["items"]
     ]
     return tuple(sorted(facts, key=lambda one: one.name))
+
+
+def parse_pod_commands(payload: dict) -> dict[str, tuple[str, ...]]:
+    return {
+        item["metadata"]["uid"]: tuple(
+            part for container in item.get("spec", {}).get("containers", []) for part in container.get("command", [])
+        )
+        for item in payload["items"]
+    }
 
 
 def parse_workload_facts(payload: dict, *, kind: str) -> tuple[WorkloadFact, ...]:

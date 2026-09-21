@@ -100,6 +100,7 @@ def run_ci(
         release=observer.release,
         observation_attempts=observer.attempts,
         observation_failures=observer.failures,
+        commands_of_pod_uid=observer.commands_of_pod_uid,
     )
     evidence.write(dump_dir=outcome.run.dump_dir)
     assert_take_overs_replaced_only_script(

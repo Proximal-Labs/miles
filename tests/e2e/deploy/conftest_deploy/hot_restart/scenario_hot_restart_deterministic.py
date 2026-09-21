@@ -2,7 +2,7 @@ import dataclasses
 import hashlib
 import shlex
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -25,7 +25,10 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_scratch import (
     assert_unsaved_run_redone_from_scratch,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
+from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
+    assert_take_overs_carried_rollout_only_args,
+    assert_take_overs_replaced_only_script,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
@@ -62,6 +65,8 @@ GLOBAL_BATCH_SIZE_FLAG: str = "--global-batch-size"
 ROLLOUT_BATCH_SIZE_FLAG: str = "--rollout-batch-size"
 SAMPLES_PER_PROMPT_FLAG: str = "--n-samples-per-prompt"
 ASYNC_SAVE_FLAG: str = "--async-save"
+SAVE_DEBUG_ROLLOUT_DATA_FLAG: str = "--save-debug-rollout-data"
+ROLLOUT_DATA_DIRNAME: str = "rollout_data"
 _WEIGHT_VERSION_METRIC_KEYS: tuple[str, ...] = tuple(
     f"rollout/weight_version/{statistic}" for statistic in ("mean", "median", "max", "min")
 )
@@ -172,6 +177,9 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
         wandb_run_id = _compute_wandb_group(test_name=restart_mode.test_name, dump_dir=dump_dir)
         for flag in (WANDB_GROUP_FLAG, WANDB_RUN_ID_FLAG):
             args = with_replaced_value(args, flag=flag, value=wandb_run_id)
+    args = with_replaced_value(
+        args, flag=SAVE_DEBUG_ROLLOUT_DATA_FLAG, value=compute_rollout_data_template(dump_dir, generation=0)
+    )
     args += get_mooncake_object_store_args()
 
     assert_example_parallelism_matches(mode, train_args=args)
@@ -249,6 +257,10 @@ def _compute_wandb_group(*, test_name: str, dump_dir: str) -> str:
     return f"{test_name}_{hashlib.sha256(dump_dir.encode()).hexdigest()[:12]}"
 
 
+def compute_rollout_data_template(dump_dir: str, *, generation: int) -> str:
+    return str(Path(dump_dir) / ROLLOUT_DATA_DIRNAME / f"generation_{generation}" / "{rollout_id}.pt")
+
+
 # ============================= take-over driving ==============================
 
 
@@ -261,11 +273,20 @@ def _driving_take_overs_of(
     plan_path = compute_freeze_plan_path(dump_dir)
 
     shutil.rmtree(dump_dir, ignore_errors=True)
+    templates = [
+        compute_rollout_data_template(dump_dir, generation=generation)
+        for generation in range(restart_mode.num_restarts + 1)
+    ]
 
     def relaunch(frozen_rollout_id: int | None) -> None:
         write_freeze_plan(plan_path, frozen_rollout_id=frozen_rollout_id)
         relaunch_with_hot_restart(
-            train_args=read_installed_args(dump_dir), mode=mode, config=config, installed_release=release
+            train_args=with_replaced_value(
+                read_installed_args(dump_dir), flag=SAVE_DEBUG_ROLLOUT_DATA_FLAG, value=templates[len(driver.records)]
+            ),
+            mode=mode,
+            config=config,
+            installed_release=release,
         )
 
     driver = HotRestartDriver(
@@ -283,6 +304,42 @@ def _driving_take_overs_of(
         yield
 
     driver.assert_all_restarts_happened()
+    assert_generations_recorded_their_steps(templates, schedule=restart_mode.schedule)
+    assert_take_overs_carried_rollout_only_args(driver.evidence, flag=SAVE_DEBUG_ROLLOUT_DATA_FLAG, values=templates)
+
+
+# ===================== what each generation of the script did =================
+
+
+def _compute_rollout_ids_of_generation(schedule: Sequence[ScheduledFreeze], *, num_rollouts: int) -> list[list[int]]:
+    windows: list[list[int]] = []
+    start = 0
+    for scheduled in schedule:
+        windows.append(list(range(start, scheduled.frozen_rollout_id + 1)))
+        start = 0 if scheduled.saved_iteration is None else scheduled.saved_iteration + 1
+    windows.append(list(range(start, num_rollouts)))
+    return windows
+
+
+def assert_generations_recorded_their_steps(templates: Sequence[str], *, schedule: Sequence[ScheduledFreeze]) -> None:
+    directories = [Path(template).parent for template in templates]
+    stray = sorted(set(directories[0].parent.iterdir()) - set(directories))
+    assert not stray, (
+        f"{directories[0].parent} holds {[one.name for one in stray]} beside the {len(templates)} generation "
+        f"directories the take-overs relaunched with, so some executor wrote where nothing relaunched it"
+    )
+
+    for generation, (directory, rollout_ids) in enumerate(
+        zip(directories, _compute_rollout_ids_of_generation(schedule, num_rollouts=NUM_ROLLOUTS), strict=True)
+    ):
+        recorded = sorted(int(one.stem) for one in directory.glob("*.pt"))
+        assert recorded == rollout_ids, (
+            f"generation {generation} of the rollout executor recorded the rollouts {recorded} under {directory}, "
+            f"and the freeze schedule has that generation generate exactly {rollout_ids}: the relaunched executor "
+            f"did not run with the arguments it was relaunched with, or generated steps it should not have"
+        )
+
+    print("every generation of the rollout executor recorded the steps it generated")
 
 
 # ========================= comparison and assertions ==========================
