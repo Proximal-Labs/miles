@@ -53,19 +53,19 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
             visited.add(name)
             resolved = mapping.resolve(match.groups())
             sources = _hf_parameters(resolved)
+            hf_parameters = {source: hf_mapping.model_parameter(source) for source in sources}
+            # Bridge can expose auxiliary layers, such as MTP, absent from the HF model.
             selected = {
                 source
-                for source in sources
-                if any(
-                    matches_hf_lora_target(hf_mapping.model_parameter(source).removesuffix(".weight"), target)
-                    for target in targets
-                )
+                for source, hf_parameter in hf_parameters.items()
+                if (not hf_mapping.parameter_shapes or hf_parameter in hf_mapping.parameter_shapes)
+                and any(matches_hf_lora_target(hf_parameter.removesuffix(".weight"), target) for target in targets)
             }
             selected -= {
                 source
                 for source in selected
                 if any(
-                    matches_hf_lora_target(hf_mapping.model_parameter(source).removesuffix(".weight"), target)
+                    matches_hf_lora_target(hf_parameters[source].removesuffix(".weight"), target)
                     or _matches_megatron_target(module, target)
                     for target in exclude_modules
                 )

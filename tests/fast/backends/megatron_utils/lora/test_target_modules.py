@@ -55,16 +55,24 @@ _QKV = _mapping(
 )
 
 
-def test_scoped_attention_excludes_mtp():
+@pytest.mark.parametrize(
+    "mtp_source",
+    ["mtp.layers.0.self_attn.o_proj.weight", "model.layers.1.self_attn.o_proj.weight"],
+    ids=["separate-namespace", "appended-layer"],
+)
+def test_scoped_attention_excludes_mtp(mtp_source):
     targets = resolve_hf_lora_targets({"model_type": "qwen3"}, train_attn=True, train_mlp=False, train_unembed=False)
     output = _mapping("decoder.layers.*.self_attention.linear_proj.weight", "model.layers.*.self_attn.o_proj.weight")
-    mtp = _mapping("mtp.layers.*.self_attention.linear_proj.weight", "mtp.layers.*.self_attn.o_proj.weight")
+    mtp = _mapping("mtp.layers.*.self_attention.linear_proj.weight", mtp_source)
     model = _model(
         "decoder.layers.0.self_attention.linear_qkv",
         "decoder.layers.0.self_attention.linear_proj",
         "mtp.layers.0.self_attention.linear_proj",
     )
-    selected = _resolve(targets, [_QKV, output, mtp], [name for name, _ in model.named_parameters()])
+    hf_mapping = HfWeightMapping({f"model.layers.0.self_attn.{p}_proj.weight": (4, 4) for p in ("q", "k", "v", "o")})
+    selected = _resolve(
+        targets, [_QKV, output, mtp], [name for name, _ in model.named_parameters()], hf_mapping=hf_mapping
+    )
     assert set(selected) == {
         "decoder.layers.*.self_attention.linear_qkv",
         "decoder.layers.*.self_attention.linear_proj",
