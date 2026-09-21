@@ -538,7 +538,7 @@ def _flatten_samples(values: Iterable[Any]) -> list[Sample]:
 
 
 def _make_eval_args(args: Namespace) -> Namespace:
-    eval_args = Namespace(**vars(args))
+    eval_args = Namespace(**dict(args))
     for eval_name, rollout_name in (
         ("eval_temperature", "rollout_temperature"),
         ("eval_top_p", "rollout_top_p"),
