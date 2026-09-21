@@ -65,9 +65,7 @@ def add_user_provided_function_arguments(
     return parser
 
 
-def resolve_custom_function_configs(
-    args: argparse.Namespace, *, owned_arg_names: set[str] | None = None
-) -> None:
+def resolve_custom_function_configs(args: argparse.Namespace, *, owned_arg_names: set[str] | None = None) -> None:
     from miles.utils.args.configs.router import RouterConfig
     from miles.utils.args.runtime import AllConfig
 
@@ -168,9 +166,12 @@ def _adapt_legacy_custom_config(add_arguments: Callable[[argparse.ArgumentParser
     fields.update({name: (Any, parser._defaults[name]) for name in default_only_fields})
     config_class = create_model("LegacyCustomFunctionConfig", __base__=_LegacyCustomFunctionConfig, **fields)
     config_class._default_only_fields = frozenset(default_only_fields)
-    config_class._suppressed_fields = frozenset(
-        action.dest for action in parser._actions if not action.required and action.default == argparse.SUPPRESS
-    ) | config_class._default_only_fields
+    config_class._suppressed_fields = (
+        frozenset(
+            action.dest for action in parser._actions if not action.required and action.default == argparse.SUPPRESS
+        )
+        | config_class._default_only_fields
+    )
 
     def _add_arguments(parser: argparse.ArgumentParser) -> Any:
         return add_arguments(parser)

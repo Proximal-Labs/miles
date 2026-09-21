@@ -79,7 +79,7 @@ class TrainConfig(BaseConfig):
                 "Works with both the GPU optimizer and the CPU optimizer, but is not compatible "
                 "with --use-precision-aware-optimizer on GPU. ref/teacher tags keep their "
                 "backups. Recommended for Grace GPU colocate training."
-            )
+            ),
         ),
     ] = False
     check_rematerialize_param_from_master_weight: A[

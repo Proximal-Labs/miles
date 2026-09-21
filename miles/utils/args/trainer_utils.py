@@ -19,9 +19,8 @@ def compute_trainer_config(all_config: AllConfig, trainer: MegatronTrainerConfig
     base_args = Namespace(**(dict(all_config) | base_backend_values))
     trainer_args = compute_trainer_args(args=base_args, trainer=trainer)
     if (
-        (provider := all_config.custom_model_provider_path) is not None
-        and trainer_args.custom_model_provider_path == provider.path
-    ):
+        provider := all_config.custom_model_provider_path
+    ) is not None and trainer_args.custom_model_provider_path == provider.path:
         trainer_args.custom_model_provider_path = provider
     resolve_custom_function_configs(trainer_args)
     values = vars(trainer_args)

@@ -360,7 +360,9 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = "retract"
-    keep_old_actor: A[bool, Arg(omit_default=True, help="Whether to keep the rollout model on training process")] = False
+    keep_old_actor: A[bool, Arg(omit_default=True, help="Whether to keep the rollout model on training process")] = (
+        False
+    )
 
     rollout_data_postprocess_path: A[
         CustomFunctionConfig | None,

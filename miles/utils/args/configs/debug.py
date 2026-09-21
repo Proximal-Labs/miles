@@ -174,7 +174,7 @@ class DebugConfig(BaseConfig):
             help=(
                 "When comparing weights after update, allow quantized tensors to differ "
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space)."
-            )
+            ),
         ),
     ] = False
     check_lora_weight_equal: A[
@@ -190,12 +190,14 @@ class DebugConfig(BaseConfig):
             )
         ),
     ] = False
-    save_local_weight_checksum: A[bool, Arg(omit_default=True, help="Save per-rank local weight checksum per-step.")] = False
+    save_local_weight_checksum: A[
+        bool, Arg(omit_default=True, help="Save per-rank local weight checksum per-step.")
+    ] = False
     enable_event_analyzer: A[
         bool,
         Arg(
             omit_default=True,
-            help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step."
+            help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
         ),
     ] = False
     enable_sample_ownership_checker: A[

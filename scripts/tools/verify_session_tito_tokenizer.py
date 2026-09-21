@@ -126,7 +126,9 @@ def main() -> int:
     wrapper_args, remaining_args = parser.parse_known_args()
     sys.argv[1:] = _with_session_verify_defaults(remaining_args)
     args = parse_args(add_custom_arguments=_set_session_verify_defaults)
-    args = argparse.Namespace(**(dict(args) | {f"sglang_{key}": value for key, value in args.sglang.base_args.items()}))
+    args = argparse.Namespace(
+        **(dict(args) | {f"sglang_{key}": value for key, value in args.sglang.base_args.items()})
+    )
 
     # Resolve the family-owned capability before any GPU work starts so an
     # unsupported verifier schedule fails immediately.

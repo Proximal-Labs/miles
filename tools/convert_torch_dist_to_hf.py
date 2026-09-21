@@ -103,7 +103,9 @@ def get_named_params(args, state_dict):
         yield from get_layer_param(args, name, param)
 
 
-def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None, origin_hf_dir: str | None = None):
+def save_tensors(
+    args, model_name, state_dict, output_dir, chunk_size, vocab_size=None, origin_hf_dir: str | None = None
+):
     # for miles update_weight compatible
     args.sglang_enable_ep_moe = False
     conversion_config = build_offline_conversion_config(args, origin_hf_dir=origin_hf_dir)

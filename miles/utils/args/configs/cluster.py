@@ -206,7 +206,7 @@ class ClusterConfig(BaseConfig):
                 "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
                 "Adam-only. This bounds host residency, not the GPU restore window -- for that "
                 "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0."
-            )
+            ),
         ),
     ] = False
     stream_optimizer_state_moment_dtype: A[
