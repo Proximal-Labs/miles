@@ -10,7 +10,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint_io import prepare_checkpoint_dir, remove_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
@@ -74,9 +74,22 @@ def save_hf_model(
 
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")
+    writers_stopped = False
     try:
-        write_checkpoint_dir(path, write_shards, completion_marker=HF_EXPORT_COMPLETE_MARKER)
+        prepare_checkpoint_dir(path)
+        try:
+            write_shards(path)
+        finally:
+            torch.distributed.barrier(group=get_gloo_group())
+            writers_stopped = True
+        if torch.distributed.get_rank() == 0:
+            (path / HF_EXPORT_COMPLETE_MARKER).touch()
     except Exception as e:
+        if writers_stopped:
+            try:
+                remove_checkpoint_dir(path)
+            except OSError:
+                logger.exception(f"Failed to clean up HF checkpoint {path}")
         if raise_on_error:
             raise
         if should_log:

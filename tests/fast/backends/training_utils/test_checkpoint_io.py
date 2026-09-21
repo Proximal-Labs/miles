@@ -21,10 +21,10 @@ def test_directory_errors_propagate(error, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("crash_after_write", [True, False])
-def test_crashed_overwrite_leaves_no_complete_checkpoint(tmp_path, crash_after_write):
+def test_crashed_overwrite_leaves_no_metadata(tmp_path, crash_after_write):
     checkpoint = tmp_path / "checkpoint"
     write_checkpoint_dir(
-        checkpoint, lambda directory: (directory / "old").write_text("old"), completion_marker=".complete"
+        checkpoint, lambda directory: (directory / "old").write_text("old"), metadata={"step": 1}
     )
 
     def overwrite_and_crash():
@@ -33,18 +33,18 @@ def test_crashed_overwrite_leaves_no_complete_checkpoint(tmp_path, crash_after_w
                 (directory / "value").write_text("partial")
             os._exit(73)
 
-        write_checkpoint_dir(checkpoint, write_shards, completion_marker=".complete")
+        write_checkpoint_dir(checkpoint, write_shards, metadata={"step": 2})
 
     child = multiprocessing.get_context("fork").Process(target=overwrite_and_crash)
     child.start()
     child.join(timeout=10)
     assert child.exitcode == 73
     assert not (checkpoint / "old").exists()
-    assert not (checkpoint / ".complete").exists()
+    assert not (checkpoint / "META.json").exists()
 
     write_checkpoint_dir(
-        checkpoint, lambda directory: (directory / "value").write_text("retry"), completion_marker=".complete"
+        checkpoint, lambda directory: (directory / "value").write_text("retry"), metadata={"step": 2}
     )
     assert (checkpoint / "value").read_text() == "retry"
-    assert (checkpoint / ".complete").exists()
+    assert (checkpoint / "META.json").exists()
     assert list(tmp_path.iterdir()) == [checkpoint]
