@@ -151,7 +151,9 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
                 ),
             }
         )
-        _write_helm_values(values_path, build_values(specs, rendered).as_values())
+        with override_env(env):
+            values = build_values(specs, rendered).as_values()
+        _write_helm_values(values_path, values)
         return computed, Helm.render_upgrade(
             release=release, namespace=namespace, chart=chart, values_files=values_files
         )
