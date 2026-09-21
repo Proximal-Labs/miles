@@ -332,10 +332,14 @@ class InferenceController:
 
     @with_lock
     async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        has_eval_engines = self.args.eval_num_gpus > 0
         engine_gpu_counts = [
-            count for name, srv in self.servers.items() if name != "eval" for count in srv.engine_gpu_counts
+            count
+            for name, srv in self.servers.items()
+            if name != "eval" or not has_eval_engines
+            for count in srv.engine_gpu_counts
         ]
-        eval_srv = self.servers.get("eval")
+        eval_srv = self.servers.get("eval") if has_eval_engines else None
         return InferenceRuntimeImmutState(
             engine_count=len(engine_gpu_counts),
             gpu_count=sum(engine_gpu_counts),
