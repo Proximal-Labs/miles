@@ -160,13 +160,6 @@ class TrainConfig(BaseConfig):
         ),
     ] = False
     allgather_cp: A[bool, Arg()] = False
-    low_memory_resume: A[
-        bool,
-        Arg(
-            reset=True,
-            help=("Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "),
-        ),
-    ] = False
     mfu_peak_tflops: A[
         float | None,
         Arg(

@@ -20,6 +20,13 @@ class TrainerBackendTraitConfig(BaseConfig):
 
     # from TrainConfig
     num_layers: int | None
+    low_memory_resume: A[
+        bool,
+        Arg(
+            reset=True,
+            help=("Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "),
+        ),
+    ] = False
 
     # from ClusterConfig
     distributed_backend: A[str, Arg(reset=True)] = "nccl"
