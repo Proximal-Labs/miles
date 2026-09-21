@@ -50,6 +50,9 @@ def add_conversion_args(parser):
 
 def get_args():
     args = parse_args(add_conversion_args)
+    args.true_on_policy_mode = False
+    args.debug_disable_optimizer = False
+    args.multi_lora_n_adapters = 0
     args = set_default_megatron_args(args)
 
     args.debug_deterministic_collective = False
