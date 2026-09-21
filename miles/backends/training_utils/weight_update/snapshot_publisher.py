@@ -62,8 +62,9 @@ class SnapshotPublisher:
         weight_map: dict[str, str] = {}
         total_size = 0
         shard_index = 0
+        write_error = None
         for hf_named_tensors in self._iterator.iter_hf_weights(weights):
-            if not is_writer:
+            if not is_writer or write_error is not None:
                 continue
             shard_index += 1
             shard_name = f"model-{shard_index:05d}.safetensors"
@@ -72,9 +73,15 @@ class SnapshotPublisher:
                 shard_tensors[name] = tensor.detach().to("cpu").contiguous()
                 weight_map[name] = shard_name
                 total_size += shard_tensors[name].numel() * shard_tensors[name].element_size()
-            safetensors.torch.save_file(shard_tensors, path / shard_name)
+            try:
+                safetensors.torch.save_file(shard_tensors, path / shard_name)
+            except Exception as exc:
+                # Peers must finish the remaining weight gathers before the transaction can fail.
+                write_error = exc
             del shard_tensors
 
+        if write_error is not None:
+            raise write_error
         if is_writer:
             assert weight_map, f"HF export to {path} produced no weights"
             base_checkpoint = Path(hf_checkpoint)

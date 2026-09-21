@@ -1,6 +1,6 @@
 """Checkpoint directories: written collectively, complete at their final path."""
 
-# TODO: isolate checkpoint IO failures; they currently terminate the trainer cell.
+# TODO: isolate checkpoint IO failures in Tinker; they still terminate the trainer cell.
 
 import json
 import os
@@ -23,7 +23,8 @@ def write_checkpoint_dir(
 ) -> None:
     """Write collectively, then atomically point ``path`` at the completed version.
 
-    All ranks must call. Readers may still hold an older version, so retain it.
+    All ranks must call. Writers must finish their collectives before raising local IO errors.
+    Readers may still hold an older version, so retain it.
     """
     final_dir = Path(path)
     tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
@@ -53,18 +54,27 @@ def write_checkpoint_dir(
         tmp_dir.symlink_to(version_dir.name, target_is_directory=True)
         os.replace(tmp_dir, final_dir)
 
-    make_tmp_dir()
-    _barrier()
-    write_shards(tmp_dir)
-    _barrier()
-    publish_dir()
-    _barrier()
+    for phase in (make_tmp_dir, lambda: write_shards(tmp_dir), publish_dir):
+        error = _run_checkpoint_phase(phase)
+        if error is not None:
+            raise error
 
 
 def _rank() -> int:
     return dist.get_rank() if dist.is_initialized() else 0
 
 
-def _barrier() -> None:
+def _run_checkpoint_phase(phase: Callable[[], None]) -> Exception | None:
+    """Agree on errors after all ranks return; callbacks must finish their collectives before raising."""
+    error = None
+    try:
+        phase()
+    except Exception as exc:
+        error = exc
     if dist.is_initialized():
-        dist.barrier(group=get_gloo_group())
+        errors = [None] * dist.get_world_size()
+        dist.all_gather_object(errors, f"{type(error).__name__}: {error}" if error else None, group=get_gloo_group())
+        failures = [f"rank {rank}: {message}" for rank, message in enumerate(errors) if message is not None]
+        if failures:
+            return RuntimeError("Checkpoint write failed: " + "; ".join(failures))
+    return error
