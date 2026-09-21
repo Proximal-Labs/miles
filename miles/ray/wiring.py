@@ -37,9 +37,7 @@ def get_backend_capability(args) -> BackendCapability:
         static_connections = build_static_conn_config(specs=compute_specs(args))
 
     return factory.get_backend_capability(
-        specs=compute_specs(args),
-        static_connections=static_connections,
-        cluster_backend=ClusterBackend(args.cluster_backend),
+        static_connections=static_connections, cluster_backend=ClusterBackend(args.cluster_backend)
     )
 
 

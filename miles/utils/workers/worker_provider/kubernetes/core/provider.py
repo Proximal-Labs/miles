@@ -13,7 +13,7 @@ from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core import cell_view, pod_view
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys
-from miles.utils.workers.worker_spec import BaseSpec, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,6 @@ class KubernetesRunInfo(FrozenStrictBaseModel):
     namespace: str
     label_selector: str
     label_keys: CellLabelKeys
-    specs: dict[str, BaseSpec]
 
 
 class KubernetesWorkerProvider(BaseWorkerProvider):
