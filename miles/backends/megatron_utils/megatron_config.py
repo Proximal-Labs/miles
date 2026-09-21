@@ -10,6 +10,7 @@ from typing import Annotated, Any, ClassVar, Literal
 import pydantic
 import yaml
 
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, _ConfigNamespaceValueCodec
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -379,6 +380,8 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
             f"--megatron-config trainer {trainer.trainer_id!r} overrides {key!r}, which this run's argument "
             f"parser does not know"
         )
+        if isinstance(current := vars(ans)[key], CustomFunctionConfig) and value == current.path:
+            continue
         setattr(ans, key, value)
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
