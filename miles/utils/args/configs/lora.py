@@ -142,6 +142,9 @@ class LoraConfig(BaseConfig):
             )
         ),
     ] = 0.5
+
+
+class LoraRolloutOnlyConfig(BaseConfig):
     multi_lora_max_empty_wait_s: A[
         float,
         Arg(
