@@ -3,6 +3,7 @@
 # TODO: isolate checkpoint IO failures in Tinker; they still terminate the trainer cell.
 
 import json
+import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -12,6 +13,8 @@ from uuid import uuid4
 import torch.distributed as dist
 
 from miles.utils.distributed_utils import get_gloo_group
+
+logger = logging.getLogger(__name__)
 
 
 def write_checkpoint_dir(
@@ -28,6 +31,7 @@ def write_checkpoint_dir(
     """
     final_dir = Path(path)
     tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
+    version_dir = None
 
     def make_tmp_dir():
         if _rank() == 0:
@@ -45,6 +49,7 @@ def write_checkpoint_dir(
             tmp_dir.mkdir(parents=True)
 
     def publish_dir():
+        nonlocal version_dir
         if _rank() != 0:
             return
         if metadata is not None:
@@ -54,9 +59,22 @@ def write_checkpoint_dir(
         tmp_dir.symlink_to(version_dir.name, target_is_directory=True)
         os.replace(tmp_dir, final_dir)
 
+    def cleanup_dir():
+        if _rank() != 0:
+            return
+        if tmp_dir.is_symlink():
+            tmp_dir.unlink()
+        elif tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        if version_dir is not None and version_dir.exists() and final_dir.resolve() != version_dir.resolve():
+            shutil.rmtree(version_dir)
+
     for phase in (make_tmp_dir, lambda: write_shards(tmp_dir), publish_dir):
         error = _run_checkpoint_phase(phase)
         if error is not None:
+            cleanup_error = _run_checkpoint_phase(cleanup_dir)
+            if cleanup_error is not None:
+                logger.error(f"Failed to clean up checkpoint {final_dir}: {cleanup_error}")
             raise error
 
 
