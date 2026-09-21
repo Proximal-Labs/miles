@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
+from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState, get_adapter_save_dir
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.http_utils import router_worker_base_urls
 from miles.utils.multi_lora import RID_SEPARATOR, min_groups_per_dp_split
@@ -135,7 +135,7 @@ class MultiLoRABackend:
         config = self.resolve_adapter_config(name, config)
         await self.validate_adapter(name, config)
         result = self.registry.register(name, config)
-        resolved = config.save
+        resolved = get_adapter_save_dir(config)
         if resolved is not None:
             logger.info(f"Adapter '{name}' registered (slot {result['slot']}), checkpoints -> {resolved}")
         return result

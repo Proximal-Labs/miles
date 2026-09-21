@@ -88,9 +88,9 @@ class AdapterRegistry:
                 raise ValueError(f"Adapter '{name}' already registered")
             if existing.state in (AdapterState.RETIRING, AdapterState.CLEANUP):
                 raise ValueError(f"Adapter '{name}' is still cleaning up; retry shortly")
-        if (save_dir := config.save) is not None:
+        if (save_dir := get_adapter_save_dir(config)) is not None:
             for record in self.in_state(*LIVE_STATES).values():
-                other_save = record.config.save
+                other_save = get_adapter_save_dir(record.config)
                 if other_save is not None and Path(other_save).resolve() == Path(save_dir).resolve():
                     raise ValueError(
                         f"Adapter '{name}' save dir '{save_dir}' is already used by adapter '{record.name}'"
@@ -250,3 +250,10 @@ class AdapterRegistry:
             "cleanup": list(self.in_state(AdapterState.CLEANUP)),
             "completed": list(self.in_state(AdapterState.COMPLETED)),
         }
+
+
+def get_adapter_save_dir(config: Any) -> str | Path | None:
+    try:
+        return config.save
+    except AttributeError:
+        return None
