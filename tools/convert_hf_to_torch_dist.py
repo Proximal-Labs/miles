@@ -13,8 +13,12 @@ import miles_plugins.mbridge  # noqa: F401
 from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.initialize import init
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.utils.args.configs.custom_megatron_plugins import Dsv4MegatronPluginsConfig
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
 
@@ -48,7 +52,7 @@ def add_conversion_args(parser):
     return parser
 
 
-def get_args():
+def get_args() -> TrainerConfig:
     args = parse_args(add_conversion_args)
     args.true_on_policy_mode = False
     args.debug_disable_optimizer = False
@@ -94,7 +98,44 @@ def get_args():
     )
 
     validate_args(args)
-    return args
+    values = {name: value for name, value in vars(args).items() if name in TrainerConfig.model_fields}
+    if args.custom_model_provider_path is not None:
+        values["custom_model_provider_path"] = CustomFunctionConfig(path=args.custom_model_provider_path)
+    return TrainerConfig.model_validate(
+        {
+            "backend": MegatronArgsNamespace(
+                **{name: value for name, value in vars(args).items() if name not in TrainerConfig.model_fields}
+            ),
+            "trainer_id": "actor",
+            "trainer_model_id": None,
+            "trainer_role": "actor",
+            "trainer_actor_index": 0,
+            "requested_load": args.load,
+            "use_critic": False,
+            "ci_enable_metrics_capture": False,
+            "starts_inference_engines": False,
+            "rollout_external": False,
+            "rollout_batch_size": 1,
+            "eval_datasets": [],
+            "eval_uses_snapshots": False,
+            "trainer_heartbeat_checker_interval": 0.0,
+            "trainer_heartbeat_checker_timeout": 0.0,
+            "trainer_heartbeat_checker_first_wait": 0.0,
+            "trainer_heartbeat_checker_failure_threshold": 1,
+            "rollout_health_check_interval": 0.0,
+            "rollout_health_check_timeout": 0.0,
+            "rollout_health_check_first_wait": 0.0,
+            "rollout_health_check_failure_threshold": 1,
+            "lora_A_init_method": "xavier",
+            "lora_B_init_method": "zero",
+            "multi_lora": False,
+            "multi_lora_dp_size": None,
+            "sglang_model_routers": None,
+            "router_args": {},
+            "sglang": SglangConfig(models=[], base_args={}),
+        }
+        | values
+    )
 
 
 def main():
@@ -119,7 +160,8 @@ def main():
     )
     args = get_args()
     init(args)
-    model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    with args.backend.mutable():
+        model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
     # Load model
     hf_model_path = args.hf_checkpoint
@@ -136,8 +178,8 @@ def main():
     save_checkpoint(1, model, None, None, 0)
 
     if dist.get_rank() == 0:
-        source_dir = get_checkpoint_name(args.save, 1, False, return_base_dir=True)
-        target_dir = get_checkpoint_name(args.save, -1, True, return_base_dir=True)
+        source_dir = get_checkpoint_name(args.backend.save, 1, False, return_base_dir=True)
+        target_dir = get_checkpoint_name(args.backend.save, -1, True, return_base_dir=True)
         shutil.move(source_dir, target_dir)
 
     dist.barrier()
@@ -145,7 +187,7 @@ def main():
     # This modification must be the *last* step and after a `dist.barrier`
     # because the higher-level scripts consider this as a signal that the script has been executed successfully
     if dist.get_rank() == 0:
-        tracker_filename = get_checkpoint_tracker_filename(args.save)
+        tracker_filename = get_checkpoint_tracker_filename(args.backend.save)
         with open(tracker_filename, "w") as f:
             f.write("release")
 
