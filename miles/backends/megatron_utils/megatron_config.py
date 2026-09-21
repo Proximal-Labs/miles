@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Literal
 import pydantic
 import yaml
 
-from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace
+from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, _ConfigNamespaceValueCodec
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
@@ -235,6 +235,15 @@ class MegatronConfig(FrozenStrictBaseModel):
         from megatron.training.arguments import add_megatron_arguments
 
         add_megatron_arguments(parser)
+
+    @pydantic.field_serializer("base_args", when_used="json")
+    def _serialize_base_args(self, value: dict[str, Any]) -> dict[str, Any]:
+        return _ConfigNamespaceValueCodec.serialize(value)
+
+    @pydantic.field_validator("base_args", mode="before")
+    @classmethod
+    def _deserialize_base_args(cls, value: Any) -> Any:
+        return _ConfigNamespaceValueCodec.deserialize(value)
 
     @pydantic.model_validator(mode="after")
     def _validate_ids(self) -> "MegatronConfig":
