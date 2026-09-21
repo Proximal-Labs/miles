@@ -135,7 +135,7 @@ def _clear_proxy_env() -> None:
         os.environ.pop(proxy_var, None)
 
 
-def namespace_to_train_args(ns: argparse.Namespace) -> str:
+def namespace_to_train_args(ns: argparse.Namespace, *, enable_spec: bool | None = None) -> str:
     """Serialize a fully-shaped Namespace into the ``train_args`` string.
 
     Reads miles-canonical field names off ``ns``; emits the exact flag set
@@ -144,6 +144,9 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     level) so the runner stays pinned to whatever the caller's Namespace
     declared, regardless of any drift in miles' upstream default.
     """
+    if enable_spec is None:
+        enable_spec = ns.enable_spec
+
     parts: list[str] = [
         f"--hf-checkpoint {ns.hf_checkpoint}",
         f"--prompt-data {ns.prompt_data}",
@@ -190,7 +193,7 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     # flag when the caller asks for ep>1 so single-expert models stay untouched.
     if ns.sglang_ep_size > 1:
         parts.append(f"--sglang-expert-parallel-size {ns.sglang_ep_size}")
-    if ns.enable_spec:
+    if enable_spec:
         parts.extend(
             [
                 "--sglang-speculative-algorithm EAGLE",
@@ -239,6 +242,7 @@ def run_session_verify(
     *,
     wire_format: SessionWireFormat = "openai",
     assistant_text_threshold: float | None = None,
+    enable_spec: bool | None = None,
 ) -> None:
     """Boot ``miles`` rollout pipeline and run the session-verification driver.
 
@@ -275,7 +279,7 @@ def run_session_verify(
     _clear_proxy_env()
     args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint, backend=backend)
 
-    train_args = namespace_to_train_args(args)
+    train_args = namespace_to_train_args(args, enable_spec=enable_spec)
 
     # Per-sample token-seq metrics file: rollout workers append one JSONL line
     # per sample inside the selected generate wrapper; we aggregate after

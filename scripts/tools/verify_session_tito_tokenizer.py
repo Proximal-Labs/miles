@@ -154,7 +154,11 @@ def main() -> int:
     _print_action_table(allowed_roles, cycles=args.session_verify_cycles)
 
     try:
-        run_session_verify(args=args, assistant_text_threshold=wrapper_args.assistant_text_threshold)
+        run_session_verify(
+            args=args,
+            assistant_text_threshold=wrapper_args.assistant_text_threshold,
+            enable_spec=wrapper_args.enable_spec,
+        )
     except Exception as e:
         print()
         print(f"Verdict: FAIL -- {type(e).__name__}: {e}", file=sys.stderr)
@@ -169,7 +173,7 @@ def main() -> int:
 
 
 def _set_session_verify_defaults(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.set_defaults(**SESSION_VERIFY_INVARIANT_ARGS)
+    parser.set_defaults(**{key: value for key, value in SESSION_VERIFY_INVARIANT_ARGS.items() if key != "enable_spec"})
     return parser
 
 
