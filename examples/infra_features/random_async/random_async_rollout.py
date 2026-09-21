@@ -283,7 +283,7 @@ class AsyncRandomRolloutWorker:
         self._sample_index = 0
         self._group_index = 0
 
-        if args.sglang_enable_metrics:
+        if args.sglang.common_value("enable_metrics"):
             router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
             self.metrics_reporter = SGLangMetricsReporter(
                 router_url=router_url,
