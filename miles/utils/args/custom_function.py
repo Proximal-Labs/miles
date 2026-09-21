@@ -27,7 +27,8 @@ class CustomFunctionConfig(BaseConfig):
         return values | {"config": validate_complete_config(config_class, values["config"])}
 
     def __reduce__(self) -> tuple[Any, tuple[dict[str, Any]]]:
-        return _restore_custom_function_config, (self.model_dump(),)
+        values = {"path": self.path, "config": None if self.config is None else dict(self.config)}
+        return _restore_custom_function_config, (values,)
 
 
 def add_user_provided_function_arguments(
