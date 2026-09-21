@@ -15,7 +15,6 @@ from miles.utils.workers.worker_spec import (
     BaseServeSpec,
     HostAndPort,
     NamedHostAndPorts,
-    WorkerMetaContext,
 )
 
 if TYPE_CHECKING:
@@ -126,7 +125,7 @@ def _has_all_pods(pods: list[pod_view.ParsedPod]) -> bool:
 
 
 def _spec_meta_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> dict[str, Any]:
-    return dict(run.specs[pod.pool_id].meta(WorkerMetaContext(cell_index=pod.cell_index)))
+    return run.specs[pod.pool_id].static_meta.resolve(cell_index=pod.cell_index)
 
 
 def _pod_meta_of_cell(pods: list[pod_view.ParsedPod]) -> dict[str, str]:
