@@ -18,8 +18,8 @@ from tests.fast.utils.workers.conftest import worker_manager_args
 from miles.utils.workers.ray_worker_manager import _ACTOR_NAME, RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_spec import (
-    BaseWorkerSpec,
-    CommandWorkerSpec,
+    BaseSpec,
+    BaseCommandSpec,
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
@@ -121,8 +121,8 @@ def make_command_spec(
     num_gpus_per_worker: float = 0,
     num_gpu_slots_per_worker: int = 0,
     pg_name: str | None = None,
-) -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+) -> BaseCommandSpec:
+    return BaseCommandSpec(
         name=name,
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
@@ -194,7 +194,7 @@ def manager_factory(ray_local_mode) -> Callable[..., ray.actor.ActorHandle]:
     handles: list[ray.actor.ActorHandle] = []
 
     def _launch(
-        specs: list[BaseWorkerSpec],
+        specs: list[BaseSpec],
         pgs: dict[str, Any] | None = None,
         comm_backend: WorkerCommBackend = WorkerCommBackend.RAY,
     ) -> ray.actor.ActorHandle:
@@ -257,7 +257,7 @@ def cell_stoppable_manager_factory(ray_local_mode) -> Callable[..., ray.actor.Ac
     """Launches the manager with a test-only entry point into its per-cell teardown."""
     handles: list[ray.actor.ActorHandle] = []
 
-    def _launch(specs: list[CommandWorkerSpec], pgs: dict[str, Any] | None = None) -> ray.actor.ActorHandle:
+    def _launch(specs: list[BaseCommandSpec], pgs: dict[str, Any] | None = None) -> ray.actor.ActorHandle:
         handle = ray.remote(CellStoppableManager).options(name=_ACTOR_NAME).remote()
         handles.append(handle)
         ray.get(

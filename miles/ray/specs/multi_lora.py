@@ -3,14 +3,14 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import SchedulingSpec, BaseServeSpec
 
 MULTI_LORA_CONTROLLER_POOL_ID = "multi-lora-controller"
 MULTI_LORA_CONTROLLER_WORKER_CLASS = "miles.ray.multi_lora.controller.MultiLoRAController"
 
 
-def spec_multi_lora_controller(args) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def spec_multi_lora_controller(args) -> BaseServeSpec:
+    return BaseServeSpec(
         name=MULTI_LORA_CONTROLLER_POOL_ID,
         port_infos=[],
         env_var=lambda _ctx: {},
