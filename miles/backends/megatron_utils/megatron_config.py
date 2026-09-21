@@ -379,6 +379,9 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
 
+    if ans.train_backend == "fsdp" and ans.fsdp_cpu_offload:
+        ans.offload_train = False
+
     if trainer.role == CRITIC_ROLE:
         ans.loss_type = "value_loss"
 
