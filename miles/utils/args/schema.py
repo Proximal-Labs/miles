@@ -30,6 +30,7 @@ class Arg:
     const: Any = _UNSET
     metavar: str | tuple[str, ...] | None = None
     reset: bool = False
+    omit_default: bool = False
 
 
 # Adapted from sglang/srt/arg_groups/arg_utils.py:add_cli_args_from_dataclass.
@@ -88,14 +89,16 @@ def _argument_kwargs(*, name: str, annotation: Any, field: FieldInfo, argument: 
     kwargs = {
         key: value
         for key, value in vars(argument).items()
-        if key not in {"aliases", "cli_name", "type_parser", "reset"} and value is not None and value is not _UNSET
+        if key not in {"aliases", "cli_name", "type_parser", "reset", "omit_default"}
+        and value is not None
+        and value is not _UNSET
     }
     if (argument.cli_name or "--" + name.replace("_", "-")).startswith("-"):
         kwargs["dest"] = name
     else:
         kwargs.pop("required", None)
 
-    if not field.is_required():
+    if not argument.omit_default and not field.is_required():
         kwargs["default"] = deepcopy(field.get_default(call_default_factory=True))
         if isinstance(kwargs["default"], CustomFunctionConfig):
             kwargs["default"] = kwargs["default"].path

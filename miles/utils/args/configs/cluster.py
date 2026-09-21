@@ -138,6 +138,7 @@ class ClusterConfig(BaseConfig):
         bool | None,
         Arg(
             action=argparse.BooleanOptionalAction,
+            omit_default=True,
             help=(
                 "Whether to offload the training actor to CPU while the rollout engines generate. "
                 "Defaults to true when --colocate is set; an explicit --no-offload-train is respected."
@@ -160,6 +161,7 @@ class ClusterConfig(BaseConfig):
         bool | None,
         Arg(
             action=argparse.BooleanOptionalAction,
+            omit_default=True,
             help=(
                 "Whether to offload the rollout generator to CPU during training. "
                 "Defaults to true when --colocate is set; an explicit --no-offload-rollout is respected."
