@@ -21,7 +21,7 @@ DEFAULT_ENV_MODULE = "examples.geo3k_vlm.multi_turn.env_geo3k"
 
 class Geo3kConfig(BaseConfig):
     max_turns: A[int, Arg()]
-    rollout_interaction_env_path: A[str, Arg()] = DEFAULT_ENV_MODULE
+    rollout_interaction_env_path: A[str | None, Arg()] = DEFAULT_ENV_MODULE
 
 
 # Dummy messages used for calculating trim length in chat template encoding
