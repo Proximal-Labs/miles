@@ -204,8 +204,11 @@ class RouterSpec(BaseCommandSpec):
 
         if args.use_miles_router:
             assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
+            num_engines = (
+                len(addrs) if (addrs := args.rollout_external_engine_addrs) is not None else model_cfg.num_server_cells
+            )
             router_config = compute_miles_router_config(
-                args, host=primary.host, port=primary.port, num_engines=model_cfg.num_server_cells
+                args, host=primary.host, port=primary.port, num_engines=num_engines
             )
             launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
