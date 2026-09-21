@@ -20,6 +20,7 @@
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
 | `scenario_realistic_gsm8k_fully_async` | `test_realistic_gsm8k_fully_async__kill_train_rollout.py`, no modes |
 | `scenario_inference_scaling` | `test_inference_scaling__kill_rollout.py`, no modes |
+| `scenario_trainer_scaling` | `test_trainer_scaling__kill_train.py`, no modes |
 
 - **Forced absences**, one reason each:
     - `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` is multi-node, and no multi-node CI lane exists.
@@ -44,6 +45,7 @@
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
 | `scenario_realistic_gsm8k_fully_async` | soak | same, through `train_async.py --fully-async` |
 | `scenario_inference_scaling` | soak | the engine pool grows and shrinks under a live run, and the run follows it |
+| `scenario_trainer_scaling` | soak | the trainer pool gains and loses a DP cell under a live run, and the quorum follows it |
 
 ### Modes
 
@@ -500,3 +502,43 @@ Assertions:
 - **Why during training**: an engine deleted mid-generation is a crash the rollout ft path already covers in the soaks; the scaling question is whether the run follows a pool that changes size, so the resize lands where nothing is in flight.
 - **Why two independent witnesses of the size**: the checksum event counts the engines the trainer pushed to; the throughput denominator is what `InferenceRuntimeMutState` told the rollout executor. One agreeing with the schedule while the other does not is exactly the bug a refactor of the runtime topology would introduce.
 - **Why the lag window**: a pod takes seconds to be created and the reflector to see it; the update after the resize's own rollout may or may not include the new engine, the one after it must.
+
+### `scenario_trainer_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_trainer_scaling__kill_train.py, no mode: the topology is pinned in the module
+Steps: 12 rollouts (NUM_ROLLOUTS)
+Layout: dense Qwen3-0.6B, 2 cells x CP2 on 4 train GPUs + 2 engines x 1 GPU, disaggregated,
+        --ft-components train (indep_dp), api server + mini ft controller as in the soaks;
+        8 GPUs at the peak (3 cells x 2 GPUs + 2 engines)
+
+Mechanism: as scenario_inference_scaling, on the trainer pool's LeaderWorkerSet, while the run is
+        generating a scheduled rollout - the trainers are idle then, and the weight update before
+        that generation has already been pushed. Kubernetes creates or deletes the highest group
+        index (one 2-GPU pod = one cell), the trainer controller sees the pod through its watch and
+        adds / removes the cell, and the next train step's refresh heals the new cell into the
+        quorum (checkpoint from cell 0) or shrinks the quorum to the survivors.
+Schedule (SCHEDULE): 2 -> 3 cells while generating rollout 2, 3 -> 2 while generating rollout 7
+Timing and landing: as scenario_inference_scaling (exact moments, LANDING_LAG_ROLLOUTS = 3)
+
+Assertions:
+  1. Driver: every scheduled resize was applied, replicas read back as asked, the pool started at
+     the declared 2
+  2. Steps: the number of cells in the final attempt of each TrainGroupStepEndEvent is 2 before
+     the first landing, 3 between the landings, 2 after the second, each landing within the lag
+     window; every cell of every final attempt reports NORMAL, so a cell joined or left without
+     taking a step down
+  3. Quorum: exactly two CellReconfigureEvents, in schedule order and inside the lag windows -
+     the heal (src cell 0, healed [2], alive [0, 1, 2]) and the shrink (no src, healed [],
+     alive [0, 1])
+  4. Api server: the driver's readings list at most 3 actor cells alive at once, exactly 2 when
+     the run ends
+  5. Every weight update reached the 2 engines, and train/grad_norm is finite and nonzero for all
+     12 rollouts
+```
+
+- **Why not relaunch with a new `--actor-num-gpus-per-node`**: the pool's replica count comes from `TrainerSpec.scheduling(scaling)` and is a permitted "scaling" diff, but `--trainer-init-expected-num-cells` is filled at parse time as `{trainer_id: num_cells}` from the scaling fields and travels in every leaf payload that mixes in `ClusterConfig`, so a relaunch with more GPUs rewrites the trainer, inference-controller and rollout-executor pods unless the flag is declared explicitly; on top of that the `sglang` payload leak above still applies. Resizing the workload directly leaves the payloads alone.
+- **Why during generation**: a trainer cell removed mid-step is the crash the soaks already cover; here the cell leaves while the trainers are idle, so the shrink is a reconfigure and not a retry.
+- **Why the step-end witness and not only the reconfigure events**: a heal that lands but never trains would still log its event; counting the cells that reported an outcome per step proves the third cell carried gradients for every step between the landings.
+- **Why only above the deployed size**: the controller waits for its deployed cell count at init and on reload, so a pool scaled below it would hang the next take-over; this schedule returns to the deployed size, never under it.
