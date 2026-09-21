@@ -161,7 +161,12 @@ def setup_model_and_optimizer(
         model = _setup_lora_model_via_bridge(args)
     else:
         provider_func = get_model_provider_func(args, role)
-        if is_lora_enabled(args) and role == "actor" and "inkling" in (args.custom_model_provider_path or ""):
+        if (
+            is_lora_enabled(args)
+            and role == "actor"
+            and args.custom_model_provider_path
+            and "inkling" in args.custom_model_provider_path.path
+        ):
             from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
             provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
@@ -193,7 +198,7 @@ def setup_model_and_optimizer(
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 
             setup_muon_state_on_disk(args)
-        if config.muon_split_qkv and "inkling" in (args.custom_model_provider_path or ""):
+        if config.muon_split_qkv and args.custom_model_provider_path and "inkling" in args.custom_model_provider_path.path:
             if is_first_replica_megatron_main_rank():
                 logger.info(
                     "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
@@ -1052,7 +1057,8 @@ def load_model_state(
         and role == "actor"
         and args.megatron_to_hf_mode != "bridge"
         and args.lora_adapter_path
-        and "inkling" in (args.custom_model_provider_path or "")
+        and args.custom_model_provider_path
+        and "inkling" in args.custom_model_provider_path.path
     ):
         if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
             from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
