@@ -284,43 +284,41 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     def _init_weight_components(self, *, update_weights: bool, publish_snapshots: bool) -> None:
-        self.weight_updater = self._create_weight_updater() if update_weights else None
-        self.snapshot_publisher = self._create_snapshot_publisher() if publish_snapshots else None
-
-    def _create_snapshot_publisher(self) -> SnapshotPublisher:
         args = self.args
-        is_lora = is_lora_enabled(args)
-        iterator = get_hf_weight_iterator(
-            args,
-            self.model,
-            required_placement=WeightUpdatePlacement(gather_pp=True),
-            model_name=type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name,
-            quantization_config=None if is_lora else getattr(self.hf_config, "quantization_config", None),
-        )
-        return SnapshotPublisher(iterator, build_lora_sync_config(args) if is_lora else None)
-
-    def _create_weight_updater(self) -> WeightUpdater:
-        args = self.args
-        is_lora = lora_rollout_enabled(args)
-        uses_colocate_protocol = self.args.colocate
-        if is_lora and not uses_colocate_protocol:
-            assert args.megatron_to_hf_mode == "bridge", (
-                "LoRA weight sync over distributed engines requires "
-                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
-            )
         model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
         quantization_config = getattr(self.hf_config, "quantization_config", None)
-        return WeightUpdater(
-            args,
-            self.model,
-            weights_getter=self._get_actor_weights,
-            model_name=model_name,
-            quantization_config=quantization_config,
-            iterator_factory=get_hf_weight_iterator,
-            parallel_state=get_parallel_state(),
-            is_lora=is_lora,
-            lora_sync_config=build_lora_sync_config(args) if is_lora else None,
-        )
+        self.weight_updater = None
+        self.snapshot_publisher = None
+
+        if update_weights:
+            is_lora = lora_rollout_enabled(args)
+            if is_lora and not args.colocate:
+                assert args.megatron_to_hf_mode == "bridge", (
+                    "LoRA weight sync over distributed engines requires "
+                    f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
+                )
+            self.weight_updater = WeightUpdater(
+                args,
+                self.model,
+                weights_getter=self._get_actor_weights,
+                model_name=model_name,
+                quantization_config=quantization_config,
+                iterator_factory=get_hf_weight_iterator,
+                parallel_state=get_parallel_state(),
+                is_lora=is_lora,
+                lora_sync_config=build_lora_sync_config(args) if is_lora else None,
+            )
+
+        if publish_snapshots:
+            is_lora = is_lora_enabled(args)
+            iterator = get_hf_weight_iterator(
+                args,
+                self.model,
+                required_placement=WeightUpdatePlacement(gather_pp=True),
+                model_name=model_name,
+                quantization_config=None if is_lora else quantization_config,
+            )
+            self.snapshot_publisher = SnapshotPublisher(iterator, build_lora_sync_config(args) if is_lora else None)
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
