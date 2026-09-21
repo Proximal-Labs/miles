@@ -60,6 +60,14 @@ def collector_config_from_args(args, *, start_ts: float) -> CollectorConfig:
     snapshot = {
         key: getattr(args, key) for key in _SNAPSHOT_KEYS if hasattr(args, key)
     }  # config-access-exempt: attribute selected at runtime from key
+    snapshot.update(
+        sglang_max_running_requests=args.sglang.base_args.get("max_running_requests"),
+        sglang_mem_fraction_static=args.sglang.base_args.get("mem_fraction_static"),
+        sglang_load_balance_method=args.sglang.base_args.get("load_balance_method"),
+        router_dp_aware=args.router_args.get("dp_aware"),
+        router_policy=args.router_args.get("policy"),
+        router_assignment_mode=args.router_args.get("assignment_mode"),
+    )
     return CollectorConfig(
         dashboard_dir=f"{args.dump_details}/dashboard",
         run_name=args.wandb_group or "miles-run",
