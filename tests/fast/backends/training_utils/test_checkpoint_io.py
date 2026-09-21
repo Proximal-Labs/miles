@@ -20,31 +20,31 @@ def test_directory_errors_propagate(error, tmp_path, monkeypatch):
     assert caught.value is error
 
 
-@pytest.mark.parametrize("crash_before_publish", [True, False])
-def test_crashed_overwrite_keeps_a_complete_checkpoint(tmp_path, crash_before_publish):
+@pytest.mark.parametrize("crash_after_write", [True, False])
+def test_crashed_overwrite_leaves_no_complete_checkpoint(tmp_path, crash_after_write):
     checkpoint = tmp_path / "checkpoint"
-    write_checkpoint_dir(checkpoint, lambda directory: (directory / "value").write_text("old"))
-    old_version = checkpoint.resolve()
+    write_checkpoint_dir(
+        checkpoint, lambda directory: (directory / "old").write_text("old"), completion_marker=".complete"
+    )
 
     def overwrite_and_crash():
-        replace = os.replace
+        def write_shards(directory):
+            if crash_after_write:
+                (directory / "value").write_text("partial")
+            os._exit(73)
 
-        def crash_at_publish(source, destination):
-            if Path(destination) == checkpoint and crash_before_publish:
-                os._exit(73)
-            replace(source, destination)
-            if Path(source) == checkpoint or Path(destination) == checkpoint:
-                os._exit(73)
-
-        os.replace = crash_at_publish
-        write_checkpoint_dir(checkpoint, lambda directory: (directory / "value").write_text("new"))
+        write_checkpoint_dir(checkpoint, write_shards, completion_marker=".complete")
 
     child = multiprocessing.get_context("fork").Process(target=overwrite_and_crash)
     child.start()
     child.join(timeout=10)
     assert child.exitcode == 73
-    assert (checkpoint / "value").read_text() == ("old" if crash_before_publish else "new")
-    assert (old_version / "value").read_text() == "old"
+    assert not (checkpoint / "old").exists()
+    assert not (checkpoint / ".complete").exists()
 
-    write_checkpoint_dir(checkpoint, lambda directory: (directory / "value").write_text("retry"))
+    write_checkpoint_dir(
+        checkpoint, lambda directory: (directory / "value").write_text("retry"), completion_marker=".complete"
+    )
     assert (checkpoint / "value").read_text() == "retry"
+    assert (checkpoint / ".complete").exists()
+    assert list(tmp_path.iterdir()) == [checkpoint]
