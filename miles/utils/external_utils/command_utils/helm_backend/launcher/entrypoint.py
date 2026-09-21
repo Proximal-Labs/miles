@@ -325,7 +325,9 @@ def _compute_train_argv(
     host = MooncakeInfo.master_service_host(release, namespace)
     pod_argv = MooncakeInfo.with_cluster_master(argv, plan=plan, host=host)
     if plan is not None:
-        args = args.model_copy(update={"mooncake_store_init_kwargs": MooncakeInfo.cluster_init_kwargs(plan, host=host)})
+        args = args.model_copy(
+            update={"mooncake_store_init_kwargs": MooncakeInfo.cluster_init_kwargs(plan, host=host)}
+        )
     return pod_argv, args
 
 
