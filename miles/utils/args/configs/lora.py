@@ -7,7 +7,7 @@ class LoraConfig(BaseConfig):
     lora_A_init_method: str
     lora_B_init_method: str
     multi_lora: bool
-    multi_lora_dp_size: int | None
+    multi_lora_dp_size: int | None = None
 
     sglang_lora_use_virtual_experts: A[
         bool,
