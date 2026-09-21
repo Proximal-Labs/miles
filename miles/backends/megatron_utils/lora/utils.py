@@ -11,9 +11,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
-from miles.utils.hf_config import load_hf_config
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -403,29 +401,12 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
-def write_lora_weights(model: Sequence[torch.nn.Module], args: Namespace, path: str | Path) -> None:
-    """Collectively write a single HF adapter inside the caller's directory transaction."""
-    # Inference processes import this module for config helpers without Megatron installed.
-    from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
-
-    model_name = args.model_name
-    if model_name is None:
-        model_name = type(load_hf_config(args.hf_checkpoint)).__name__.lower()
-    iterator = get_hf_weight_iterator(
-        args,
-        model,
-        required_placement=WeightUpdatePlacement(gather_pp=True),
-        model_name=model_name,
-        quantization_config=None,
-    )
-    SnapshotPublisher(iterator, build_lora_sync_config(args)).write_adapter(None, path)
-
-
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
     save_dir: str,
     *,
+    publisher: SnapshotPublisher,
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
     iteration: int | None = None,
@@ -452,7 +433,7 @@ def save_lora_checkpoint(
         torch.save(adapter_state, tmp_dir / f"adapter_megatron_rank{global_rank}.pt")
         if training_state is not None:
             torch.save(training_state, tmp_dir / f"training_state_rank{global_rank}.pt")
-        write_lora_weights(model, args, tmp_dir)
+        publisher.write_adapter(None, tmp_dir)
 
     write_checkpoint_dir(save_dir, write_shards)
     return str(save_dir)

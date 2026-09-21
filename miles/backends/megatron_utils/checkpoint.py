@@ -15,6 +15,8 @@ from megatron.training.global_vars import get_args
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
+
 from .lora.utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
 from .model_provider import LinearForLastLayer
 
@@ -158,17 +160,21 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     return result
 
 
-def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
+def save_checkpoint_with_lora(
+    iteration, model, optimizer, opt_param_scheduler, *, publisher: SnapshotPublisher | None = None
+):
     """Extended save that handles LoRA adapters separately."""
     args = get_args()
 
     if is_lora_model(model):
+        assert publisher is not None, "LoRA checkpoint requires a snapshot publisher"
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(
             model,
             args,
             str(save_dir),
+            publisher=publisher,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
             iteration=iteration,

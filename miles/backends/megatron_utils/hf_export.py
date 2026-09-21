@@ -8,15 +8,13 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.utils import is_lora_model, write_lora_weights
+from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
+from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER
 from miles.utils.megatron_bridge_utils import patch_megatron_model
 
 logger = logging.getLogger(__name__)
@@ -35,6 +33,7 @@ def save_hf_model(
     rollout_id: int,
     model: Sequence[DDP],
     *,
+    publisher: SnapshotPublisher,
     path: str | Path | None = None,
     raise_on_error: bool = False,
 ) -> None:
@@ -49,15 +48,7 @@ def save_hf_model(
     def write_shards(tmp_dir: Path):
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
             # LoRA needs Bridge to merge the adapter into the base weights
-            hf_config = load_hf_config(args.hf_checkpoint)
-            iterator = HfWeightIteratorDirect(
-                args,
-                model,
-                placement=WeightUpdatePlacement(gather_pp=True),
-                model_name=type(hf_config).__name__.lower() if args.model_name is None else args.model_name,
-                quantization_config=getattr(hf_config, "quantization_config", None),
-            )
-            SnapshotPublisher(iterator).write_model(
+            publisher.write_model(
                 tmp_dir,
                 weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
                 hf_checkpoint=args.hf_checkpoint,
@@ -77,7 +68,7 @@ def save_hf_model(
                     f"bridge likely has no mapping for this model architecture."
                 )
         if is_lora_model(model):
-            write_lora_weights(model, args, tmp_dir / "adapter")
+            publisher.write_adapter(None, tmp_dir / "adapter")
         if torch.distributed.get_rank() == 0:
             # eval readers also accept legacy directories and still require this marker
             (tmp_dir / HF_EXPORT_COMPLETE_MARKER).touch()

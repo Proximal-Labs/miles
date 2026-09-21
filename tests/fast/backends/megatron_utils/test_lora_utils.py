@@ -385,15 +385,16 @@ class TestBuildLoraSyncConfigUnderMultiLora:
 
 
 class TestSaveLoraCheckpointTrainingState:
-    def _save(self, tmp_path, monkeypatch, *, no_save_optim, scheduler=None):
-        monkeypatch.setattr(lora_utils, "write_lora_weights", lambda *_: None)
+    def _save(self, tmp_path, *, no_save_optim, scheduler=None):
+        publisher = SimpleNamespace(write_adapter=lambda *_: None)
 
         adapter = torch.nn.Parameter(torch.ones(2))
         model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
         args = Namespace(no_save_optim=no_save_optim)
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
-            model, args, str(tmp_path / "checkpoint"), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
+            model, args, str(tmp_path / "checkpoint"), publisher=publisher,
+            optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
         )
         return sorted(path.name for path in (tmp_path / "checkpoint").iterdir())
 
@@ -401,9 +402,9 @@ class TestSaveLoraCheckpointTrainingState:
     def _state(tmp_path):
         return torch.load(tmp_path / "checkpoint" / "training_state_rank0.pt", weights_only=False)
 
-    def test_training_state_is_written_by_default(self, tmp_path, monkeypatch):
+    def test_training_state_is_written_by_default(self, tmp_path):
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
-        files = self._save(tmp_path, monkeypatch, no_save_optim=False, scheduler=scheduler)
+        files = self._save(tmp_path, no_save_optim=False, scheduler=scheduler)
 
         assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
         state = self._state(tmp_path)
@@ -411,11 +412,11 @@ class TestSaveLoraCheckpointTrainingState:
         assert state["opt_param_scheduler"] == {"lr": 0.5}
         assert state["iteration"] == 3
 
-    def test_no_save_optim_drops_the_optimizer_and_keeps_the_resume_metadata(self, tmp_path, monkeypatch):
+    def test_no_save_optim_drops_the_optimizer_and_keeps_the_resume_metadata(self, tmp_path):
         """--no-save-optim is about optimizer state; losing the step and the LR schedule with it
         would silently restart a resumed run from iteration 0."""
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
-        files = self._save(tmp_path, monkeypatch, no_save_optim=True, scheduler=scheduler)
+        files = self._save(tmp_path, no_save_optim=True, scheduler=scheduler)
 
         assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
         state = self._state(tmp_path)
