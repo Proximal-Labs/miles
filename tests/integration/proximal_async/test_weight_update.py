@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 from argparse import Namespace
 
 import httpx
@@ -18,7 +17,7 @@ from miles.utils.ft_utils.process_group_utils import GroupInfo
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles_plugins.proximal import weight_update
 from miles_plugins.proximal.options import TRANSFER
-from miles_plugins.proximal.store import RolloutStore
+from miles_plugins.proximal.store import open_store
 
 
 class CpuAdapterIterator:
@@ -45,9 +44,7 @@ class CpuAdapterIterator:
 
 def current_version(config):
     async def read():
-        store = await RolloutStore.open(
-            os.environ[config.store_dsn_env], run_id=config.run_id, root=config.artifact_directory
-        )
+        store = await open_store(config)
         try:
             policy = await store.current_policy()
             return None if policy is None else policy.version

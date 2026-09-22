@@ -5,7 +5,6 @@ import json
 import sys
 
 import pytest
-from pydantic import ValidationError
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles_plugins.proximal.serving import ServingDeployment, engine_argv, gateway_config
@@ -28,8 +27,6 @@ def deployment(**overrides):
         "adapter_mount": "/adapters",
         "local_cache": "/cache",
         "max_loaded_adapters": 4,
-        "reasoning_parser": "qwen3",
-        "tool_call_parser": "qwen25",
         "gateway_secret": "miles-gateway",
         "gateway_key_env": "MILES_GATEWAY_KEY",
     }
@@ -61,9 +58,23 @@ def test_engine_arguments_follow_the_run_lora_contract(config):
     assert gateway.replica.backend_url == f"http://127.0.0.1:{args.port}"
 
 
-def test_extras_cannot_override_derived_flags_and_must_parse(config):
-    with pytest.raises(ValidationError, match="derived from the run config"):
-        deployment(extra_engine_args=["--max-lora-rank", "128"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--max-lora-rank", "128"],
+        ["--model", "/models/other"],  # An alias for --model-path.
+        ["--tokenizer-path", "/models/other-tokenizer"],
+        ["--host", "0.0.0.0"],
+        ["--reasoning-parser", "deepseek-r1"],
+        ["--lora-paths", "x=/adapters/x"],
+    ],
+)
+def test_extras_cannot_change_any_resolved_derived_setting(config, extra):
+    with pytest.raises(ValueError, match="override settings derived from the run config"):
+        engine_argv(config, deployment(extra_engine_args=extra))
+
+
+def test_extras_must_parse_and_performance_flags_pass(config):
     with pytest.raises(SystemExit):
         engine_argv(config, deployment(extra_engine_args=["--not-an-sglang-flag"]))
     ok = deployment(extra_engine_args=["--mem-fraction-static", "0.85"])
@@ -82,3 +93,8 @@ def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatc
     module = importlib.import_module("miles_plugins.proximal.serving_app")
     assert module.app.name == "miles-serving-test"
     assert module.RUN == config and module.DEPLOYMENT == deployment()
+    # Engine arguments are rendered at deploy time; a bad flag fails here, not on a GPU.
+    serving_path.write_text(deployment(extra_engine_args=["--model", "/models/other"]).model_dump_json())
+    sys.modules.pop("miles_plugins.proximal.serving_app", None)
+    with pytest.raises(ValueError, match="override"):
+        importlib.import_module("miles_plugins.proximal.serving_app")

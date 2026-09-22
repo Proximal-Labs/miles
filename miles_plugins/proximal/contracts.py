@@ -98,9 +98,35 @@ class Research(Contract):
     max_consecutive_failed_groups: Positive
 
 
+class ModelProtocol(Contract):
+    """How served text becomes reasoning and tool calls. Changes what the agent sees,
+    so it is part of the training contract, shared by serving and capture."""
+
+    reasoning_parser: Nonempty
+    tool_call_parser: Nonempty
+
+
 class Service(Contract):
     url: Endpoint
     api_key_env: Nonempty
+
+
+class SharedDiskArtifacts(Contract):
+    """One filesystem that every store reader and writer mounts with read-after-write
+    visibility (e.g. a single host's persistent disk). No sync step."""
+
+    kind: Literal["shared_disk"]
+
+
+class ModalVolumeArtifacts(Contract):
+    """``artifact_directory`` is where this Volume is mounted in every container.
+    Writers commit before indexing a group; readers reload on a miss."""
+
+    kind: Literal["modal_volume"]
+    volume: VolumeDestination
+
+
+ArtifactStorage = Annotated[SharedDiskArtifacts | ModalVolumeArtifacts, Field(discriminator="kind")]
 
 
 class RunConfig(Contract):
@@ -115,13 +141,15 @@ class RunConfig(Contract):
     # Header name -> environment variable name, never credential values.
     inference_header_env: dict[str, Nonempty]
     volume: VolumeDestination
-    # Durable mount (e.g. a Modal Volume) for stored group payloads.
+    # Mount point for stored group payloads, sealed captures and publication staging.
     artifact_directory: Path
+    artifact_storage: ArtifactStorage
     # Environment variable holding the Postgres DSN for the rollout store index.
     store_dsn_env: Nonempty
     tokenizer_path: Path
     tito_model: Literal["qwen3"]
     enable_thinking: bool
+    model_protocol: ModelProtocol
     max_in_flight_samples: Positive
     completed_group_capacity: Positive
     request_timeout_seconds: Positive = 1800
@@ -135,6 +163,44 @@ class RunConfig(Contract):
         if any(name.lower() in forbidden for name in self.inference_header_env):
             raise ValueError("Invalid inference authentication header")
         return self
+
+
+class TrainingContract(Contract):
+    """Everything a stored group must share with the consuming trainer.
+
+    Operational fields (URLs, timeouts, capacities) are excluded: changing them
+    does not change what a group means as training data.
+    """
+
+    run_id: SafeId
+    base_model: BaseModelIdentity
+    dataset: TaskDataset
+    harness: Harness
+    behavior_correction: Literal["rollout_logprobs"]
+    lora: LoRA
+    sampling: Sampling
+    group_size: int
+    tokenizer: Nonempty
+    tito_model: Literal["qwen3"]
+    enable_thinking: bool
+    model_protocol: ModelProtocol
+
+
+def training_contract(config: RunConfig) -> TrainingContract:
+    return TrainingContract(
+        run_id=config.run_id,
+        base_model=config.base_model,
+        dataset=config.dataset,
+        harness=config.harness,
+        behavior_correction=config.research.behavior_correction,
+        lora=config.research.lora,
+        sampling=config.research.sampling,
+        group_size=config.research.group_size,
+        tokenizer=config.tokenizer_path.name,
+        tito_model=config.tito_model,
+        enable_thinking=config.enable_thinking,
+        model_protocol=config.model_protocol,
+    )
 
 
 class Policy(Contract):

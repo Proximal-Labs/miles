@@ -27,12 +27,12 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
-from miles_plugins.proximal.authorization import authorize_run, secret_env
+from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.clients import ServingPoolClient
 from miles_plugins.proximal.contracts import Policy, read_run_config
 from miles_plugins.proximal.modal_volume import authorize_volume_publication, modal_publish_snapshot
 from miles_plugins.proximal.snapshot import SnapshotMetadata, prepare_snapshot
-from miles_plugins.proximal.store import RolloutStore
+from miles_plugins.proximal.store import open_store
 
 
 class ModalVolumeTransfer(WeightTransferProtocol):
@@ -143,9 +143,7 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         )
         async with httpx.AsyncClient(timeout=self.config.request_timeout_seconds) as client:
             await ServingPoolClient(self.authorization, client).prepare(policy)
-        store = await RolloutStore.open(
-            secret_env(self.config.store_dsn_env), run_id=self.config.run_id, root=self.config.artifact_directory
-        )
+        store = await open_store(self.config)
         try:
             if not self._rewound:
                 # Versions after the resumed checkpoint named weights this process discarded.

@@ -83,3 +83,27 @@ async def test_existing_async_worker_overlaps_consumption_and_cancels_children(
     await producer.close()
     assert cancelled.is_set()
     assert producer._worker is None
+
+
+def test_rollback_rewrites_step_state_and_refuses_partial_checkpoints(config, tmp_path):
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    checkpoints = tmp_path / "checkpoints"
+    args = Namespace(proximal_config=str(path), save=str(checkpoints), load=str(checkpoints))
+    source = PlatformTaskSource(args)
+    source.consumed.add("a", 1)
+    source.save(0)
+    source.consumed.add("b", 1)
+    source.save(1)
+    # Resume from step 0, train a different batch, then save step 1 again.
+    resumed = PlatformTaskSource(args)
+    resumed.load(0)
+    assert [c.group_id for c in resumed.consumed.snapshot()] == ["a"]
+    resumed.consumed.add("c", 1)
+    resumed.save(1)
+    again = PlatformTaskSource(args)
+    again.load(1)
+    assert [c.group_id for c in again.consumed.snapshot()] == ["a", "c"]
+    # Weights saved for step 2 but no task/consumption state: refuse, never guess.
+    with pytest.raises(FileNotFoundError, match="previous complete checkpoint"):
+        PlatformTaskSource(args).load(2)

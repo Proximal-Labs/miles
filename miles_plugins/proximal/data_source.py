@@ -4,9 +4,11 @@ Dataset order is deterministic and cycles. Retry groups precede new tasks;
 unfinished groups are regenerated on restart, never restored as trainable data.
 
 The same checkpoint carries the consumption ledger: which stored groups this
-training run has already trained on. It is saved with the weights, so a resume
-forgets consumption from steps whose weights were discarded, and those groups
-become selectable again (if still within the staleness bound).
+training run has already trained on. Miles saves this state right after the
+weights for the same step. Resuming a step restores the ledger saved with those
+weights, so consumption by discarded steps is forgotten and those groups become
+selectable again if still fresh. A step whose weights were saved but whose state
+was not (an interrupted save) refuses to resume rather than pairing them wrongly.
 """
 
 from argparse import Namespace
@@ -16,7 +18,7 @@ from pathlib import Path
 from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
 from miles_plugins.proximal.contracts import Contract, digest, read_run_config
-from miles_plugins.proximal.storage import write_immutable
+from miles_plugins.proximal.storage import write_atomic
 
 
 class ConsumedGroup(Contract):
@@ -100,7 +102,9 @@ class PlatformTaskSource(DataSource):
                 pending_tasks=tuple(self._retry),
                 consumed=self.consumed.snapshot(),
             )
-            write_immutable(
+            # Overwritten, like Miles's own per-step data-source state: a run resumed
+            # from an earlier step saves this step again with different contents.
+            write_atomic(
                 Path(self.args.save) / "rollout" / f"proximal_{rollout_id}.json", state.model_dump_json().encode()
             )
 
@@ -108,6 +112,13 @@ class PlatformTaskSource(DataSource):
         if self.args.load is None or rollout_id is None or rollout_id < 0:
             return
         path = Path(self.args.load) / "rollout" / f"proximal_{rollout_id}.json"
+        if not path.exists():
+            # Miles saves weights before this state. Weights without it means the save
+            # was interrupted; resuming would pair those weights with a stale ledger.
+            raise FileNotFoundError(
+                f"Checkpoint step {rollout_id} has weights but no task/consumption state at {path}; "
+                "resume from the previous complete checkpoint"
+            )
         state = Cursor.model_validate_json(path.read_bytes())
         if state.dataset_sha256 != digest(self.config.dataset):
             raise ValueError("Checkpoint task membership/source differs from this run")

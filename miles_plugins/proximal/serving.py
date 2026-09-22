@@ -6,7 +6,9 @@ platform rollouts. Miles owns its setup so inference and training cannot drift:
 - the replica image is the Miles image, so SGLang is Miles's pinned build;
 - base model, tokenizer, LoRA rank/alpha/targets come from the same run config
   that produces the trainer's arguments (see runtime.training_argv);
-- SGLang server arguments are rendered and re-parsed by Miles's own helpers.
+- SGLang server arguments are rendered by Miles's helper, parsed by SGLang, and
+  the *resolved* settings are checked against the derived ones, so no alias or
+  extra flag can change the model, tokenizer, LoRA shape, parsers or address.
 
 The platform only records the deployment's URL in its endpoint registry.
 This module is pure configuration; serving_app.py is the Modal deployment.
@@ -46,12 +48,10 @@ class ServingDeployment(Contract):
     adapter_mount: PurePosixPath
     local_cache: PurePosixPath
     max_loaded_adapters: Positive
-    reasoning_parser: Nonempty
-    tool_call_parser: Nonempty
     # Modal secret holding the gateway credential under ``gateway_key_env``.
     gateway_secret: Nonempty
     gateway_key_env: Nonempty
-    # Additional SGLang flags, validated by SGLang's own parser at render time.
+    # Performance-only SGLang flags. Rendering rejects any that change a derived setting.
     extra_engine_args: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -63,9 +63,6 @@ class ServingDeployment(Contract):
                 raise ValueError("Container paths must be absolute")
         if self.adapter_mount == self.base_mount:
             raise ValueError("Adapters and base weights use separate Volumes")
-        forbidden = {"--enable-lora", "--lora-paths", "--max-lora-rank", "--lora-target-modules", "--model-path"}
-        if any(arg.split("=", 1)[0] in forbidden for arg in self.extra_engine_args):
-            raise ValueError("LoRA and model flags are derived from the run config, not passed as extras")
         return self
 
 
@@ -95,19 +92,37 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
         "lora_target_modules": convert_target_modules_to_hf(list(run.research.lora.target_modules)),
         "max_loras_per_batch": deployment.max_loaded_adapters,
         "max_loaded_loras": deployment.max_loaded_adapters,
-        "reasoning_parser": deployment.reasoning_parser,
-        "tool_call_parser": deployment.tool_call_parser,
+        "reasoning_parser": run.model_protocol.reasoning_parser,
+        "tool_call_parser": run.model_protocol.tool_call_parser,
         "skip_server_warmup": True,
         "enable_metrics": True,
     }
 
 
 def engine_argv(run: RunConfig, deployment: ServingDeployment) -> list[str]:
-    """Render through Miles's helper, append validated extras, and re-parse with SGLang."""
+    """Render through Miles's helper, append extras, parse with SGLang, check the result.
+
+    SGLang rejects unknown flags. Then every derived setting must survive into the
+    resolved ServerArgs unchanged, whatever spelling or alias an extra used.
+    """
     from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
 
-    argv = [*server_args_to_argv(engine_server_args(run, deployment)), *deployment.extra_engine_args]
-    parse_server_args_argv(argv)  # SGLang rejects unknown or conflicting flags before any GPU is used.
+    derived = engine_server_args(run, deployment)
+    argv = [*server_args_to_argv(derived), *deployment.extra_engine_args]
+    resolved = parse_server_args_argv(argv)
+    changed = []
+    for key, expected in derived.items():
+        actual = getattr(resolved, key)
+        if key == "lora_target_modules":
+            actual, expected = set(actual or ()), set(expected)  # type: ignore[call-overload]
+        if actual != expected:
+            changed.append(key)
+    if resolved.tokenizer_path not in (None, derived["model_path"]):
+        changed.append("tokenizer_path")
+    if resolved.lora_paths:
+        changed.append("lora_paths")
+    if changed:
+        raise ValueError(f"Extra engine flags override settings derived from the run config: {sorted(changed)}")
     return argv
 
 

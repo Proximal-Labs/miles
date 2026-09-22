@@ -9,14 +9,18 @@
   "target_concurrency": 16,
   "scaledown_window_seconds": 1200,
   "startup_timeout_seconds": 3600,
-  "base_volume": {"volume_name": "deepswe-base-weights", "environment_name": "main"},
+  "base_volume": {
+    "volume_name": "deepswe-base-weights",
+    "environment_name": "main"
+  },
   "base_mount": "/models",
   "adapter_mount": "/adapters",
   "local_cache": "/cache",
   "max_loaded_adapters": 4,
-  "reasoning_parser": "qwen3",
-  "tool_call_parser": "qwen25",
   "gateway_secret": "miles-gateway",
   "gateway_key_env": "MILES_GATEWAY_KEY",
-  "extra_engine_args": ["--mem-fraction-static", "0.85"]
+  "extra_engine_args": [
+    "--mem-fraction-static",
+    "0.85"
+  ]
 }

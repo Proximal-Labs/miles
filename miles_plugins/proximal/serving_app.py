@@ -1,10 +1,13 @@
 """Modal deployment of the Miles-owned serving pool (SGLang + replica gateway).
 
-Deploy from the repository root, with both configs as local files:
+Deploy from the repository root, in the Miles environment (SGLang importable),
+with both configs as local files:
 
     PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \\
         modal deploy --env <environment> -m miles_plugins.proximal.serving_app
 
+Engine arguments are rendered and validated here, at deploy time, and baked
+into the image: a bad flag fails the deploy, not a GPU replica's startup.
 This creates or updates only this app. The base-weight and adapter Volumes and
 the gateway secret must already exist; nothing here creates or deletes them.
 The deployed URL (``https://<workspace>--<app>-replica.<region>.modal.direct``)
@@ -15,6 +18,7 @@ gateway in front of it. If either process exits, the replica exits so Modal
 replaces it: adapter state is never repaired in place.
 """
 
+import json
 import os
 import secrets
 import subprocess
@@ -32,6 +36,7 @@ from miles_plugins.proximal.serving import ENGINE_PORT, GATEWAY_PORT, ServingDep
 
 _RUN_JSON = "PROXIMAL_RUN_CONFIG_JSON"
 _SERVING_JSON = "PROXIMAL_SERVING_CONFIG_JSON"
+_ENGINE_ARGV_JSON = "PROXIMAL_ENGINE_ARGV_JSON"
 _ENGINE_KEY_ENV = "MILES_ENGINE_API_KEY"
 
 
@@ -49,6 +54,7 @@ RUN_JSON = _read(_RUN_JSON, "PROXIMAL_RUN_CONFIG")
 SERVING_JSON = _read(_SERVING_JSON, "PROXIMAL_SERVING_CONFIG")
 RUN = RunConfig.model_validate_json(RUN_JSON)
 DEPLOYMENT = ServingDeployment.model_validate_json(SERVING_JSON)
+ENGINE_ARGV_JSON = os.environ.get(_ENGINE_ARGV_JSON) or json.dumps(engine_argv(RUN, DEPLOYMENT))
 
 base_volume = modal.Volume.from_name(
     DEPLOYMENT.base_volume.volume_name,
@@ -62,7 +68,7 @@ adapter_volume = modal.Volume.from_name(
 image = (
     modal.Image.from_registry(DEPLOYMENT.image)
     .entrypoint([])
-    .env({_RUN_JSON: RUN_JSON, _SERVING_JSON: SERVING_JSON})
+    .env({_RUN_JSON: RUN_JSON, _SERVING_JSON: SERVING_JSON, _ENGINE_ARGV_JSON: ENGINE_ARGV_JSON})
     # This fork's plugin and Miles sources, over the Miles image's installed copy.
     .add_local_python_source("miles", "miles_plugins")
 )
@@ -118,7 +124,7 @@ class Replica:
             sys.executable,
             "-m",
             "sglang.launch_server",
-            *engine_argv(RUN, DEPLOYMENT),
+            *json.loads(ENGINE_ARGV_JSON),
             "--api-key",
             os.environ[_ENGINE_KEY_ENV],
         ]

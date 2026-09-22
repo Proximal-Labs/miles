@@ -13,14 +13,14 @@ from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, Da
 from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
-from miles_plugins.proximal.authorization import authorize_run, secret_env
+from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
 from miles_plugins.proximal.contracts import AcceptedAttempt, Attempt, Task, canonical_bytes, digest, read_run_config
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import add_arguments
 from miles_plugins.proximal.storage import write_immutable
-from miles_plugins.proximal.store import RolloutStore
+from miles_plugins.proximal.store import RolloutStore, open_store
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         if not input.evaluation and self._worker is None:
             if not isinstance(self.data_source, PlatformTaskSource):
                 raise ValueError("Platform rollouts require the platform task source")
-            self._store = await RolloutStore.open(
-                secret_env(self.config.store_dsn_env), run_id=self.config.run_id, root=self.config.artifact_directory
-            )
+            self._store = await open_store(self.config)
             buffer = PlatformDataBuffer(
                 DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
             )

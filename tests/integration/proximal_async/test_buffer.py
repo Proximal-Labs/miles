@@ -1,6 +1,7 @@
 import asyncio
 import os
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +11,7 @@ from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
 from miles_plugins.proximal.contracts import AcceptedAttempt, CaptureReceipt, Grade, digest
 from miles_plugins.proximal.data_source import ConsumptionLedger
 from miles_plugins.proximal.snapshot import SnapshotReference
-from miles_plugins.proximal.store import PolicyConflict, RolloutStore
+from miles_plugins.proximal.store import PayloadSync, PolicyConflict, open_store
 
 
 def sample_for(attempt):
@@ -102,6 +103,8 @@ async def test_batch_query_selects_fresh_groups_oldest_first(config, tmp_path, a
     ]
     assert groups == ["older", "newer"]
     assert first.group[0].tokens == [1, 2, 3] and first.group[0].rollout_log_probs == [-0.2, -0.4]
+    # The learning signal survives storage (a scored zero, not an absent reward).
+    assert [sample.reward for sample in first.group] == [0.0, 0.0]
     assert first.group[0].index == 0 and first.group[0].group_index == 0
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(buffer.get(current_version=3), 0.2)
@@ -121,9 +124,7 @@ async def test_consumption_follows_the_checkpoint_across_restart(config, tmp_pat
     assert [c.group_id for c in saved] == ["a"]
 
     # A new process with a new connection sees the same store.
-    reopened = await RolloutStore.open(
-        os.environ[config.store_dsn_env], run_id=config.run_id, root=config.artifact_directory
-    )
+    reopened = await open_store(config)
     try:
         restored = ConsumptionLedger()
         restored.restore(saved)
@@ -211,3 +212,55 @@ async def test_group_cannot_mix_versions_or_duplicate_members(config, tmp_path, 
         await buffer.put(repeated)
     with pytest.raises(ValueError, match="committed"):
         await buffer.get()
+
+
+async def test_a_different_training_contract_never_consumes_the_group(config, tmp_path, attempt, policy, store):
+    await store.commit_policy(policy)
+    await make_buffer(config, tmp_path, store, ConsumptionLedger()).put(entry(attempt, policy, group="g"))
+    other = config.model_copy(update={"harness": config.harness.model_copy(update={"revision": "e" * 40})})
+    reader = await open_store(other)
+    try:
+        (tmp_path / "other").mkdir()
+        buffer = make_buffer(other, tmp_path / "other", reader, ConsumptionLedger())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(buffer.get(current_version=1), 0.2)
+    finally:
+        await reader.close()
+
+
+async def test_payload_is_committed_before_indexing_and_reloaded_on_miss(config, attempt, policy):
+    import psycopg
+
+    events = []
+    hidden = config.artifact_directory / "hidden.bin"
+
+    def commit():
+        with psycopg.connect(os.environ[config.store_dsn_env]) as check:
+            rows = check.execute("SELECT count(*) FROM proximal_rollout_groups").fetchone()
+        events.append(("commit", rows[0]))
+
+    def reload():
+        events.append(("reload",))
+        hidden.rename(target)  # This container's view catches up with the writer's commit.
+
+    from miles_plugins.proximal.contracts import digest, training_contract
+    from miles_plugins.proximal.store import RolloutStore
+
+    store = await RolloutStore.open(
+        os.environ[config.store_dsn_env],
+        run_id=config.run_id,
+        contract_sha256=digest(training_contract(config)),
+        root=config.artifact_directory,
+        sync=PayloadSync(commit=commit, reload=reload),
+    )
+    try:
+        await store.commit_policy(policy)
+        await store.add_group("g", policy, entry(attempt, policy, group="g").group)
+        assert events == [("commit", 0)]  # The payload is committed while no row exists yet.
+        [row] = await store.select(min_version=1, max_version=1, exclude=[], limit=1)
+        target = Path(row.payload_path)
+        target.rename(hidden)  # A reader whose mount view predates the commit.
+        _, samples = await store.load(row)
+        assert events[-1] == ("reload",) and len(samples) == 2
+    finally:
+        await store.close()

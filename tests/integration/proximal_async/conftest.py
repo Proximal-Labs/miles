@@ -120,10 +120,12 @@ def config(tmp_path, monkeypatch, store_dsn):
         "inference_header_env": {"Authorization": "FLEET_TEST_KEY"},
         "volume": {"volume_name": "adapters", "environment_name": "dev"},
         "artifact_directory": str(tmp_path / "artifacts"),
+        "artifact_storage": {"kind": "shared_disk"},
         "store_dsn_env": "STORE_TEST_DSN",
         "tokenizer_path": str(tmp_path),
         "tito_model": "qwen3",
         "enable_thinking": True,
+        "model_protocol": {"reasoning_parser": "qwen3", "tool_call_parser": "qwen25"},
         "max_in_flight_samples": 4,
         "completed_group_capacity": 2,
         "request_timeout_seconds": 10,
@@ -161,10 +163,8 @@ def attempt(config, policy):
 
 @pytest.fixture
 async def store(config):
-    from miles_plugins.proximal.store import RolloutStore
+    from miles_plugins.proximal.store import open_store
 
-    opened = await RolloutStore.open(
-        os.environ[config.store_dsn_env], run_id=config.run_id, root=config.artifact_directory
-    )
+    opened = await open_store(config)
     yield opened
     await opened.close()

@@ -6,7 +6,7 @@ from typing import cast
 
 from miles.rollout.fully_async_data_buffer import DataBuffer, DataBufferConstructorInput, DataBufferInput
 from miles.utils.types import Sample
-from miles_plugins.proximal.contracts import AcceptedAttempt, digest, read_run_config
+from miles_plugins.proximal.contracts import AcceptedAttempt, Policy, RunConfig, digest, read_run_config
 from miles_plugins.proximal.data_source import ConsumptionLedger
 from miles_plugins.proximal.store import RolloutStore
 
@@ -42,6 +42,42 @@ def validate_sample(sample: Sample, evidence: AcceptedAttempt) -> None:
     offset = len(sample.tokens) - sample.response_length
     if any(offset + i not in covered for i, mask in enumerate(sample.loss_mask) if mask):
         raise ValueError("Assistant tokens are missing verified policy provenance")
+
+
+def validate_group(config: RunConfig, samples: list[Sample]) -> Policy:
+    """A complete group under this run's contract, with full per-sample evidence.
+
+    Runs on put (before storing) and again on get (after loading), so a stored
+    payload is never trusted just because it has an index row.
+    """
+    if len(samples) != config.research.group_size:
+        raise ValueError("Incomplete prompt group")
+    proofs = [accepted(sample) for sample in samples]
+    first = proofs[0].attempt
+    indices = set()
+    for sample, proof in zip(samples, proofs, strict=True):
+        validate_sample(sample, proof)
+        attempt = proof.attempt
+        if (attempt.run_id, attempt.group_id, attempt.task, attempt.policy) != (
+            first.run_id,
+            first.group_id,
+            first.task,
+            first.policy,
+        ):
+            raise ValueError("Prompt group mixes tasks/policies")
+        indices.add(attempt.sample_index)
+    if len(indices) != config.research.group_size:
+        raise ValueError("Repeated sample in prompt group")
+    if (
+        first.run_id != config.run_id
+        or first.harness != config.harness
+        or first.sampling != config.research.sampling
+        or first.dataset_sha256 != digest(config.dataset)
+        or first.task not in config.dataset.tasks
+        or first.policy.base_model != config.base_model
+    ):
+        raise ValueError("Group was produced under a different training contract")
+    return first.policy
 
 
 class PlatformDataBuffer(DataBuffer):
@@ -89,24 +125,10 @@ class PlatformDataBuffer(DataBuffer):
                 raise RuntimeError("Platform rollout failure budget exhausted; stopping producer")
             self._unused(input.prompt_group)
             return
-        proofs = [accepted(sample) for sample in samples]
-        first = proofs[0].attempt
-        indices = set()
-        for sample, proof in zip(samples, proofs, strict=True):
-            validate_sample(sample, proof)
-            attempt = proof.attempt
-            if (attempt.run_id, attempt.group_id, attempt.task, attempt.policy) != (
-                first.run_id,
-                first.group_id,
-                first.task,
-                first.policy,
-            ):
-                raise ValueError("Prompt group mixes tasks/policies")
-            indices.add(attempt.sample_index)
-        if len(indices) != self.config.research.group_size:
-            raise ValueError("Repeated sample in prompt group")
+        policy = validate_group(self.config, samples)
+        group_id = accepted(samples[0]).attempt.group_id
         self._failures = 0
-        await store.add_group(first.group_id, first.policy, samples)
+        await store.add_group(group_id, policy, samples)
         self._persisted += 1
         self._stored.set()
         # Backpressure: stop the producer while enough fresh work is already waiting.
@@ -114,7 +136,7 @@ class PlatformDataBuffer(DataBuffer):
             version = self._version
             if version is None:
                 current = await store.current_policy()
-                version = current.version if current is not None else first.policy.version
+                version = current.version if current is not None else policy.version
             waiting = await store.count(
                 min_version=version - self.config.research.max_policy_lag,
                 max_version=version,
@@ -142,8 +164,8 @@ class PlatformDataBuffer(DataBuffer):
             if rows:
                 row = rows[0]
                 header, samples = await store.load(row)
-                if len(samples) != self.config.research.group_size or header.policy.run_id != self.config.run_id:
-                    raise ValueError(f"Stored group {row.group_id} does not match this run's group contract")
+                if validate_group(self.config, samples) != header.policy:
+                    raise ValueError(f"Stored group {row.group_id} evidence names a different policy than its index")
                 ledger.add(row.group_id, row.policy_version)
                 self._consumed += 1
                 self._consumed_event.set()

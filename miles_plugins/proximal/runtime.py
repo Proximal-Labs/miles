@@ -61,9 +61,8 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
 
     from miles.rollout.session.linear_trajectory import SessionRegistry
     from miles.utils.chat_template_utils import get_tito_tokenizer
-    from miles_plugins.proximal.authorization import secret_env
     from miles_plugins.proximal.capture_server import CaptureServer
-    from miles_plugins.proximal.store import RolloutStore
+    from miles_plugins.proximal.store import open_store
 
     tokenizer = AutoTokenizer.from_pretrained(
         str(config.tokenizer_path), local_files_only=True, trust_remote_code=False
@@ -72,9 +71,7 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
         tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
     )
     registry = SessionRegistry(tokenizer, tito_tokenizer=tito)
-    store = await RolloutStore.open(
-        secret_env(config.store_dsn_env), run_id=config.run_id, root=config.artifact_directory
-    )
+    store = await open_store(config)
     try:
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
             service = CaptureServer(authorization, registry=registry, client=client, store=store)
@@ -88,17 +85,14 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
 async def run_control(args: argparse.Namespace, authorization: AuthorizedRun) -> None:
     import httpx
 
-    from miles_plugins.proximal.authorization import secret_env
-    from miles_plugins.proximal.store import RolloutStore
+    from miles_plugins.proximal.store import open_store
 
     config = authorization.config
     if args.command == "rollout" and (args.task_index is None or not 0 <= args.task_index < len(config.dataset.tasks)):
         raise ValueError("rollout requires a valid --task-index into the pinned dataset")
     if args.command == "commit-policy" and args.policy_file is None:
         raise ValueError("commit-policy requires --policy-file")
-    store = await RolloutStore.open(
-        secret_env(config.store_dsn_env), run_id=config.run_id, root=config.artifact_directory
-    )
+    store = await open_store(config)
     async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as http:
         try:
             await _run_control(args, authorization, http, store)
