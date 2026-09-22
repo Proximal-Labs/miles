@@ -492,7 +492,9 @@ def load_lora_adapter(
             param.data.copy_(state_dict[name].to(device=param.device))
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration, optimizer_restored = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer)
+        iteration, optimizer_restored = _load_training_state(
+            adapter_dir, optimizer, opt_param_scheduler, load_optimizer
+        )
         return True, iteration, optimizer_restored
 
     if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):
