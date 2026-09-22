@@ -55,16 +55,18 @@ def write_checkpoint_dir(
         # This also waits for every writer; a failed collective must not trigger directory cleanup.
         errors = [None] * dist.get_world_size()
         dist.all_gather_object(
-            errors, f"{type(write_error).__name__}: {write_error}" if write_error is not None else None,
+            errors,
+            f"{type(write_error).__name__}: {write_error}" if write_error is not None else None,
             group=get_gloo_group(),
         )
     try:
         if write_error is not None:
             raise write_error
         if any(errors):
-            raise RuntimeError("Checkpoint write failed: " + "; ".join(
-                f"rank {rank}: {error}" for rank, error in enumerate(errors) if error is not None
-            ))
+            raise RuntimeError(
+                "Checkpoint write failed: "
+                + "; ".join(f"rank {rank}: {error}" for rank, error in enumerate(errors) if error is not None)
+            )
         if is_rank0:
             if metadata is not None:
                 (checkpoint_dir / "META.json").write_text(json.dumps(metadata, indent=2))
