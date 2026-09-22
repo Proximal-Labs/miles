@@ -100,3 +100,19 @@ def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatc
     sys.modules.pop("miles_plugins.proximal.serving_app", None)
     with pytest.raises(ValueError, match="non-operational"):
         importlib.import_module("miles_plugins.proximal.serving_app")
+
+
+def test_stage_a_example_configs_are_valid():
+    from pathlib import Path
+
+    from miles_plugins.proximal.contracts import read_run_config
+
+    examples = Path(__file__).resolve().parents[3] / "examples" / "proximal" / "e2e"
+    modal_run = read_run_config(examples / "run.stage-a.json")
+    offline = read_run_config(examples / "run.stage-a.local.json")
+    serving = ServingDeployment.model_validate_json((examples / "serving.stage-a.json").read_bytes())
+    argv = engine_argv(modal_run, serving)
+    assert parse_server_args_argv(argv).model_path == f"/models/{modal_run.tokenizer_path.name}"
+    # The offline config differs only in where inference goes and its identity.
+    differing = {key for key in modal_run.model_fields if getattr(modal_run, key) != getattr(offline, key)}
+    assert differing == {"run_id", "inference_url", "inference_header_env"}
