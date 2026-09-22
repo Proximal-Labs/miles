@@ -1,0 +1,41 @@
+name: Proximal publication CPU checks
+
+on:
+  pull_request:
+    paths:
+      - "miles_plugins/proximal/**"
+      - "miles/utils/arguments.py"
+      - "tests/fast/proximal_publication/**"
+      - ".github/workflows/proximal-publication.yml"
+  push:
+    branches: [main]
+    paths:
+      - "miles_plugins/proximal/**"
+      - "miles/utils/arguments.py"
+      - "tests/fast/proximal_publication/**"
+      - ".github/workflows/proximal-publication.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: >-
+          python -m pip install
+          'pydantic>=2.10,<3' 'httpx>=0.28,<1' 'modal==1.5.5'
+          pytest pytest-asyncio mypy ruff==0.14.7 black==24.3.0 isort==5.13.2
+      - run: python -m pytest --confcutdir=tests/fast/proximal_publication tests/fast/proximal_publication
+      - run: python -m mypy --follow-imports=silent --strict miles_plugins/proximal
+      - run: ruff check miles_plugins/proximal tests/fast/proximal_publication
+      - run: black --check miles_plugins/proximal tests/fast/proximal_publication
+      - run: isort --check-only miles_plugins/proximal tests/fast/proximal_publication

@@ -26,7 +26,7 @@ from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
-PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
+PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-megatron-post-save-hook-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {

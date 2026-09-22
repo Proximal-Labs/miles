@@ -2587,6 +2587,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             for path in [
                 resolve_rollout_function_paths(args_partial)[0],
                 args_partial.custom_generate_function_path,
+                args_partial.custom_megatron_post_save_hook_path,
             ]:
                 try:
                     fn = load_function(path)
@@ -2861,6 +2862,13 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    if args.custom_megatron_post_save_hook_path is not None:
+        assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
+        post_save_hook = load_function(args.custom_megatron_post_save_hook_path)
+        validate_hook = getattr(post_save_hook, "validate_args", None)
+        if callable(validate_hook):
+            validate_hook(args)
+
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3094,9 +3102,6 @@ def miles_validate_args(args):
 
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
-
-    if args.custom_megatron_post_save_hook_path is not None:
-        assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     # Parse LoRA target modules
     if args.lora_rank > 0:
