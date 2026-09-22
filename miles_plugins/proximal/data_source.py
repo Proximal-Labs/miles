@@ -109,14 +109,19 @@ class PlatformTaskSource(DataSource):
             )
 
     def load(self, rollout_id: int | None = None) -> None:
-        if self.args.load is None or rollout_id is None or rollout_id < 0:
+        restored = rollout_id if self.args.load is not None and rollout_id is not None and rollout_id >= 0 else None
+        # Before training writes any new weights, drop state saved for later steps of
+        # the abandoned timeline. Otherwise a crash after re-saving step N's weights but
+        # before re-saving its state would pair them with the old timeline's ledger.
+        self._invalidate_after(-1 if restored is None else restored)
+        if restored is None:
             return
-        path = Path(self.args.load) / "rollout" / f"proximal_{rollout_id}.json"
+        path = Path(self.args.load) / "rollout" / f"proximal_{restored}.json"
         if not path.exists():
             # Miles saves weights before this state. Weights without it means the save
             # was interrupted; resuming would pair those weights with a stale ledger.
             raise FileNotFoundError(
-                f"Checkpoint step {rollout_id} has weights but no task/consumption state at {path}; "
+                f"Checkpoint step {restored} has weights but no task/consumption state at {path}; "
                 "resume from the previous complete checkpoint"
             )
         state = Cursor.model_validate_json(path.read_bytes())
@@ -125,3 +130,11 @@ class PlatformTaskSource(DataSource):
         self.next_group = state.next_group
         self._retry = deque(state.pending_tasks)
         self.consumed.restore(state.consumed)
+
+    def _invalidate_after(self, step: int) -> None:
+        if self.args.save is None:
+            return
+        for path in (Path(self.args.save) / "rollout").glob("proximal_*.json"):
+            suffix = path.stem.removeprefix("proximal_")
+            if suffix.isdigit() and int(suffix) > step:
+                path.unlink()

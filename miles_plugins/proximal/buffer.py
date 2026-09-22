@@ -65,18 +65,19 @@ def validate_group(config: RunConfig, samples: list[Sample]) -> Policy:
             first.policy,
         ):
             raise ValueError("Prompt group mixes tasks/policies")
+        # Every member, not only the first: each carries its own harness/sampling/dataset.
+        if (
+            attempt.run_id != config.run_id
+            or attempt.harness != config.harness
+            or attempt.sampling != config.research.sampling
+            or attempt.dataset_sha256 != digest(config.dataset)
+            or attempt.task not in config.dataset.tasks
+            or attempt.policy.base_model != config.base_model
+        ):
+            raise ValueError("Group member was produced under a different training contract")
         indices.add(attempt.sample_index)
     if len(indices) != config.research.group_size:
         raise ValueError("Repeated sample in prompt group")
-    if (
-        first.run_id != config.run_id
-        or first.harness != config.harness
-        or first.sampling != config.research.sampling
-        or first.dataset_sha256 != digest(config.dataset)
-        or first.task not in config.dataset.tasks
-        or first.policy.base_model != config.base_model
-    ):
-        raise ValueError("Group was produced under a different training contract")
     return first.policy
 
 

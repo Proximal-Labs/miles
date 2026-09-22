@@ -51,7 +51,7 @@ class ServingDeployment(Contract):
     # Modal secret holding the gateway credential under ``gateway_key_env``.
     gateway_secret: Nonempty
     gateway_key_env: Nonempty
-    # Performance-only SGLang flags. Rendering rejects any that change a derived setting.
+    # Operational SGLang flags only; see OPERATIONAL_ENGINE_SETTINGS.
     extra_engine_args: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -99,30 +99,59 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
     }
 
 
-def engine_argv(run: RunConfig, deployment: ServingDeployment) -> list[str]:
-    """Render through Miles's helper, append extras, parse with SGLang, check the result.
+# Extras may change only these resolved settings: memory, scheduling, CUDA graphs and
+# logging. Anything else (load format, attention/sampling backends, quantization,
+# model/tokenizer identity, LoRA shape, parsers, address) could change the served
+# model or its numerics, so it is derived from the run config or not supported.
+OPERATIONAL_ENGINE_SETTINGS = frozenset(
+    {
+        "mem_fraction_static",
+        "max_running_requests",
+        "max_total_tokens",
+        "max_prefill_tokens",
+        "chunked_prefill_size",
+        "schedule_policy",
+        "schedule_conservativeness",
+        "cuda_graph_max_bs",
+        "disable_cuda_graph",
+        "log_level",
+        "log_requests",
+        "enable_cache_report",
+        "watchdog_timeout",
+    }
+)
 
-    SGLang rejects unknown flags. Then every derived setting must survive into the
-    resolved ServerArgs unchanged, whatever spelling or alias an extra used.
+
+def _server_args_fields(server_args: object) -> tuple[str, ...]:
+    # ServerArgs is a msgspec Struct, a dataclass, or a plain class depending on the SGLang build.
+    import dataclasses
+
+    if (struct_fields := getattr(type(server_args), "__struct_fields__", None)) is not None:
+        return tuple(struct_fields)
+    if dataclasses.is_dataclass(server_args):
+        return tuple(field.name for field in dataclasses.fields(server_args))
+    names = tuple(vars(server_args))
+    if not names:
+        raise TypeError("Cannot enumerate SGLang ServerArgs fields; refusing to validate extras blindly")
+    return names
+
+
+def engine_argv(run: RunConfig, deployment: ServingDeployment) -> list[str]:
+    """Render through Miles's helper, parse with SGLang, and allow only operational extras.
+
+    The resolved settings with and without the extras must differ only in
+    OPERATIONAL_ENGINE_SETTINGS, whatever flag spelling or alias an extra used.
     """
     from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
 
-    derived = engine_server_args(run, deployment)
-    argv = [*server_args_to_argv(derived), *deployment.extra_engine_args]
+    base_argv = server_args_to_argv(engine_server_args(run, deployment))
+    baseline = parse_server_args_argv(base_argv)
+    argv = [*base_argv, *deployment.extra_engine_args]
     resolved = parse_server_args_argv(argv)
-    changed = []
-    for key, expected in derived.items():
-        actual = getattr(resolved, key)
-        if key == "lora_target_modules":
-            actual, expected = set(actual or ()), set(expected)  # type: ignore[call-overload]
-        if actual != expected:
-            changed.append(key)
-    if resolved.tokenizer_path not in (None, derived["model_path"]):
-        changed.append("tokenizer_path")
-    if resolved.lora_paths:
-        changed.append("lora_paths")
-    if changed:
-        raise ValueError(f"Extra engine flags override settings derived from the run config: {sorted(changed)}")
+    names = _server_args_fields(resolved)
+    changed = sorted(name for name in names if getattr(resolved, name) != getattr(baseline, name))
+    if not_operational := [name for name in changed if name not in OPERATIONAL_ENGINE_SETTINGS]:
+        raise ValueError(f"Extra engine flags change non-operational settings: {not_operational}")
     return argv
 
 

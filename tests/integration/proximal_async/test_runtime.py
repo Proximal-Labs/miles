@@ -107,3 +107,24 @@ def test_rollback_rewrites_step_state_and_refuses_partial_checkpoints(config, tm
     # Weights saved for step 2 but no task/consumption state: refuse, never guess.
     with pytest.raises(FileNotFoundError, match="previous complete checkpoint"):
         PlatformTaskSource(args).load(2)
+
+
+def test_rollback_invalidates_later_state_before_new_weights_exist(config, tmp_path):
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    checkpoints = tmp_path / "checkpoints"
+    args = Namespace(proximal_config=str(path), save=str(checkpoints), load=str(checkpoints))
+    source = PlatformTaskSource(args)
+    source.consumed.add("old-0", 1)
+    source.save(0)
+    source.consumed.add("old-1", 1)
+    source.save(1)
+    # Restore step 0. Training then re-saves step 1's weights and crashes before
+    # re-saving its state: the old timeline's step-1 ledger must not pair with them.
+    PlatformTaskSource(args).load(0)
+    with pytest.raises(FileNotFoundError, match="previous complete checkpoint"):
+        PlatformTaskSource(args).load(1)
+    # A fresh start (Miles passes -1) invalidates every saved step in the save directory.
+    source.save(3)
+    PlatformTaskSource(args).load(-1)
+    assert not list((checkpoints / "rollout").glob("proximal_*.json"))

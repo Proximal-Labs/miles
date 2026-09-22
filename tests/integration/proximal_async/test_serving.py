@@ -67,10 +67,12 @@ def test_engine_arguments_follow_the_run_lora_contract(config):
         ["--host", "0.0.0.0"],
         ["--reasoning-parser", "deepseek-r1"],
         ["--lora-paths", "x=/adapters/x"],
+        ["--load-format", "dummy"],  # Random weights behind the configured model path.
+        ["--quantization", "fp8"],
     ],
 )
-def test_extras_cannot_change_any_resolved_derived_setting(config, extra):
-    with pytest.raises(ValueError, match="override settings derived from the run config"):
+def test_extras_may_change_only_operational_settings(config, extra):
+    with pytest.raises(ValueError, match="non-operational settings"):
         engine_argv(config, deployment(extra_engine_args=extra))
 
 
@@ -96,5 +98,5 @@ def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatc
     # Engine arguments are rendered at deploy time; a bad flag fails here, not on a GPU.
     serving_path.write_text(deployment(extra_engine_args=["--model", "/models/other"]).model_dump_json())
     sys.modules.pop("miles_plugins.proximal.serving_app", None)
-    with pytest.raises(ValueError, match="override"):
+    with pytest.raises(ValueError, match="non-operational"):
         importlib.import_module("miles_plugins.proximal.serving_app")

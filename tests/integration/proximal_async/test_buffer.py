@@ -264,3 +264,25 @@ async def test_payload_is_committed_before_indexing_and_reloaded_on_miss(config,
         assert events[-1] == ("reload",) and len(samples) == 2
     finally:
         await store.close()
+
+
+def test_every_group_member_is_checked_against_the_contract(config, attempt, policy):
+    from miles_plugins.proximal.buffer import validate_group
+
+    group = entry(attempt, policy)
+    assert validate_group(config, group.group) == policy
+    # A second member recorded under a different harness revision.
+    other = attempt.model_copy(
+        update={
+            "sample_index": 1,
+            "attempt_id": "g-1",
+            "group_id": "g",
+            "policy": policy,
+            "harness": attempt.harness.model_copy(update={"revision": "e" * 40}),
+        }
+    )
+    stray, _ = sample_for(other)
+    stray.index, stray.group_index = 1, 0
+    group.group[1] = stray
+    with pytest.raises(ValueError, match="mixes|different training contract"):
+        validate_group(config, group.group)
