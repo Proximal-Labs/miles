@@ -56,6 +56,6 @@ jobs:
             python -m mypy --cache-dir=/tmp/mypy --follow-imports=silent --strict miles_plugins/proximal
       - name: Style
         run: |
-          docker run --rm --network none -v "$PWD:/work:ro" proximal-cpu ruff check miles_plugins/proximal tests/integration/proximal_async tests/fast/proximal_publication
+          docker run --rm --network none -v "$PWD:/work:ro" proximal-cpu ruff check --no-cache miles_plugins/proximal tests/integration/proximal_async tests/fast/proximal_publication
           docker run --rm --network none -v "$PWD:/work:ro" proximal-cpu black --check miles_plugins/proximal tests/integration/proximal_async tests/fast/proximal_publication
           docker run --rm --network none -v "$PWD:/work:ro" proximal-cpu isort --check-only miles_plugins/proximal tests/integration/proximal_async tests/fast/proximal_publication

@@ -106,9 +106,9 @@ For resume, restore the latest matching native checkpoint and task cursor. Seale
 
 ## CPU verification
 
-The dedicated [CPU workflow](../../.github/workflows/proximal-publication.yml) builds the Linux environment in `tests/integration/proximal_async/Dockerfile`, fetches only the pinned Qwen3 tokenizer, and runs tests with networking disabled. Its exact test selection currently passes **474 tests**, including 60 publication/integration tests and the affected upstream argument, async-driver, session/codec and weight-update regressions. Strict mypy covers all 19 adapter modules; Ruff, Black, isort and workflow syntax checks also pass locally.
+The dedicated [CPU workflow](../../.github/workflows/proximal-publication.yml) builds the Linux environment in `tests/integration/proximal_async/Dockerfile`, fetches only the pinned Qwen3 tokenizer, and runs tests with networking disabled. Its exact test selection currently passes **475 tests**, including 61 publication/integration tests and the affected upstream argument, async-driver, session/codec and weight-update regressions. Strict mypy covers all 19 adapter modules; Ruff, Black, isort and workflow syntax checks also pass locally.
 
-Remote boundaries use scripted HTTP/Modal fixtures. TITO, safetensors, the async worker, argument parser, CPU tensors and Gloo weight-updater lifecycle are real. This does not exercise Megatron GPU tensor gathering or numerical adapter equivalence. The dependency-heavy integration tests live outside the generic fast suite and have their own required asset setup; a missing tokenizer fails their dedicated job.
+Remote boundaries use scripted HTTP/Modal fixtures. TITO (including a tool-call/result turn with verified zero loss on tool output), safetensors, the async worker, argument parser, CPU tensors and Gloo weight-updater lifecycle are real. This does not exercise Megatron GPU tensor gathering or numerical adapter equivalence. The dependency-heavy integration tests live outside the generic fast suite and have their own required asset setup; a missing tokenizer fails their dedicated job.
 
 ## Validation progression
 

@@ -35,7 +35,7 @@ def registry(tokenizer):
     )
 
 
-def scripted_engine(config, policy, tokenizer, requests):
+def scripted_engine(config, policy, tokenizer, requests, *, tool_turn=False):
     def engine(request):
         if request.url.path == "/policies/prepare":
             return httpx.Response(
@@ -48,7 +48,23 @@ def scripted_engine(config, policy, tokenizer, requests):
             )
         body = json.loads(request.content)
         requests.append(body)
-        ids = tokenizer.encode("r</think>\n\nok<|im_end|>", add_special_tokens=False)
+        message = {"role": "assistant", "reasoning_content": "r", "content": "ok"}
+        text = "r</think>\n\nok<|im_end|>"
+        if tool_turn and len(requests) == 1:
+            message = {
+                "role": "assistant",
+                "reasoning_content": "r",
+                "content": "",  # Pinned SGLang emits an empty string on tool-only turns.
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                    }
+                ],
+            }
+            text = 'r</think>\n\n<tool_call>\n{"name": "bash", "arguments": {"command":"pwd"}}\n</tool_call><|im_end|>'
+        ids = tokenizer.encode(text, add_special_tokens=False)
         return httpx.Response(
             200,
             headers={
@@ -63,8 +79,8 @@ def scripted_engine(config, policy, tokenizer, requests):
                 "choices": [
                     {
                         "index": 0,
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "reasoning_content": "r", "content": "ok"},
+                        "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
+                        "message": message,
                         "meta_info": {
                             "output_token_logprobs": [[-0.2, token, None] for token in ids],
                             "prompt_tokens": len(body["input_ids"]),
@@ -172,15 +188,17 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
                 await client.collect(handle, attempt)
 
 
-@pytest.mark.parametrize("graded", [True, False])
-async def test_task_to_captured_and_graded_miles_sample(config, authorization, policy, attempt, tokenizer, graded):
+@pytest.mark.parametrize("graded,tool_turn", [(True, False), (False, False), (True, True)])
+async def test_task_to_captured_and_graded_miles_sample(
+    config, authorization, policy, attempt, tokenizer, graded, tool_turn
+):
     config_path = config.artifact_directory.parent / "run.json"
     config_path.write_text(config.model_dump_json())
     source = PlatformTaskSource(Namespace(proximal_config=str(config_path)))
     sample = source.get_samples(1)[0][0]
     methods = []
     requests = []
-    engine = scripted_engine(config, policy, tokenizer, requests)
+    engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=tool_turn)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
         server = CaptureServer(authorization, registry=registry(tokenizer), client=backend)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as capture_http:
@@ -207,13 +225,36 @@ async def test_task_to_captured_and_graded_miles_sample(config, authorization, p
                         reply = await capture_http.post(
                             binding["sessionBaseUrl"] + "/chat/completions",
                             headers={"Authorization": "Bearer " + binding["sessionApiKey"]},
-                            json={"model": binding["model"], "messages": messages},
+                            json=(
+                                {
+                                    "model": binding["model"],
+                                    "messages": messages,
+                                    "tools": [
+                                        {
+                                            "type": "function",
+                                            "function": {
+                                                "name": "bash",
+                                                "parameters": {
+                                                    "type": "object",
+                                                    "properties": {"command": {"type": "string"}},
+                                                    "required": ["command"],
+                                                },
+                                            },
+                                        }
+                                    ],
+                                }
+                                if tool_turn
+                                else {"model": binding["model"], "messages": messages}
+                            ),
                         )
                         assert reply.status_code == 200, reply.text
-                        messages += [
-                            reply.json()["choices"][0]["message"],
-                            {"role": "user", "content": f"Check {turn}"},
-                        ]
+                        assistant = reply.json()["choices"][0]["message"]
+                        followup = (
+                            {"role": "tool", "tool_call_id": "call-1", "content": "UNIQUE_TOOL_RESULT_42"}
+                            if tool_turn and turn == 0
+                            else {"role": "user", "content": f"Check {turn}"}
+                        )
+                        messages += [assistant, followup]
                     body = {
                         "runId": attempt.attempt_id,
                         "instancesStarted": 1,
@@ -266,6 +307,11 @@ async def test_task_to_captured_and_graded_miles_sample(config, authorization, p
                     assert result.reward == 0.0 and sum(result.loss_mask) > 0
                     assert len(result.rollout_log_probs) == result.response_length
                     assert "StopEnvironmentRun" not in methods
+                    if tool_turn:
+                        assert requests[1]["messages"][-1]["role"] == "tool"
+                        suffix = result.tokens[-result.response_length :]
+                        context_ids = [token for token, mask in zip(suffix, result.loss_mask, strict=True) if not mask]
+                        assert "UNIQUE_TOOL_RESULT_42" in tokenizer.decode(context_ids)
                 # Both paths release the session; a lost attempt is never reopened.
                 with pytest.raises(httpx.HTTPStatusError) as caught:
                     await capture.create(attempt)
