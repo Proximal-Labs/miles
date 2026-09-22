@@ -56,13 +56,17 @@ class Attention(LinearAttentionLayer):
         linear_attn = Qwen3NextGatedDeltaNet(
             config,
             heads=gdn_heads(hf_config),
-            rule=GatedDeltaRule(backend=args.linear_attention_backend, norm_activation=hf_config.hidden_act),
+            rule=GatedDeltaRule(
+                backend=getattr(args, "linear_attention_backend", "fla"), norm_activation=hf_config.hidden_act
+            ),
             conv_kernel_size=hf_config.linear_conv_kernel_dim,
             norm_eps=hf_config.rms_norm_eps,
             tp_group=pg_collection.tp,
         )
         input_layernorm = Qwen3NextRMSNorm(hf_config.hidden_size, eps=hf_config.rms_norm_eps)
-        super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
+        # tools/convert_hf_to_torch_dist.py builds the model from Megatron-only args, without the miles flags.
+        allgather_cp = getattr(args, "allgather_cp", False)
+        super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=allgather_cp)
 
 
 def get_qwen3_next_spec(args, config, vp_stage):
