@@ -28,10 +28,16 @@ per kernel.
    split the two Triton activations out of `miles_plugins/models/inkling/ops.py`. No logic
    change; verified by pre-commit and by running the existing kernel tests on a GPU box against
    `main`.
-2. **DSA merge.** Fold `attention/dsa/glm5` and `attention/dsa/deepseek_v4` into one TileLang
-   kernel pair taking `layout` and `attn_sink`. Gate with an equivalence test against both old
-   copies before deleting them. Collapse `--dsv4-impl` and `--dsa-attention-backend` into one
-   switch.
+2. **DSA merge** (branch `zhichen/kernels-dsa-merge`, stacked on phase 1). The two copies turned
+   out to be the same kernels: the indexer files were byte-identical and the v4 sparse-attention
+   kernel is the glm5 one at `kv_group=1, tail_dim=0` plus a sink. `attention/dsa/tilelang/` now
+   holds one pair; `tail_dim=0` and `has_sink` are compile-time parameters; the sink gradient is
+   computed in torch from `delta` and `lse`, so no kernel accumulates it with atomics. The bshd
+   batch loop and the causal-range helpers moved into the wrapper. Gated by torch-reference
+   tests under `tests/fast-gpu/kernels/attention/dsa/` and a bitwise comparison against both old
+   copies on a GPU box. Flag unification (`--dsv4-impl`, `--dsa-attention-backend`,
+   `--dsa-kernel-backend`) touches the Megatron provider and launch scripts and is left for a
+   later change.
 3. **Delta-rule unification.** One head-sharded module (Kimi-K3 layout) in
    `miles_plugins/models/layers/` selecting `chunk_gated_delta_rule` or `chunk_kda`; Qwen3.5,
    Qwen3-Next, Kimi-K3, GLM-5.3-flash point at it. Depends on `kimi-k3` landing.
