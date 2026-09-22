@@ -37,8 +37,12 @@ def free_port() -> int:
 
 
 async def serve(app, port):
+    # Bind ourselves with SO_REUSEADDR: the resume run rebinds ports the first run just freed.
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, access_log=False, log_level="warning"))
-    task = asyncio.create_task(server.serve())
+    task = asyncio.create_task(server.serve(sockets=[sock]))
     while not server.started:
         if task.done():
             task.result()
