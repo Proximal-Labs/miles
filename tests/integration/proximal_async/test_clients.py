@@ -50,6 +50,7 @@ def handler(config, attempt, mutation="", calls=None):
             assert submitted["trainingBinding"]["sessionApiKey"] == "session-only-secret"
             assert submitted["trainingBinding"]["requestSha256"] == digest(attempt)
             assert submitted["autoTriggerAnalysis"] is False
+            assert submitted["config"]["harborOptions"]["maxSessionTokens"] == attempt.sampling.max_sequence_tokens
             body = {"runId": attempt.attempt_id, "instancesStarted": 1, "trainingRequestSha256": digest(attempt)}
         elif method == "GetEnvironmentRunContainers":
             body = {

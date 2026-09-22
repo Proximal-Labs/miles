@@ -205,7 +205,7 @@ class PlatformClient:
                     ],
                     "harborOptions": {
                         "maxTurns": attempt.harness.max_turns,
-                        "maxSessionTokens": attempt.harness.max_session_tokens,
+                        "maxSessionTokens": attempt.sampling.max_sequence_tokens,
                         "p2pEnforce": attempt.harness.p2p_enforce,
                     },
                 },

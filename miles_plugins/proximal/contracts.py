@@ -37,7 +37,6 @@ class Harness(Contract):
     agent_type: Nonempty
     revision: Revision
     max_turns: Positive
-    max_session_tokens: Positive
     timeout_seconds: Positive
     p2p_enforce: bool
 
@@ -119,8 +118,6 @@ class RunConfig(Contract):
     def _capacity(self) -> "RunConfig":
         if self.max_in_flight_samples < self.research.group_size:
             raise ValueError("In-flight capacity must accommodate one complete group")
-        if self.harness.max_session_tokens != self.research.sampling.max_sequence_tokens:
-            raise ValueError("Harness and capture must declare the same session token ceiling")
         forbidden = {"host", "content-length", "transfer-encoding", "x-proximal-policy-sha256"}
         if any(name.lower() in forbidden for name in self.inference_header_env):
             raise ValueError("Invalid inference authentication header")

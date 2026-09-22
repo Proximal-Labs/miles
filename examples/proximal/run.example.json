@@ -10,7 +10,6 @@
     "agent_type": "REPLACE_WITH_SUPPORTED_AGENT_PX_HARNESS",
     "revision": "REPLACE_WITH_HARNESS_REVISION",
     "max_turns": 60,
-    "max_session_tokens": 32768,
     "timeout_seconds": 1800,
     "p2p_enforce": true
   },

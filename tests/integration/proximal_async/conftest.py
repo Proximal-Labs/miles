@@ -20,7 +20,6 @@ def config(tmp_path, monkeypatch):
             "agent_type": "native",
             "revision": "c" * 40,
             "max_turns": 4,
-            "max_session_tokens": 4096,
             "timeout_seconds": 60,
             "p2p_enforce": True,
         },
