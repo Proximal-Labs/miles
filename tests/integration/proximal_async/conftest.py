@@ -1,4 +1,10 @@
 import json
+import os
+import shutil
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
 
 import pytest
 
@@ -7,8 +13,72 @@ from miles_plugins.proximal.contracts import Attempt, Policy, RunConfig, digest
 from miles_plugins.proximal.snapshot import SnapshotReference
 
 
+@pytest.fixture(scope="session")
+def postgres_server():
+    """A throwaway local Postgres on a Unix socket; no network needed.
+
+    Set PROXIMAL_TEST_POSTGRES_DSN to use an existing server instead. A missing
+    server is a failure, not a skip: the store is part of the tested contract.
+    """
+    if dsn := os.environ.get("PROXIMAL_TEST_POSTGRES_DSN"):
+        yield dsn
+        return
+    binaries = sorted(Path("/usr/lib/postgresql").glob("*/bin"))
+    if not binaries:
+        raise RuntimeError("Postgres server binaries are required; use the proximal_async test image")
+    bindir = binaries[-1]
+    # Not under pytest's tmp root: the unprivileged server user must traverse it.
+    root = Path(tempfile.mkdtemp(prefix="proximal-pg-"))
+    data, socket = root / "data", root / "socket"
+    socket.mkdir()
+    as_postgres: list[str] = []
+    if os.geteuid() == 0:  # initdb refuses to run as root.
+        shutil.chown(root, "postgres")
+        shutil.chown(socket, "postgres")
+        as_postgres = ["runuser", "-u", "postgres", "--"]
+    subprocess.run(
+        [*as_postgres, str(bindir / "initdb"), "-D", str(data), "-U", "postgres", "--auth=trust"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            *as_postgres,
+            str(bindir / "pg_ctl"),
+            "-D",
+            str(data),
+            "-l",
+            str(root / "server.log"),
+            "-o",
+            f"-k {socket} -c listen_addresses=''",
+            "-w",
+            "start",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    try:
+        yield f"host={socket} user=postgres dbname=postgres"
+    finally:
+        subprocess.run([*as_postgres, str(bindir / "pg_ctl"), "-D", str(data), "-m", "fast", "stop"], check=False)
+        shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.fixture
-def config(tmp_path, monkeypatch):
+def store_dsn(postgres_server, monkeypatch):
+    """A fresh database per test, exposed through the run's DSN variable."""
+    import psycopg
+
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(postgres_server, autocommit=True) as admin:
+        admin.execute(f"CREATE DATABASE {name}")
+    dsn = postgres_server.replace("dbname=postgres", f"dbname={name}")
+    monkeypatch.setenv("STORE_TEST_DSN", dsn)
+    return dsn
+
+
+@pytest.fixture
+def config(tmp_path, monkeypatch, store_dsn):
     monkeypatch.setenv("PX_TEST_KEY", "platform-secret")
     monkeypatch.setenv("CAPTURE_TEST_KEY", "capture-secret")
     monkeypatch.setenv("FLEET_TEST_KEY", "fleet-secret")
@@ -45,6 +115,7 @@ def config(tmp_path, monkeypatch):
         "inference_header_env": {"Authorization": "FLEET_TEST_KEY"},
         "volume": {"volume_name": "adapters", "environment_name": "dev"},
         "artifact_directory": str(tmp_path / "artifacts"),
+        "store_dsn_env": "STORE_TEST_DSN",
         "tokenizer_path": str(tmp_path),
         "tito_model": "qwen3",
         "enable_thinking": True,
@@ -81,3 +152,14 @@ def attempt(config, policy):
         policy=policy,
         sampling=config.research.sampling,
     )
+
+
+@pytest.fixture
+async def store(config):
+    from miles_plugins.proximal.store import RolloutStore
+
+    opened = await RolloutStore.open(
+        os.environ[config.store_dsn_env], run_id=config.run_id, root=config.artifact_directory
+    )
+    yield opened
+    await opened.close()

@@ -1,4 +1,4 @@
-"""Strict complete-group eligibility at Miles's existing async DataBuffer seam."""
+"""Strict complete-group eligibility and the durable batch query at Miles's DataBuffer seam."""
 
 import asyncio
 import math
@@ -7,6 +7,8 @@ from typing import cast
 from miles.rollout.fully_async_data_buffer import DataBuffer, DataBufferConstructorInput, DataBufferInput
 from miles.utils.types import Sample
 from miles_plugins.proximal.contracts import AcceptedAttempt, digest, read_run_config
+from miles_plugins.proximal.data_source import ConsumptionLedger
+from miles_plugins.proximal.store import RolloutStore
 
 
 def accepted(sample: Sample) -> AcceptedAttempt:
@@ -43,15 +45,39 @@ def validate_sample(sample: Sample, evidence: AcceptedAttempt) -> None:
 
 
 class PlatformDataBuffer(DataBuffer):
+    """Miles's DataBuffer seam, backed by the durable rollout store.
+
+    put: validate one finished group, persist it (it is a paid rollout), then
+    pause the producer while more than ``completed_group_capacity`` fresh
+    unconsumed groups are waiting, like Miles's default bounded buffer.
+    get: the batch query. Select the oldest fresh, live-lineage group this
+    training run has not consumed, record it in the checkpointed ledger, return it.
+    Nothing lives only in memory: a restarted process sees the same store.
+    """
+
     def __init__(self, input: DataBufferConstructorInput) -> None:
         self.config = read_run_config(input.args.proximal_config)
         self._unused = input.unused_handler_fn
-        self._queue: asyncio.Queue[DataBufferInput] = asyncio.Queue(self.config.completed_group_capacity)
+        self._store: RolloutStore | None = None
+        self._ledger: ConsumptionLedger | None = None
+        self._stored = asyncio.Event()
+        self._consumed_event = asyncio.Event()
+        self._version: int | None = None
         self._failures = 0
-        self._stale = 0
         self._consumed = 0
+        self._persisted = 0
+
+    def attach(self, *, store: RolloutStore, ledger: ConsumptionLedger) -> None:
+        """Composition root wiring: the store connection and the checkpointed ledger."""
+        self._store, self._ledger = store, ledger
+
+    def _parts(self) -> tuple[RolloutStore, ConsumptionLedger]:
+        if self._store is None or self._ledger is None:
+            raise RuntimeError("PlatformDataBuffer needs attach() from PlatformRolloutFn before use")
+        return self._store, self._ledger
 
     async def put(self, input: DataBufferInput) -> None:
+        store, ledger = self._parts()
         if any(not isinstance(sample, Sample) for sample in input.group):
             raise ValueError("Platform training requires one linear sample per attempt")
         samples = [cast(Sample, sample) for sample in input.group]
@@ -80,30 +106,60 @@ class PlatformDataBuffer(DataBuffer):
         if len(indices) != self.config.research.group_size:
             raise ValueError("Repeated sample in prompt group")
         self._failures = 0
-        await self._queue.put(input)
+        await store.add_group(first.group_id, first.policy, samples)
+        self._persisted += 1
+        self._stored.set()
+        # Backpressure: stop the producer while enough fresh work is already waiting.
+        while True:
+            version = self._version
+            if version is None:
+                current = await store.current_policy()
+                version = current.version if current is not None else first.policy.version
+            waiting = await store.count(
+                min_version=version - self.config.research.max_policy_lag,
+                max_version=version,
+                exclude=ledger.ids(),
+            )
+            if waiting <= self.config.completed_group_capacity:
+                return
+            self._consumed_event.clear()
+            try:
+                await asyncio.wait_for(self._consumed_event.wait(), self.config.poll_interval_seconds)
+            except TimeoutError:
+                pass
 
     async def get(self, current_version: int | None = None, **context: object) -> DataBufferInput:
         if type(current_version) is not int or current_version < 1:
             raise ValueError("Training must supply its committed policy version")
+        store, ledger = self._parts()
+        self._version = current_version
+        min_version = current_version - self.config.research.max_policy_lag
+        ledger.prune(below_version=min_version)
         while True:
-            item = await self._queue.get()
-            version = accepted(cast(Sample, item.group[0])).attempt.policy.version
-            lag = current_version - version
-            if lag < 0:
-                raise ValueError("Rollout policy is ahead of trainer; checkpoint/run identity conflict")
-            if lag > self.config.research.max_policy_lag:
-                self._stale += 1
-                self._unused(item.prompt_group)
-                continue
-            self._consumed += 1
-            return item
+            rows = await store.select(
+                min_version=min_version, max_version=current_version, exclude=ledger.ids(), limit=1
+            )
+            if rows:
+                row = rows[0]
+                header, samples = await store.load(row)
+                if len(samples) != self.config.research.group_size or header.policy.run_id != self.config.run_id:
+                    raise ValueError(f"Stored group {row.group_id} does not match this run's group contract")
+                ledger.add(row.group_id, row.policy_version)
+                self._consumed += 1
+                self._consumed_event.set()
+                return DataBufferInput(prompt_group=samples, group=list(samples))
+            self._stored.clear()
+            try:
+                # A store written by another process is found by polling, not only by events.
+                await asyncio.wait_for(self._stored.wait(), self.config.poll_interval_seconds)
+            except TimeoutError:
+                pass
 
     def get_metrics(self) -> dict[str, float]:
         metrics = {
-            "rollout/platform/queued_groups": float(self._queue.qsize()),
-            "rollout/platform/stale_groups": float(self._stale),
+            "rollout/platform/persisted_groups": float(self._persisted),
             "rollout/platform/consumed_groups": float(self._consumed),
             "rollout/platform/consecutive_failed_groups": float(self._failures),
         }
-        self._stale = self._consumed = 0
+        self._persisted = self._consumed = 0
         return metrics

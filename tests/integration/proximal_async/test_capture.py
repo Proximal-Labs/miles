@@ -99,14 +99,16 @@ def scripted_engine(config, policy, tokenizer, requests, *, tool_turn=False):
     return engine
 
 
-async def test_real_tito_seal_is_retryable_and_survives_restart(config, authorization, policy, attempt, tokenizer):
+async def test_real_tito_seal_is_retryable_and_survives_restart(
+    config, authorization, policy, attempt, tokenizer, store
+):
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend)
+        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
             client = CaptureClient(authorization, http)
-            await client.commit_policy(policy)
+            await store.commit_policy(policy)
             handle = await client.create(attempt)
             assert await client.create(attempt) == handle
             url = handle.base_url + "/v1/chat/completions"
@@ -136,7 +138,7 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(config, authoriz
             assert wrong.status_code == 401
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
             await client.release(handle)
-        replacement = CaptureServer(authorization, registry=registry(tokenizer), client=backend)
+        replacement = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=replacement.app)) as http:
             client = CaptureClient(authorization, http)
             assert await client.collect(handle, attempt) == (receipt, payload)
@@ -146,7 +148,7 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(config, authoriz
 
 
 @pytest.mark.parametrize("mutation", ["identity", "logprobs", "sampling"])
-async def test_bad_inference_never_seals(config, authorization, policy, attempt, tokenizer, mutation):
+async def test_bad_inference_never_seals(config, authorization, policy, attempt, tokenizer, store, mutation):
     def engine(request):
         if request.url.path == "/policies/prepare":
             return httpx.Response(
@@ -168,12 +170,12 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend)
+        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=server.app, raise_app_exceptions=False)
         ) as http:
             client = CaptureClient(authorization, http)
-            await client.commit_policy(policy)
+            await store.commit_policy(policy)
             handle = await client.create(attempt)
             body = {"model": config.base_model.name, "messages": [{"role": "user", "content": "test"}]}
             if mutation == "sampling":
@@ -190,7 +192,7 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
 
 @pytest.mark.parametrize("graded,tool_turn", [(True, False), (False, False), (True, True)])
 async def test_task_to_captured_and_graded_miles_sample(
-    config, authorization, policy, attempt, tokenizer, graded, tool_turn
+    config, authorization, policy, attempt, tokenizer, store, graded, tool_turn
 ):
     config_path = config.artifact_directory.parent / "run.json"
     config_path.write_text(config.model_dump_json())
@@ -200,10 +202,10 @@ async def test_task_to_captured_and_graded_miles_sample(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=tool_turn)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend)
+        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as capture_http:
             capture = CaptureClient(authorization, capture_http)
-            await capture.commit_policy(policy)
+            await store.commit_policy(policy)
 
             async def platform_rpc(request):
                 method = request.url.path.rsplit("/", 1)[-1]

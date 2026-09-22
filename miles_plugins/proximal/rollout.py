@@ -8,17 +8,19 @@ from pathlib import Path
 
 import httpx
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnOutput
-from miles.rollout.fully_async_data_buffer import DataBufferInput
+from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnInput, RolloutFnOutput
+from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, DataBufferInput
 from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
-from miles_plugins.proximal.authorization import authorize_run
-from miles_plugins.proximal.buffer import validate_sample
+from miles_plugins.proximal.authorization import authorize_run, secret_env
+from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
 from miles_plugins.proximal.contracts import AcceptedAttempt, Attempt, Task, canonical_bytes, digest, read_run_config
+from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import add_arguments
 from miles_plugins.proximal.storage import write_immutable
+from miles_plugins.proximal.store import RolloutStore
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,27 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         self._client: httpx.AsyncClient | None = None
         self._capture: CaptureClient | None = None
         self._platform: PlatformClient | None = None
+        self._store: RolloutStore | None = None
+
+    # Async like FullyAsyncRolloutFn.__call__, which Miles's executor awaits; the
+    # base class annotates the sync form.
+    async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:  # type: ignore[override]
+        # Same lazy start as FullyAsyncRolloutFn, plus wiring the buffer to the
+        # durable store and the checkpointed ledger owned by the task source.
+        if not input.evaluation and self._worker is None:
+            if not isinstance(self.data_source, PlatformTaskSource):
+                raise ValueError("Platform rollouts require the platform task source")
+            self._store = await RolloutStore.open(
+                secret_env(self.config.store_dsn_env), run_id=self.config.run_id, root=self.config.artifact_directory
+            )
+            buffer = PlatformDataBuffer(
+                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+            )
+            buffer.attach(store=self._store, ledger=self.data_source.consumed)
+            self._output = buffer
+            self._worker = asyncio.create_task(self._worker_loop())
+            logger.info("Started platform rollout worker against the durable rollout store")
+        return await super().__call__(input)
 
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         if self._client is None:
@@ -85,8 +108,10 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             )
             self._capture = CaptureClient(self.authorization, self._client)
             self._platform = PlatformClient(self.authorization, self._client)
-        assert self._capture is not None and self._platform is not None
-        policy = await self._capture.current_policy()
+        assert self._capture is not None and self._platform is not None and self._store is not None
+        policy = await self._store.current_policy()
+        if policy is None:
+            raise RuntimeError("No published policy yet; the trainer publishes one before rollouts start")
         group_id = uuid.uuid4().hex
         attempts = [
             Attempt(
@@ -137,3 +162,6 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._store is not None:
+            await self._store.close()
+            self._store = None

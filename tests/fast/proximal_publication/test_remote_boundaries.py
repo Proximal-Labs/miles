@@ -52,9 +52,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
                 [create] = [kw.value for kw in node.keywords if kw.arg == "create_if_missing"]
                 assert isinstance(create, ast.Constant) and create.value is False
     assert sorted(mutations) == [
-        ("capture_server.py", "post"),
-        ("capture_server.py", "post"),
-        ("clients.py", "request"),
+        ("capture_server.py", "post"),  # Recorded inference only; policy warm-up moved to the pool client.
+        ("clients.py", "request"),  # The shared retrying request helper every client uses.
         ("gateway.py", "post"),
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),

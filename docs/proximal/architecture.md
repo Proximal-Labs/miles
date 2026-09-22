@@ -13,7 +13,9 @@ The implementation lives in `miles_plugins/proximal`. See [investigation](invest
 | Continuous bounded production | `FullyAsyncRolloutFn` → `PlatformRolloutFn` | Miles CPU |
 | Harness, tools, sandbox, verifier, operational logs | EnvironmentRun RPC + shared agent-px completion seam | Platform |
 | Exact prompt/completion IDs and assistant loss masks | `SessionCore` + Qwen3 TITO + existing sample codec | Miles CPU capture service |
-| Complete-group acceptance and consumption-time staleness | `DataBuffer` → `PlatformDataBuffer` | Miles |
+| Complete-group acceptance, durable storage, batch query with consumption-time staleness | `DataBuffer` → `PlatformDataBuffer` over `RolloutStore` (Postgres index + payloads on a durable mount) | Miles |
+| Consumption ledger (which groups this run trained on) | `DataSource` checkpoint → `PlatformTaskSource` | Miles |
+| Policy registry: which immutable adapter each version names, and lineage on resume | `RolloutStore` policies table | Miles |
 | Train-to-serving transfer | `WeightUpdater` → `ModalVolumeTransfer` | Miles |
 | Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publishes; platform mounts |
 | Per-request policy selection and adapter slots | `ReplicaGateway` + `ReplicaLoRALoader` | Platform replica |
@@ -33,12 +35,13 @@ flowchart LR
     W --> V["Shared Modal Volume: immutable snapshots"]
     V -->|"reload / verify / local copy / load"| R1
     V -->|"reload / verify / local copy / load"| R2
-    W -->|"Publish policy only after artifact and serving acknowledgement"| C
+    W -->|"Commit version only after artifact and serving acknowledgement"| DB["Rollout store: policies + stored groups"]
+    DB -->|"Committed policy"| C
     S -->|"Grade + task and harness provenance"| J["Accepted attempt + sealed safetensors"]
     C -->|"Exact IDs / logprobs / masks / policy"| J
-    J --> Q["Q: bounded complete groups, enforce staleness at drain"]
-    Q --> T
-    Q -.->|"Backpressure"| P
+    J -->|"DataBuffer.put: persist"| DB
+    DB -->|"DataBuffer.get: batch query (fresh, live lineage, unconsumed)"| T
+    DB -.->|"Backpressure"| P
 ```
 
 ## Policy publication and the shared Volume
@@ -47,7 +50,9 @@ An immutable policy is `(run_id, version, base name/revision, snapshot SHA-256)`
 
 Publication uses the **existing weight-update boundary**, including its initial startup update. The protocol requests full TP/EP/PP gathering from Miles's HF iterator, copies adapter tensors to CPU on rank zero, writes safetensors and the training backend's authoritative PEFT configuration, and uploads immutable files to the existing Volume. The manifest is committed last, after readback verification. Native optimizer/resume checkpoints remain separate.
 
-Only after the capture service obtains an acknowledgement from one replica does it commit the new policy. That acknowledgement warms one arbitrary container; it is not fleet-wide readiness. Every subsequent inference request carries the immutable selector and receives verified adapter/base identity headers. The capture service converts that evidence into Miles version spans. It does not trust SGLang's global base-weight counter for named adapters.
+Only after one replica acknowledges the uploaded snapshot does the publisher commit the version to the rollout store, which is the single policy authority. That acknowledgement warms one arbitrary container; it is not pool-wide readiness. The producer pins new groups to the store's latest committed version, and the capture service admits a session only for a policy the store holds.
+
+The first publication of each trainer process rewinds the store to the resumed checkpoint: versions after it named weights the resume discarded, so they are marked abandoned. The version republished at startup comes from the checkpoint's own weights; identical weights restore it, different weights replace it. The batch query joins stored groups to live policies by exact snapshot hash, so a group sampled from abandoned weights is never trained on. Every subsequent inference request carries the immutable selector and receives verified adapter/base identity headers. The capture service converts that evidence into Miles version spans. It does not trust SGLang's global base-weight counter for named adapters.
 
 Other ranks participate in gathers and receive the publication verdict through Gloo. Failed publication leaves the updater version unchanged. One successful publication occurs at startup and after every training iteration; `max_policy_lag` counts these publications, not individual optimizer microsteps. Retrying a publication uses the same immutable identity.
 
@@ -71,15 +76,19 @@ Eligibility requires a successful/completed platform result with no execution er
 
 ## Q, overlap and recovery
 
-Q is Miles's existing in-memory `DataBuffer` seam. Both in-flight groups and the completed backlog are bounded. The CPU producer stays active while the trainer computes and publishes; a full queue applies backpressure. Task selection cycles deterministically over the pinned list, with optional regeneration of discarded groups. Replica count is a platform scaling choice; Miles only declares workload concurrency.
+Q is Miles's `DataBuffer` seam, backed by the durable rollout store. `put` validates a complete group and persists it: Miles's own sample codec payload on a durable mount (a Modal Volume in production), then one small Postgres index row carrying the group's policy version and snapshot hash. The group is stored before any backpressure because it is a paid rollout. The producer then pauses while more than `completed_group_capacity` fresh, unconsumed groups are waiting, matching Miles's default bounded buffer.
+
+`get` is the batch query. It selects the oldest group that is within `max_policy_lag` of the trainer's committed version, was sampled from live (not abandoned) weights, and is not in this run's consumption ledger. It records the group in the ledger and returns it. Staleness is evaluated at consumption; stale groups are simply never selected, so nothing needs deleting or recycling. There is no ownership tag and no global "consumed" flag: another experiment can read the same stored groups.
+
+The consumption ledger is trainer state, saved with Miles's checkpoint through the task source alongside the dataset fingerprint, cursor, and retry task indices. Resuming a checkpoint restores exactly the ledger that matches its weights; groups consumed by discarded steps become selectable again if they are still fresh. A restarted process sees every stored group, so completed paid rollouts survive a crash. Groups still in flight when a process dies are regenerated. Entries below the staleness window are pruned because staleness only grows.
 
 The fully async driver drains the next batch **after** publication, immediately before consumption. Its former additional prefetch could select a batch against an outdated version. Semi-async prefetch behavior is preserved. Shutdown cancels and awaits producer children and requests logical cancellation for unfinished platform runs.
 
-Sealed captures and accepted attempts are immutable, checksum-addressed local artifacts. Seal can be retried and collected after capture-service restart. Unsealed sessions are lost explicitly; an old execution identity cannot silently bind to a newly created session. The data source checkpoints its dataset fingerprint, cursor, and retry task indices alongside the native training checkpoint.
+Sealed captures and accepted attempts are immutable, checksum-addressed artifacts. Seal can be retried and collected after capture-service restart. Unsealed sessions are lost explicitly; an old execution identity cannot silently bind to a newly created session.
 
-This pass does **not** claim exactly-once optimizer recovery. Completed/in-flight queue state is not durably claimed; interrupted work is regenerated. Resume from the latest matching native checkpoint with the same artifact store. Rolling back behind the capture service's publication history requires a new run ID. A durable Postgres queue can later implement the existing buffer seam, but also needs optimizer checkpoint/claim acknowledgement; `SKIP LOCKED` alone would not supply that guarantee.
+One trainer consumes each run's store, so no row locking or leases are needed. They become necessary only if several consumers ever share one training run.
 
-The platform owns sandbox retention. The operator owns retention for local accepted samples, replica disk caches, and immutable Volume versions; this pass never deletes artifact history. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
+The platform owns sandbox retention. The operator owns retention for stored groups, local accepted samples, replica disk caches, and immutable Volume versions; this pass never deletes artifact history. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
 
 ## First-pass limits and verification
 

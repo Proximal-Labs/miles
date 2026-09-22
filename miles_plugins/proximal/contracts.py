@@ -105,7 +105,10 @@ class RunConfig(Contract):
     # Header name -> environment variable name, never credential values.
     inference_header_env: dict[str, Nonempty]
     volume: VolumeDestination
+    # Durable mount (e.g. a Modal Volume) for stored group payloads.
     artifact_directory: Path
+    # Environment variable holding the Postgres DSN for the rollout store index.
+    store_dsn_env: Nonempty
     tokenizer_path: Path
     tito_model: Literal["qwen3"]
     enable_thinking: bool

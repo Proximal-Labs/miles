@@ -8,10 +8,16 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run
 from miles_plugins.proximal.contracts import RunConfig, read_run_config
 from miles_plugins.proximal.options import BUFFER, ROLLOUT, SOURCE, TRANSFER
+
+if TYPE_CHECKING:
+    import httpx
+
+    from miles_plugins.proximal.store import RolloutStore
 
 
 def training_argv(path: str) -> list[str]:
@@ -51,7 +57,9 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
 
     from miles.rollout.session.linear_trajectory import SessionRegistry
     from miles.utils.chat_template_utils import get_tito_tokenizer
+    from miles_plugins.proximal.authorization import secret_env
     from miles_plugins.proximal.capture_server import CaptureServer
+    from miles_plugins.proximal.store import RolloutStore
 
     tokenizer = AutoTokenizer.from_pretrained(
         str(config.tokenizer_path), local_files_only=True, trust_remote_code=False
@@ -60,65 +68,92 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
         tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
     )
     registry = SessionRegistry(tokenizer, tito_tokenizer=tito)
-    async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
-        service = CaptureServer(authorization, registry=registry, client=client)
-        await uvicorn.Server(uvicorn.Config(service.app, host=host, port=port, workers=1, access_log=False)).serve()
+    store = await RolloutStore.open(
+        secret_env(config.store_dsn_env), run_id=config.run_id, root=config.artifact_directory
+    )
+    try:
+        async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
+            service = CaptureServer(authorization, registry=registry, client=client, store=store)
+            await uvicorn.Server(
+                uvicorn.Config(service.app, host=host, port=port, workers=1, access_log=False)
+            ).serve()
+    finally:
+        await store.close()
 
 
 async def run_control(args: argparse.Namespace, authorization: AuthorizedRun) -> None:
-    import uuid
-
     import httpx
 
-    from miles.utils.types import Sample
-    from miles_plugins.proximal.clients import CaptureClient, PlatformClient
-    from miles_plugins.proximal.contracts import Attempt, Policy, digest
-    from miles_plugins.proximal.rollout import execute_attempt
+    from miles_plugins.proximal.authorization import secret_env
+    from miles_plugins.proximal.store import RolloutStore
 
     config = authorization.config
     if args.command == "rollout" and (args.task_index is None or not 0 <= args.task_index < len(config.dataset.tasks)):
         raise ValueError("rollout requires a valid --task-index into the pinned dataset")
     if args.command == "commit-policy" and args.policy_file is None:
         raise ValueError("commit-policy requires --policy-file")
+    store = await RolloutStore.open(
+        secret_env(config.store_dsn_env), run_id=config.run_id, root=config.artifact_directory
+    )
     async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as http:
-        capture = CaptureClient(authorization, http)
-        if args.command == "commit-policy":
-            policy = Policy.model_validate_json(args.policy_file.read_bytes())
-            if policy.run_id != config.run_id or policy.base_model != config.base_model:
-                raise ValueError("Policy file belongs to another run/base model")
-            await capture.commit_policy(policy)
-            print(policy.model_dump_json())
-            return
-        policy = await capture.current_policy()
-        attempt = Attempt(
-            attempt_id=uuid.uuid4().hex,
-            run_id=config.run_id,
-            group_id=uuid.uuid4().hex,
-            sample_index=0,
-            dataset_sha256=digest(config.dataset),
-            task=config.dataset.tasks[args.task_index],
-            harness=config.harness,
-            policy=policy,
-            sampling=config.research.sampling,
+        try:
+            await _run_control(args, authorization, http, store)
+        finally:
+            await store.close()
+
+
+async def _run_control(
+    args: argparse.Namespace, authorization: AuthorizedRun, http: "httpx.AsyncClient", store: "RolloutStore"
+) -> None:
+    import uuid
+
+    from miles.utils.types import Sample
+    from miles_plugins.proximal.clients import CaptureClient, PlatformClient, ServingPoolClient
+    from miles_plugins.proximal.contracts import Attempt, Policy, digest
+    from miles_plugins.proximal.rollout import execute_attempt
+
+    config = authorization.config
+    capture = CaptureClient(authorization, http)
+    if args.command == "commit-policy":
+        published = Policy.model_validate_json(args.policy_file.read_bytes())
+        if published.run_id != config.run_id or published.base_model != config.base_model:
+            raise ValueError("Policy file belongs to another run/base model")
+        await ServingPoolClient(authorization, http).prepare(published)
+        await store.commit_policy(published)
+        print(published.model_dump_json())
+        return
+    policy = await store.current_policy()
+    if policy is None:
+        raise ValueError("No committed policy; run commit-policy first")
+    attempt = Attempt(
+        attempt_id=uuid.uuid4().hex,
+        run_id=config.run_id,
+        group_id=uuid.uuid4().hex,
+        sample_index=0,
+        dataset_sha256=digest(config.dataset),
+        task=config.dataset.tasks[args.task_index],
+        harness=config.harness,
+        policy=policy,
+        sampling=config.research.sampling,
+    )
+    result = await execute_attempt(
+        attempt,
+        Sample(index=0, group_index=0),
+        capture=capture,
+        platform=PlatformClient(authorization, http),
+        artifact_root=config.artifact_directory / config.run_id / "accepted",
+    )
+    print(
+        json.dumps(
+            {
+                "attempt_id": attempt.attempt_id,
+                "policy_version": policy.version,
+                "reward": result.reward,
+                "tokens": len(result.tokens),
+                "assistant_tokens": result.effective_response_length,
+            }
         )
-        result = await execute_attempt(
-            attempt,
-            Sample(index=0, group_index=0),
-            capture=capture,
-            platform=PlatformClient(authorization, http),
-            artifact_root=config.artifact_directory / config.run_id / "accepted",
-        )
-        print(
-            json.dumps(
-                {
-                    "attempt_id": attempt.attempt_id,
-                    "policy_version": policy.version,
-                    "reward": result.reward,
-                    "tokens": len(result.tokens),
-                    "assistant_tokens": result.effective_response_length,
-                }
-            )
-        )
+    )
 
 
 def main() -> None:

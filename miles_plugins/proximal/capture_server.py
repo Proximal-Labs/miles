@@ -2,6 +2,7 @@
 
 One CPU process owns live sessions. Sealed samples survive its restart on disk;
 unfinished sessions are explicitly lost. This app exposes no unrecorded proxy.
+Policy versions come from the rollout store, the single policy authority.
 """
 
 import asyncio
@@ -22,16 +23,9 @@ from miles.rollout.session.core import ProxyRequest, SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
-from miles_plugins.proximal.contracts import (
-    Attempt,
-    CaptureReceipt,
-    Policy,
-    PolicyEvidence,
-    RunConfig,
-    canonical_bytes,
-    digest,
-)
+from miles_plugins.proximal.contracts import Attempt, CaptureReceipt, RunConfig, canonical_bytes, digest
 from miles_plugins.proximal.storage import write_immutable
+from miles_plugins.proximal.store import RolloutStore
 
 
 @dataclass
@@ -140,29 +134,27 @@ class BoundTransport:
 
 
 class CaptureServer:
-    def __init__(self, authorization: AuthorizedRun, *, registry: SessionRegistry, client: httpx.AsyncClient):
+    def __init__(
+        self,
+        authorization: AuthorizedRun,
+        *,
+        registry: SessionRegistry,
+        client: httpx.AsyncClient,
+        store: RolloutStore,
+    ):
         self.config = require_authorization(authorization)
         self.client = client  # Borrowed: the process composition root owns it.
+        self.store = store  # Borrowed, likewise.
         self.admin_key = secret_env(self.config.capture.api_key_env)
         self.root = self.config.artifact_directory / self.config.run_id / "capture"
         write_immutable(self.root / "run.json", canonical_bytes(self.config))
         self.sessions: dict[str, LiveSession] = {}
         self.attempts: dict[str, str] = {}
-        self.policies: dict[int, Policy] = {}
-        self._policy_lock = asyncio.Lock()
         self._create_lock = asyncio.Lock()
         self.transport = BoundTransport(self.config, client, self.sessions)
         self.core = SessionCore(self.transport, registry, session_config(self.config), self.config.run_id)
-        for path in sorted((self.root / "policies").glob("*.json")):
-            policy = Policy.model_validate_json(path.read_bytes())
-            self._validate_policy(policy)
-            self.policies[policy.version] = policy
         self.app = FastAPI()
         self._routes()
-
-    def _validate_policy(self, policy: Policy) -> None:
-        if policy.run_id != self.config.run_id or policy.base_model != self.config.base_model:
-            raise HTTPException(409, "Policy belongs to a different run/base")
 
     def _admin(self, request: Request) -> None:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.admin_key}"):
@@ -181,38 +173,6 @@ class CaptureServer:
         if len(session_id) != 32 or any(c not in "0123456789abcdef" for c in session_id):
             raise HTTPException(404, "Unknown session")
         return self.root / "sessions" / session_id
-
-    async def _commit_policy(self, policy: Policy) -> Policy:
-        self._validate_policy(policy)
-        async with self._policy_lock:
-            if existing := self.policies.get(policy.version):
-                if existing != policy:
-                    raise HTTPException(409, "Immutable policy version conflict")
-                return existing
-            if self.policies and policy.version != max(self.policies) + 1:
-                raise HTTPException(
-                    409, "Publication must advance sequentially; use a new run identity after rollback"
-                )
-            # Warm one arbitrary replica. Every request independently verifies/loads
-            # its version, so correctness does not assume broadcast or sticky routing.
-            response = await self.client.post(
-                f"{self.config.inference_url}/policies/prepare",
-                json={"snapshot": policy.snapshot.model_dump(), "base_model": policy.base_model.model_dump()},
-                headers=self.transport.headers,
-                follow_redirects=False,
-            )
-            response.raise_for_status()
-            evidence = PolicyEvidence.model_validate_json(response.content)
-            expected_model = f"{policy.base_model.name}:miles-{policy.snapshot.sha256}"
-            if (
-                evidence.snapshot != policy.snapshot
-                or evidence.base_model != policy.base_model
-                or evidence.request_model != expected_model
-            ):
-                raise HTTPException(502, "Replica did not verify the published policy")
-            write_immutable(self.root / "policies" / f"{policy.version}.json", canonical_bytes(policy))
-            self.policies[policy.version] = policy
-            return policy
 
     async def _seal(self, session_id: str) -> CaptureReceipt:
         directory = self._directory(session_id)
@@ -254,7 +214,7 @@ class CaptureServer:
             or attempt.sampling != self.config.research.sampling
             or attempt.dataset_sha256 != digest(self.config.dataset)
             or attempt.task not in self.config.dataset.tasks
-            or self.policies.get(attempt.policy.version) != attempt.policy
+            or await self.store.policy(attempt.policy.version) != attempt.policy
         ):
             raise HTTPException(409, "Attempt is outside this run's dataset/harness/policy contract")
         async with self._create_lock:
@@ -346,20 +306,6 @@ class CaptureServer:
         @app.get("/health")
         async def health() -> dict[str, str]:
             return {"status": "ok", "run_id": self.config.run_id}
-
-        @app.get("/policies/current")
-        async def current(request: Request) -> Policy:
-            self._admin(request)
-            if not self.policies:
-                raise HTTPException(503, "No published policy")
-            return self.policies[max(self.policies)]
-
-        @app.put("/policies/{version}")
-        async def publish(version: int, policy: Policy, request: Request) -> Policy:
-            self._admin(request)
-            if policy.version != version:
-                raise HTTPException(409, "Policy version/path mismatch")
-            return await self._commit_policy(policy)
 
         @app.post("/sessions")
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:

@@ -14,7 +14,7 @@ The config's sampling, group size, staleness and behavior-logprob convention are
 
 Provide secrets through the named environment variables on processes that need them. `MILES_GATEWAY_AUTHORIZATION` contains `Bearer <gateway-key>`; the gateway's `MILES_GATEWAY_KEY` contains the raw key. Modal proxy headers are optional: remove their entries if your platform endpoint does not use them. Capture's administrator credential never goes to a sandbox; each rollout receives its own scoped credential.
 
-Use a persistent `/artifacts` directory for the capture service. The trainer and CPU rollout executor also need a persistent artifact destination for publication/accepted samples, preferably the same shared mount. Mount the run JSON at the same absolute path on the driver and Ray workers, and provide the required environment variables to those workers through your existing Miles launch environment. The resolved run configuration is immutable within the capture artifact namespace; changing it requires a new run identity.
+Provide a Postgres database for the rollout store: set the environment variable named by `store_dsn_env` to its DSN on the CPU rollout process, the capture service, and the trainer's rank zero. Tables are created on first connection. Use a persistent `/artifacts` directory for the capture service. The trainer and CPU rollout executor also need a persistent artifact destination for publication/accepted samples, preferably the same shared mount. Mount the run JSON at the same absolute path on the driver and Ray workers, and provide the required environment variables to those workers through your existing Miles launch environment. The resolved run configuration is immutable within the capture artifact namespace; changing it requires a new run identity.
 
 Free validation and argument inspection:
 
@@ -102,7 +102,7 @@ Supply the normal model/parallelism/optimizer arguments required by your Miles M
 
 At startup and after each iteration, the existing weight updater exports/publishes a fresh immutable adapter. The producer keeps generating during training/publication. All members of a group share a policy. Q discards over-stale groups when the trainer drains its next batch. A valid zero score remains trainable. Consecutive execution failures trip the configured circuit breaker.
 
-For resume, restore the latest matching native checkpoint and task cursor. Sealed data remains inspectable, but queue consumption is not durably acknowledged against optimizer updates. In-flight/queued work is regenerated after a process restart. Rolling back behind published history needs a new run ID. Artifact retention is explicit operator maintenance; this integration never deletes shared policy history.
+For resume, restore the latest matching native checkpoint; the task source restores its cursor and consumption ledger from the same checkpoint. Completed groups persist in the rollout store and are selectable after restart if still fresh; only in-flight work is regenerated. The first publication after resume abandons versions newer than the checkpoint, and their groups are never trained on. Artifact retention is explicit operator maintenance; this integration never deletes shared policy history.
 
 ## CPU verification
 

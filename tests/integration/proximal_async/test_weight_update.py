@@ -1,6 +1,8 @@
 """Real CPU Gloo + WeightUpdater; substitute only the external publisher/HTTP."""
 
+import asyncio
 import json
+import os
 from argparse import Namespace
 
 import httpx
@@ -16,6 +18,7 @@ from miles.utils.ft_utils.process_group_utils import GroupInfo
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles_plugins.proximal import weight_update
 from miles_plugins.proximal.options import TRANSFER
+from miles_plugins.proximal.store import RolloutStore
 
 
 class CpuAdapterIterator:
@@ -38,6 +41,20 @@ class CpuAdapterIterator:
                     torch.zeros(3, 2),
                 ),
             ]
+
+
+def current_version(config):
+    async def read():
+        store = await RolloutStore.open(
+            os.environ[config.store_dsn_env], run_id=config.run_id, root=config.artifact_directory
+        )
+        try:
+            policy = await store.current_policy()
+            return None if policy is None else policy.version
+        finally:
+            await store.close()
+
+    return asyncio.run(read())
 
 
 def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
@@ -68,12 +85,22 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         events.append(("upload", snapshot.reference.sha256))
 
     def http(request):
+        # The serving pool warms and verifies the uploaded version before the store commits it.
+        assert request.url.path == "/policies/prepare"
         if fail[0]:
             return httpx.Response(400, json={"error": "test publication rejected"})
-        policy = json.loads(request.content)
-        assert events[-1] == ("upload", policy["snapshot"]["sha256"])
-        events.append(("commit", policy["version"]))
-        return httpx.Response(200, json=policy)
+        body = json.loads(request.content)
+        sha = body["snapshot"]["sha256"]
+        assert events[-1] == ("upload", sha)
+        events.append(("prepare", sha))
+        return httpx.Response(
+            200,
+            json={
+                "snapshot": body["snapshot"],
+                "base_model": body["base_model"],
+                "request_model": f"{config.base_model.name}:miles-{sha}",
+            },
+        )
 
     client_cls = httpx.AsyncClient
     monkeypatch.setattr(weight_update, "modal_publish_snapshot", publish)
@@ -82,8 +109,9 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
     )
     dist.init_process_group("gloo", init_method=f"file://{tmp_path}/rendezvous", rank=0, world_size=1)
     monkeypatch.setattr(distributed_utils, "GLOO_GROUP", dist.group.WORLD)
-    try:
-        updater = WeightUpdater(
+
+    def make_updater():
+        return WeightUpdater(
             args,
             [],
             weights_getter=lambda: {},
@@ -94,6 +122,9 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
             is_lora=True,
             lora_sync_config={"peft_type": "LORA", "r": 2, "lora_alpha": 4, "target_modules": ["q_proj"]},
         )
+
+    try:
+        updater = make_updater()
         updater.connect_rollout_engines([])
         updater.update_weights()
         assert updater.weight_version == 1
@@ -104,6 +135,13 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         fail[0] = False
         updater.update_weights()
         assert updater.weight_version == 2
-        assert [value for operation, value in events if operation == "commit"] == [1, 2]
+        assert len([e for e in events if e[0] == "prepare"]) == 2
+        assert current_version(config) == 2
+        # A restart from step 0 republishes version 1 and abandons version 2.
+        restarted = make_updater()
+        restarted.connect_rollout_engines([])
+        restarted.update_weights()
+        assert restarted.weight_version == 1
+        assert current_version(config) == 1
     finally:
         dist.destroy_process_group()

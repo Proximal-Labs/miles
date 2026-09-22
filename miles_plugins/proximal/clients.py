@@ -14,7 +14,15 @@ from pydantic import BaseModel, ConfigDict, FiniteFloat
 from pydantic.alias_generators import to_camel
 
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
-from miles_plugins.proximal.contracts import Attempt, CaptureReceipt, Grade, Policy, SessionHandle, digest
+from miles_plugins.proximal.contracts import (
+    Attempt,
+    CaptureReceipt,
+    Grade,
+    Policy,
+    PolicyEvidence,
+    SessionHandle,
+    digest,
+)
 
 
 class Wire(BaseModel):
@@ -92,24 +100,6 @@ class CaptureClient:
         self.headers = {"Authorization": f"Bearer {secret_env(self.config.capture.api_key_env)}"}
         self.url = self.config.capture.url
 
-    async def current_policy(self) -> Policy:
-        response = await request(self.client, "GET", f"{self.url}/policies/current", headers=self.headers)
-        policy = Policy.model_validate_json(response.content)
-        if policy.run_id != self.config.run_id or policy.base_model != self.config.base_model:
-            raise ValueError("Capture service is bound to another run or base model")
-        return policy
-
-    async def commit_policy(self, policy: Policy) -> None:
-        response = await request(
-            self.client,
-            "PUT",
-            f"{self.url}/policies/{policy.version}",
-            headers=self.headers,
-            body=policy.model_dump(mode="json"),
-        )
-        if Policy.model_validate_json(response.content) != policy:
-            raise ValueError("Published policy acknowledgement differs")
-
     async def create(self, attempt: Attempt) -> SessionHandle:
         response = await request(
             self.client, "POST", f"{self.url}/sessions", headers=self.headers, body=attempt.model_dump(mode="json")
@@ -135,6 +125,36 @@ class CaptureClient:
 
     async def release(self, handle: SessionHandle) -> None:
         await request(self.client, "DELETE", handle.base_url, headers=self.headers)
+
+
+class ServingPoolClient:
+    """The Miles-owned serving pool's control surface: warm and verify a version.
+
+    Every replica independently loads and verifies the version each request names,
+    so this does not assume broadcast or sticky routing. It proves one replica can
+    serve the published weights before the version becomes selectable.
+    """
+
+    def __init__(self, authorization: AuthorizedRun, client: httpx.AsyncClient):
+        self.config = require_authorization(authorization)
+        self.client = client
+        self.headers = {name: secret_env(env) for name, env in self.config.inference_header_env.items()}
+
+    async def prepare(self, policy: Policy) -> None:
+        response = await request(
+            self.client,
+            "POST",
+            f"{self.config.inference_url}/policies/prepare",
+            headers=self.headers,
+            body={"snapshot": policy.snapshot.model_dump(), "base_model": policy.base_model.model_dump()},
+        )
+        evidence = PolicyEvidence.model_validate_json(response.content)
+        if (
+            evidence.snapshot != policy.snapshot
+            or evidence.base_model != policy.base_model
+            or evidence.request_model != f"{policy.base_model.name}:miles-{policy.snapshot.sha256}"
+        ):
+            raise ValueError("Replica did not verify the published policy")
 
 
 class PlatformClient:

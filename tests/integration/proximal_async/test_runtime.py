@@ -7,10 +7,10 @@ import pytest
 from tests.integration.proximal_async.test_buffer import entry
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
-from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.utils.arguments import get_miles_extra_args_provider, resolve_rollout_function_paths
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import ROLLOUT, validate_args
+from miles_plugins.proximal.rollout import PlatformRolloutFn
 from miles_plugins.proximal.runtime import training_argv
 
 
@@ -39,7 +39,10 @@ def test_runtime_arguments_use_actual_miles_parser(config, tmp_path, monkeypatch
         validate_args(args)
 
 
-async def test_existing_async_worker_overlaps_consumption_and_cancels_children(config, tmp_path, attempt):
+async def test_existing_async_worker_overlaps_consumption_and_cancels_children(
+    config, tmp_path, attempt, policy, store
+):
+    await store.commit_policy(policy)
     path = tmp_path / "run.json"
     path.write_text(config.model_dump_json())
     args = Namespace(
@@ -54,30 +57,30 @@ async def test_existing_async_worker_overlaps_consumption_and_cancels_children(c
         custom_async_data_buffer_path="miles_plugins.proximal.buffer.PlatformDataBuffer",
         save=None,
         load=None,
+        proximal_yes_rollouts=True,
+        proximal_yes_publish=True,
     )
     started = 0
     cancelled = asyncio.Event()
     gate = asyncio.Event()
 
-    class Producer(FullyAsyncRolloutFn):
+    class Producer(PlatformRolloutFn):
         async def _generate_group(self, prompt_group):
             nonlocal started
             started += 1
             if started == 1:
-                ready = entry(attempt)
-                for i, sample in enumerate(ready.group):
-                    sample.index = i
-                return ready
+                return entry(attempt, policy, group="first")
             try:
                 await gate.wait()
             finally:
                 cancelled.set()
-            return entry(attempt)
+            return entry(attempt, policy, group=f"late-{started}")
 
     source = PlatformTaskSource(args)
     producer = Producer(RolloutFnConstructorInput(args=args, data_source=source))
     result = await asyncio.wait_for(producer(RolloutFnTrainInput(rollout_id=0, weight_version=1)), 2)
     assert len(result.samples) == 1 and started >= 2
+    assert [c.group_id for c in source.consumed.snapshot()] == ["first"]
     assert producer._state is None  # Platform producer needs no local inference state/tokenizer.
     await producer.close()
     assert cancelled.is_set()
