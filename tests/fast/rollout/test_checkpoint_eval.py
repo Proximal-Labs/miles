@@ -519,7 +519,7 @@ class TestSnapshotOwnership:
         assert manager.skip_calls == [(1, "crashed")]
         assert not first.exists()
 
-    async def test_failed_export_preserves_existing_checkpoint(self, dispatcher_env, tmp_path):
+    async def test_dispatcher_leaves_failed_export_cleanup_to_writer(self, dispatcher_env, tmp_path):
         manager = FakeManagerActor()
         dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel(fail=True), eval_hf_dir=str(tmp_path))
         checkpoint = tmp_path / "step_4"

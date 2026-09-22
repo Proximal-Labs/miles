@@ -414,7 +414,7 @@ def save_lora_checkpoint(
     """Collectively save native adapter shards, optional training state, and HF adapter weights."""
     global_rank = dist.get_rank() if dist.is_initialized() else 0
 
-    def write_shards(tmp_dir: Path):
+    def write_shards(checkpoint_dir: Path):
         adapter_state = {
             name: param.detach().cpu()
             for model_chunk in model
@@ -430,10 +430,10 @@ def save_lora_checkpoint(
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             }
 
-        publisher.write_adapter(None, tmp_dir)
-        torch.save(adapter_state, tmp_dir / f"adapter_megatron_rank{global_rank}.pt")
+        publisher.write_adapter(None, checkpoint_dir)
+        torch.save(adapter_state, checkpoint_dir / f"adapter_megatron_rank{global_rank}.pt")
         if training_state is not None:
-            torch.save(training_state, tmp_dir / f"training_state_rank{global_rank}.pt")
+            torch.save(training_state, checkpoint_dir / f"training_state_rank{global_rank}.pt")
 
     write_checkpoint_dir(save_dir, write_shards)
     return str(save_dir)

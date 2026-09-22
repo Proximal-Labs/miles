@@ -1,14 +1,12 @@
-"""Checkpoint directories: written collectively, complete at their final path."""
+"""Checkpoint directory writes with completion metadata and failure cleanup."""
 
 # TODO: isolate checkpoint IO failures in Tinker; they still terminate the trainer cell.
 
 import json
 import logging
-import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
-from uuid import uuid4
 
 import torch.distributed as dist
 
@@ -23,76 +21,61 @@ def write_checkpoint_dir(
     metadata: dict | None = None,
     *,
     overwrite: bool = True,
+    completion_marker: str | None = None,
 ) -> None:
-    """Write collectively, then atomically point ``path`` at the completed version.
+    """Replace a checkpoint; callers must exclude concurrent readers.
 
-    All ranks must call. Writers must finish their collectives before raising local IO errors.
-    Readers may still hold an older version, so retain it.
+    All ranks must call and finish weight collectives before raising local write errors.
     """
-    final_dir = Path(path)
-    tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
-    version_dir = None
+    checkpoint_dir = Path(path)
+    distributed = dist.is_initialized()
+    is_rank0 = not distributed or dist.get_rank() == 0
+    prepare_error = [None]
+    if is_rank0:
+        try:
+            if checkpoint_dir.exists():
+                if not overwrite:
+                    raise FileExistsError(f"checkpoint {checkpoint_dir} already exists")
+                shutil.rmtree(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True)
+        except Exception as exc:
+            prepare_error[0] = exc
+    if distributed:
+        dist.broadcast_object_list(prepare_error, src=0, group=get_gloo_group())
+    if prepare_error[0] is not None:
+        raise prepare_error[0]
 
-    def make_tmp_dir():
-        if _rank() == 0:
-            if not overwrite and final_dir.exists():
-                raise FileExistsError(f"checkpoint {final_dir} already exists")
-            if final_dir.exists() and not final_dir.is_symlink():
-                raise NotImplementedError(
-                    f"cannot overwrite a legacy checkpoint directory {final_dir}; save under a new name"
-                )
-            # a crashed attempt may leave shards or an unpublished version link
-            if tmp_dir.is_symlink():
-                tmp_dir.unlink()
-            elif tmp_dir.exists():
-                shutil.rmtree(tmp_dir)
-            tmp_dir.mkdir(parents=True)
-
-    def publish_dir():
-        nonlocal version_dir
-        if _rank() != 0:
-            return
-        if metadata is not None:
-            (tmp_dir / "META.json").write_text(json.dumps(metadata, indent=2))
-        version_dir = final_dir.parent / f"_version_{final_dir.name}_{uuid4().hex}"
-        os.replace(tmp_dir, version_dir)
-        tmp_dir.symlink_to(version_dir.name, target_is_directory=True)
-        os.replace(tmp_dir, final_dir)
-
-    def cleanup_dir():
-        if _rank() != 0:
-            return
-        if tmp_dir.is_symlink():
-            tmp_dir.unlink()
-        elif tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
-        if version_dir is not None and version_dir.exists() and final_dir.resolve() != version_dir.resolve():
-            shutil.rmtree(version_dir)
-
-    for phase in (make_tmp_dir, lambda: write_shards(tmp_dir), publish_dir):
-        error = _run_checkpoint_phase(phase)
-        if error is not None:
-            cleanup_error = _run_checkpoint_phase(cleanup_dir)
-            if cleanup_error is not None:
-                logger.error(f"Failed to clean up checkpoint {final_dir}: {cleanup_error}")
-            raise error
-
-
-def _rank() -> int:
-    return dist.get_rank() if dist.is_initialized() else 0
-
-
-def _run_checkpoint_phase(phase: Callable[[], None]) -> Exception | None:
-    """Agree on errors after all ranks return; callbacks must finish their collectives before raising."""
-    error = None
+    write_error = None
     try:
-        phase()
+        write_shards(checkpoint_dir)
     except Exception as exc:
-        error = exc
-    if dist.is_initialized():
+        write_error = exc
+    errors = []
+    if distributed:
+        # This also waits for every writer; a failed collective must not trigger directory cleanup.
         errors = [None] * dist.get_world_size()
-        dist.all_gather_object(errors, f"{type(error).__name__}: {error}" if error else None, group=get_gloo_group())
-        failures = [f"rank {rank}: {message}" for rank, message in enumerate(errors) if message is not None]
-        if failures:
-            return RuntimeError("Checkpoint write failed: " + "; ".join(failures))
-    return error
+        dist.all_gather_object(
+            errors,
+            f"{type(write_error).__name__}: {write_error}" if write_error is not None else None,
+            group=get_gloo_group(),
+        )
+    try:
+        if write_error is not None:
+            raise write_error
+        if any(errors):
+            raise RuntimeError(
+                "Checkpoint write failed: "
+                + "; ".join(f"rank {rank}: {error}" for rank, error in enumerate(errors) if error is not None)
+            )
+        if is_rank0:
+            if metadata is not None:
+                (checkpoint_dir / "META.json").write_text(json.dumps(metadata, indent=2))
+            if completion_marker is not None:
+                (checkpoint_dir / completion_marker).touch()
+    except Exception:
+        if is_rank0:
+            try:
+                shutil.rmtree(checkpoint_dir)
+            except OSError:
+                logger.exception(f"Failed to clean up checkpoint {checkpoint_dir}")
+        raise

@@ -31,12 +31,15 @@ class SnapshotPublisher:
 
     def publish_adapter(self, adapter: AdapterSpec | None, path: str, metadata: dict | None = None) -> None:
         write_checkpoint_dir(
-            path, lambda tmp_dir: self.write_adapter(adapter, tmp_dir), metadata=metadata, overwrite=False
+            path,
+            lambda checkpoint_dir: self.write_adapter(adapter, checkpoint_dir),
+            metadata=metadata,
+            overwrite=False,
         )
 
     @torch.no_grad()
     def write_adapter(self, adapter: AdapterSpec | None, path: str | Path) -> None:
-        """Collectively write HF adapter files inside the caller's directory transaction."""
+        """Collectively write HF adapter files into the caller's checkpoint directory."""
         assert self._adapter_config is not None, "adapter export requires adapter_config"
         path = Path(path)
         is_writer = dist.get_rank() == 0
@@ -55,7 +58,7 @@ class SnapshotPublisher:
             (path / "adapter_model.safetensors").write_bytes(adapter_bytes)
 
     def write_model(self, path: str | Path, *, weights: Mapping[str, torch.Tensor], hf_checkpoint: str) -> None:
-        """Collectively write HF model shards inside the caller's directory transaction."""
+        """Collectively write HF model shards into the caller's checkpoint directory."""
         path = Path(path)
         is_writer = dist.get_rank() == 0
 
@@ -76,7 +79,7 @@ class SnapshotPublisher:
             try:
                 safetensors.torch.save_file(shard_tensors, path / shard_name)
             except Exception as exc:
-                # Peers must finish the remaining weight gathers before the transaction can fail.
+                # Peers must finish the remaining weight gathers before reporting a write failure.
                 write_error = exc
             del shard_tensors
 
