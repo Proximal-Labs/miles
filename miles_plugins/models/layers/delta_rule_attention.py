@@ -247,8 +247,10 @@ class DeltaRuleAttention(MegatronModule, ABC):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        # TELinear's duplicated mode marks the weight replicated (and, under SP, as needing a TP grad
-        # all-reduce); this weight is a head shard with a complete gradient, so overwrite both.
+        # TELinear's duplicated mode marks the weight replicated (parallel_mode, tensor_model_parallel
+        # and, under SP, a TP grad all-reduce); this weight is a head shard with a complete gradient,
+        # so the export and checkpoint paths must see it as column-sharded on dim 0.
+        linear.weight.parallel_mode = "column"
         linear.weight.tensor_model_parallel = True
         linear.weight.partition_dim = 0
         linear.weight.partition_stride = 1
