@@ -128,3 +128,27 @@ def test_rollback_invalidates_later_state_before_new_weights_exist(config, tmp_p
     source.save(3)
     PlatformTaskSource(args).load(-1)
     assert not list((checkpoints / "rollout").glob("proximal_*.json"))
+
+
+def test_a_failed_restore_deletes_no_checkpoint_state(config, tmp_path):
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    checkpoints = tmp_path / "checkpoints"
+    args = Namespace(proximal_config=str(path), save=str(checkpoints), load=str(checkpoints))
+    source = PlatformTaskSource(args)
+    source.save(0)
+    source.consumed.add("kept", 1)
+    source.save(1)
+    # Restoring step 0 under a different dataset fails validation...
+    other = config.model_copy(
+        update={"dataset": config.dataset.model_copy(update={"project_id": config.dataset.project_id + 1})}
+    )
+    other_path = tmp_path / "other.json"
+    other_path.write_text(other.model_dump_json())
+    other_args = Namespace(proximal_config=str(other_path), save=str(checkpoints), load=str(checkpoints))
+    with pytest.raises(ValueError, match="differs from this run"):
+        PlatformTaskSource(other_args).load(0)
+    # ...and step 1's ledger is still there.
+    again = PlatformTaskSource(args)
+    again.load(1)
+    assert [c.group_id for c in again.consumed.snapshot()] == ["kept"]
