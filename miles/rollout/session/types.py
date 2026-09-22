@@ -1,8 +1,5 @@
 from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt
 
-# Chat request fields a session fills when a request omits them.
-SESSION_SAMPLING_FIELDS = ("temperature", "top_p", "top_k")
-
 
 class CreateSessionRequest(BaseModel):
     evaluation: StrictBool = False
