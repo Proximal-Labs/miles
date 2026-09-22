@@ -35,7 +35,7 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     else:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
-    if args.fully_async:
+    if args.fully_async and args.rollout_function_path is None:
         rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
@@ -54,9 +54,12 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async needs the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         # Runs after validate_multi_lora_args, which selects a rollout function of its own.
         assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
-        assert (
-            args.rollout_function_path is None
-        ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
+        if args.rollout_function_path is not None:
+            from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
+
+            assert issubclass(
+                load_function(args.rollout_function_path), FullyAsyncRolloutFn
+            ), "A custom fully-async rollout must extend FullyAsyncRolloutFn"
         assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
         assert args.pause_generation_mode != "abort", (
@@ -879,6 +882,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 nargs="+",
                 help="Address and ports of the external engines.",
+            )
+            parser.add_argument(
+                "--custom-weight-transfer-protocol-path",
+                type=str,
+                default=None,
+                help="WeightTransferProtocol implementation for an external serving fleet.",
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
@@ -3339,7 +3348,12 @@ def miles_validate_args(args):
 
     if args.debug_train_only:
         args.rollout_num_gpus = 0
-    args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
+    opaque_external_fleet = args.rollout_external and not args.rollout_external_engine_addrs
+    if opaque_external_fleet:
+        assert args.custom_weight_transfer_protocol_path, "An opaque external fleet needs a weight transfer protocol"
+        assert args.rollout_function_path, "An opaque external fleet needs a custom rollout function"
+        assert args.eval_num_gpus == 0 and not args.colocate
+    args.starts_inference_engines = (not args.debug_train_only or args.eval_num_gpus > 0) and not opaque_external_fleet
 
     if args.use_critic and not args.debug_rollout_only:
         if args.offload_train is None:
@@ -3572,6 +3586,10 @@ def miles_validate_args(args):
 
     if args.mini_ft_controller_enable and args.api_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
+
+    if args.custom_weight_transfer_protocol_path is not None:
+        protocol_cls = load_function(args.custom_weight_transfer_protocol_path)
+        protocol_cls.validate_args(args)
 
 
 def validate_skip_actor_forward_only(args) -> None:

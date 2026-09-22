@@ -63,7 +63,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         super().__init__(input)
         self.args = input.args
         self.data_source = input.data_source
-        self.state = GenerateState(input.args)
+        self._state = None
         # default to sample level backfill for fully async rollout
         self._scheduler = make_submission_scheduler(input.args, default="sample")
         assert input.args.async_unused_samples_handler in ("retry", "drop")
@@ -77,6 +77,18 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
         self._output: DataBuffer | None = None
+
+    @property
+    def state(self):
+        if self._state is None:
+            self._state = GenerateState(self.args)
+        return self._state
+
+    async def close(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
+            await asyncio.gather(self._worker, return_exceptions=True)
+            self._worker = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -130,15 +142,22 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     async def _worker_loop(self) -> None:
         active: dict[asyncio.Task, list[Sample]] = {}
-        while True:
-            await self._producer_resumed.wait()
-            while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
-                task, prompt_group = self._submit_one_group()
-                active[task] = prompt_group
-            done, _ = await self._scheduler.wait_for_progress(set(active))
-            for task in done:
-                entry = self._collect_group_result(task, active.pop(task))
-                await self._output.put(entry)
+        try:
+            while True:
+                await self._producer_resumed.wait()
+                while self._scheduler.has_capacity(
+                    pending_groups=len(active), group_budget=self._max_in_flight_groups()
+                ):
+                    task, prompt_group = self._submit_one_group()
+                    active[task] = prompt_group
+                done, _ = await self._scheduler.wait_for_progress(set(active))
+                for task in done:
+                    entry = self._collect_group_result(task, active.pop(task))
+                    await self._output.put(entry)
+        finally:
+            for task in active:
+                task.cancel()
+            await asyncio.gather(*active, return_exceptions=True)
 
     def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
         if not task.cancelled():
@@ -175,6 +194,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         finally:
             if not queue_get.done():
                 queue_get.cancel()
+                await asyncio.gather(queue_get, return_exceptions=True)
 
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args

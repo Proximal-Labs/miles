@@ -1,0 +1,10 @@
+{
+  "replica": {
+    "base_model": {"name": "agentica-org/DeepSWE-Preview", "revision": "4887205c533cd162baac7ba758159cfc3304cf94"},
+    "served_model_name": "agentica-org/DeepSWE-Preview",
+    "backend_url": "http://127.0.0.1:8000"
+  },
+  "api_key_env": "MILES_GATEWAY_KEY",
+  "engine_model_path": "/models/DeepSWE-Preview-4887205c533cd162baac7ba758159cfc3304cf94",
+  "max_loaded_adapters": 4
+}

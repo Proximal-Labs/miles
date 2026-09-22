@@ -211,6 +211,8 @@ class MegatronTrainRayActor(TrainRayActor):
         verify_megatron_parallel_state(self.model)
 
         start_rollout_id = loaded_rollout_id + 1
+        if args.start_rollout_id is None:
+            args.start_rollout_id = start_rollout_id
         self._asleep = False
         self._grad_buffer_paused = False
 

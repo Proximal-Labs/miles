@@ -1,104 +1,88 @@
-# Proximal platform rollouts and independent policy replicas
+# Async platform RL with Miles and immutable Modal policies
 
-This fork uses Miles as the learning foundation and Proximal as the executor of complete tasks. This document records the agreed direction and distinguishes the first executable slice from planned integrations. The standalone `trainer` repository's driver is not nested around Miles.
+This fork runs Miles's existing fully asynchronous trainer against Proximal feature tasks. The concrete target is a DeepSWE/Qwen3 LoRA hillclimb: one training cluster, a CPU rollout/capture plane, and independently managed Modal inference replicas. The standalone `trainer` repository is not another loop around Miles.
 
-## Ownership
+The implementation lives in `miles_plugins/proximal`. See [investigation](investigation.md), [platform contract](platform-contract.md), and [runbook](../../miles_plugins/proximal/README.md). This is executable integration code, with CPU tests of the actual Miles async worker, TITO core, sample codec, argument parser, and weight updater. It still requires the documented platform binding changes and live train/serve verification.
 
-| Capability | Owner |
-| --- | --- |
-| Training schedule, groups, advantages, loss, optimizer | Miles |
-| Task selection | Miles CPU data source/rollout producer, using a pinned platform project snapshot |
-| Agent-px harness, tools, sandbox, verifier and operational artifacts | Proximal platform |
-| Exact input/output tokens, logprobs, masks | Miles TITO session machinery |
-| Checkpoint export and logical policy publication | Miles publication integration |
-| Modal serving, replica placement and all physical resource teardown | Platform |
-| Grade/capture/provenance acceptance and staleness | Miles generate/buffer boundaries |
+## Ownership and placement
 
-The trainer can request cancellation of a logical platform run. It does not delete platform containers or require container teardown evidence to accept a sample. Harness selection is generic; supported inference/capture capabilities must be validated per harness.
+| Capability | Existing home used by this implementation | Owner |
+| --- | --- | --- |
+| Optimizer, objective, advantages, GRPO, checkpoints | `train_async.py`, Megatron backend | Miles |
+| Pinned feature-task selection and cursor | `DataSource` → `PlatformTaskSource` | Miles CPU |
+| Continuous bounded production | `FullyAsyncRolloutFn` → `PlatformRolloutFn` | Miles CPU |
+| Harness, tools, sandbox, verifier, operational logs | EnvironmentRun RPC + shared agent-px completion seam | Platform |
+| Exact prompt/completion IDs and assistant loss masks | `SessionCore` + Qwen3 TITO + existing sample codec | Miles CPU capture service |
+| Complete-group acceptance and consumption-time staleness | `DataBuffer` → `PlatformDataBuffer` | Miles |
+| Train-to-serving transfer | `WeightUpdater` → `ModalVolumeTransfer` | Miles |
+| Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publishes; platform mounts |
+| Per-request policy selection and adapter slots | `ReplicaGateway` + `ReplicaLoRALoader` | Platform replica |
+| Replica placement and all physical resource teardown | Existing platform/Modal lifecycle | Platform |
+
+The trainer can cancel a logical run. It never deletes a platform container or makes training eligibility depend on teardown evidence. The adapter is harness-neutral; the platform certifies which harness revisions support the required capture contract.
 
 ```mermaid
 flowchart LR
-    D["Pinned project task snapshot"] --> P["Miles CPU rollout producer"]
-    P --> S["Platform sandboxes and agent-px"]
-    S --> I["Miles session: policy binding and TITO"]
-    I --> R1["Modal inference replica R1"]
-    I --> R2["Modal inference replica R2"]
-    T["Miles trainer"] --> E["Immutable adapter export"]
-    E --> V["Shared Modal adapter Volume"]
-    V -->|"refresh, verify, load"| R1
-    V -->|"refresh, verify, load"| R2
-    S -->|"grade and execution provenance"| J["Join grade with sealed capture"]
-    I -->|"tokens, logprobs, masks"| J
-    J --> Q["Q: eligible groups and batch claims"]
+    D["Pinned project environments, images, commits"] --> P["Miles continuous CPU producer"]
+    P --> S["Platform: agent-px + sandboxes + verifier"]
+    S -->|"Scoped Chat Completions credential"| C["CPU capture: immutable policy + real TITO"]
+    C --> F["One Modal fleet endpoint"]
+    F --> R1["Replica 1: verified named LoRA"]
+    F --> R2["Replica 2: verified named LoRA"]
+    T["Miles async trainer"] --> W["WeightUpdater: complete HF adapter tensors"]
+    W --> V["Shared Modal Volume: immutable snapshots"]
+    V -->|"reload / verify / local copy / load"| R1
+    V -->|"reload / verify / local copy / load"| R2
+    W -->|"Publish policy only after artifact and serving acknowledgement"| C
+    S -->|"Grade + task and harness provenance"| J["Accepted attempt + sealed safetensors"]
+    C -->|"Exact IDs / logprobs / masks / policy"| J
+    J --> Q["Q: bounded complete groups, enforce staleness at drain"]
     Q --> T
-    Q -.->|"backpressure"| P
+    Q -.->|"Backpressure"| P
 ```
 
-## Implemented in the first slice
+## Policy publication and the shared Volume
 
-`miles_plugins.proximal` prepares a content-addressed PEFT bundle, publishes it to an **existing** Modal Volume, and verifies/copies/registers it inside an **existing** SGLang replica. The local export can run through Miles's existing Megatron post-save hook. Commands and validation are in the [usage guide](../../miles_plugins/proximal/README.md).
+An immutable policy is `(run_id, version, base name/revision, snapshot SHA-256)`. The snapshot hashes metadata, PEFT configuration, and complete adapter weights. Replica identity is intentionally absent. One fleet URL may route any request to any replica; every handling replica independently ensures that the selected adapter exists and verifies it before forwarding inference.
 
-Three facts remain separate:
+Publication uses the **existing weight-update boundary**, including its initial startup update. The protocol requests full TP/EP/PP gathering from Miles's HF iterator, copies adapter tensors to CPU on rank zero, writes safetensors and the training backend's authoritative PEFT configuration, and uploads immutable files to the existing Volume. The manifest is committed last, after readback verification. Native optimizer/resume checkpoints remain separate.
 
-1. **Saved checkpoint:** native resume state exists; the optional serving export may have failed.
-2. **Published artifact:** the complete manifest and serving bytes are committed and integrity-checked.
-3. **Registered adapter:** one local SGLang process acknowledged a particular immutable adapter name/path.
+Only after the capture service obtains an acknowledgement from one replica does it commit the new policy. That acknowledgement warms one arbitrary container; it is not fleet-wide readiness. Every subsequent inference request carries the immutable selector and receives verified adapter/base identity headers. The capture service converts that evidence into Miles version spans. It does not trust SGLang's global base-weight counter for named adapters.
 
-Registration is not a generation smoke, numerical compatibility proof, hardware residency guarantee, or fleet-wide readiness certificate. This slice never advances Miles's live weight version and does not replace its current internal engine management. The post-save hook does local export only; remote publication is a separate explicit operation.
+Other ranks participate in gathers and receive the publication verdict through Gloo. Failed publication leaves the updater version unchanged. One successful publication occurs at startup and after every training iteration; `max_policy_lag` counts these publications, not individual optimizer microsteps. Retrying a publication uses the same immutable identity.
 
-### Placement decisions
+A Volume shares files, not GPU state. Each replica reloads its mounted Volume, verifies the snapshot, copies it into a separate local cache, and registers `miles-<sha256>`. It keeps a bounded adapter-slot LRU with reference counts: an active generation cannot be evicted. An older rollout can reload its immutable adapter after idle eviction. Never overwrite a `latest` directory. The gateway and SGLang process share one lifetime and exclusively own this adapter namespace. On an ambiguous load/unload acknowledgement, fail closed and replace the replica; automatic repair is not part of this pass.
 
-- **Post-save hook versus optimizer code:** reuse the hook for local export; tensor updates and loss code do not own artifact distribution. Publication cadence/startup readiness will ultimately belong at the existing train-to-inference update boundary, not merely checkpoint cadence.
-- **Replica-local registration versus a load-balanced load request:** register against the replica's loopback SGLang process. A request to an autoscaled endpoint reaches one container and is not a broadcast. Future serving wrappers can reuse this operation at startup/prewarm/request admission.
-- **Existing async buffer versus a second scheduler:** Q belongs behind Miles's existing DataBuffer seam. No queue service or central scheduler is introduced here.
+Base identity remains a trusted deployment assertion: the gateway checks SGLang's model path against configuration, and snapshots must match the declared base revision. It does not hash resident GPU weights. The initial live gate must measure train/serve logprob agreement. Pin the same base weights, tokenizer, Qwen3 rendering, reasoning parser, and LoRA targets/rank on both sides. Keep the engine's adapter capacity at least as large as the gateway's, with no other adapter writer.
 
-Function-specific arguments/validation now work on post-save hooks using the same `add_arguments` convention as rollout/generate hooks. Validation runs in the existing argument validation stage, before trainer/rollout resources are created. Hooks without these optional attributes retain their behavior.
+## Capture and acceptance
 
-## Policy identity and file distribution
+Each prompt group selects one committed policy. Its members use distinct execution/session identities but the same task, harness, sampling contract and policy. Different groups can span versions within the configured lag.
 
-A policy version identifies immutable base weights plus an immutable adapter. A replica is a replaceable process. A long rollout remains on its selected policy even when newer versions are published; failover may choose another replica only when it serves that policy.
+The run configuration contains a pinned project membership subset, environment IDs, image IDs, source commits, harness revision and execution limits. The client checks project membership and training capabilities before creating a run. The platform must reject a different request reusing an execution identity and return the stored training request fingerprint on submission and final summary.
 
-The snapshot manifest contains a declared base checkpoint name/revision, run identity, Miles checkpoint iteration and hashes/sizes of serving files. Its SHA-256 digest determines both the storage path and SGLang adapter name. Changing metadata or bytes produces another identity. The base revision is an operator declaration to be matched to actual serving startup configuration; this helper does not measure the resident base weights.
+A capture session has its own credential, valid only for its recorded Chat Completions route. The platform receives that credential, not the capture administrator key or inference credentials. The capture server serializes inference and sealing for a session, rejects unrecorded routes and unsupported request semantics, and pins the policy even across replica replacement. Agent-requested streaming uses Miles's existing complete-response-to-SSE adapter; the backend generation is non-streaming.
 
-Checkpoint iteration is deliberately named: Miles supplies `rollout_id` to the hook, which need not equal optimizer update count. Future staleness enforcement must record and use the intended optimizer-step/version mapping explicitly.
+TITO retains generated token IDs across turns. The sample codec supplies the training mask, including zero-mask tool/environment text between assistant spans. The first pass supports text-only linear Qwen3 traces, with one-step retry behavior inherited from Miles. It rejects compaction/subagents rather than retokenizing their outputs into a different training target.
 
-A shared Volume distributes files, not loaded GPU state. Publication uploads files without replacement, checks the uploaded bytes, then uploads the manifest as the completion marker. Interrupted attempts can resume; conflicting bytes fail. Each replica refreshes the mount, verifies the manifest/files, copies into its own cache and registers a unique name. Retain old versions while referenced; this first slice never unloads or deletes them.
+Sampling is explicit: temperature 1, top-p 1, top-k -1, untransformed behavior logprobs, and an explicit per-turn/total token budget. `--use-rollout-logprobs` is mandatory so the policy ratio uses the behavior policy that generated the data. Broader distribution transforms need an explicit logprob convention before support. Near the context limit, generation is capped to the remaining budget; the accepted trajectory is never truncated after earning its grade.
 
-One loader belongs to one SGLang process lifetime. Its owner must recreate it on engine restart and exclusively manage this adapter namespace. HTTP failures, including an ambiguous successful load whose response was lost, propagate; there is no automatic unload/reload or retry that could change weights underneath an active rollout. Reconciliation after such failures remains future work.
+Eligibility requires a successful/completed platform result with no execution error, a recorded finite verifier reward (including zero), exact source/image/request provenance, and a sealed capture with matching policy/fingerprint/checksum. Every loss-bearing token must have a finite logprob and a verified policy span. Missing capture, timeout, infrastructure failure, mixed policy, incomplete group, and unverifiable reward do not become fabricated zero-reward data. Consecutive failed groups exhaust an explicit failure budget.
 
-High-rank adapters can be hundreds of MB or GB. Measure export, upload/readback, refresh/copy and registration latency before choosing publication frequency or replacing Volume transport with direct networking. Modal i6pn/RDMA are potential later optimizations, not required by this slice.
+## Q, overlap and recovery
 
-## Planned rollout integration
+Q is Miles's existing in-memory `DataBuffer` seam. Both in-flight groups and the completed backlog are bounded. The CPU producer stays active while the trainer computes and publishes; a full queue applies backpressure. Task selection cycles deterministically over the pinned list, with optional regeneration of discarded groups. Replica count is a platform scaling choice; Miles only declares workload concurrency.
 
-Use a thin custom generate adapter composing existing Miles tracing/assembly with platform RPC execution. The platform gets the pinned task, harness and scoped inference binding. Sampling policy stays at the Miles session/serving boundary, with explicit budget composition. Platform operational traces and training artifacts are cross-linked by IDs; exact tokens have one authority.
+The fully async driver drains the next batch **after** publication, immediately before consumption. Its former additional prefetch could select a batch against an outdated version. Semi-async prefetch behavior is preserved. Shutdown cancels and awaits producer children and requests logical cancellation for unfinished platform runs.
 
-Accept a training sample only after joining a valid verifier grade, sealed capture and matching task/harness/policy provenance. A graded incorrect solution may have reward zero. Infrastructure, verifier or capture failures are ineligible attempts, not synthesized zero rewards.
+Sealed captures and accepted attempts are immutable, checksum-addressed local artifacts. Seal can be retried and collected after capture-service restart. Unsealed sessions are lost explicitly; an old execution identity cannot silently bind to a newly created session. The data source checkpoints its dataset fingerprint, cursor, and retry task indices alongside the native training checkpoint.
 
-The reviewed platform RPC supports named endpoints but does not yet inject a per-rollout Miles session URL. Its current Modal client uses Responses; Miles's generic Responses proxy is not a recorded TITO path. The first integration should use the recorded Chat Completions route. Existing fake-SSE support can serve a streaming harness while collecting a complete backend response.
+This pass does **not** claim exactly-once optimizer recovery. Completed/in-flight queue state is not durably claimed; interrupted work is regenerated. Resume from the latest matching native checkpoint with the same artifact store. Rolling back behind the capture service's publication history requires a new run ID. A durable Postgres queue can later implement the existing buffer seam, but also needs optimizer checkpoint/claim acknowledgement; `SKIP LOCKED` alone would not supply that guarantee.
 
-Required follow-up work includes typed inference binding in the shared platform client seam, session-specific policy/sampling enforcement, authenticated reachable CPU session hosting, sealed/retryable collection, version provenance and external serving integration. Current Miles LoRA version checks and external-engine flags do not provide this complete contract.
+The platform owns sandbox retention. The operator owns retention for local accepted samples, replica disk caches, and immutable Volume versions; this pass never deletes artifact history. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
 
-## Q and continuous production
+## First-pass limits and verification
 
-A project supplies the dataset source; freeze task membership, source/image revisions and harness/verifier settings for reproducibility. Miles's existing CPU async producer can continuously refill work while the optimizer trains. Keep both in-flight attempts and usable completed groups bounded so the fleet does not generate an unbounded stale backlog.
+The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/replay payloads. Unsupported modes fail during free argument validation.
 
-Q can use a transactional database claim rather than a queue product. Platform environment-run results currently use Mongo, while projects and agent-run journals use Postgres. Training eligibility/consumption records must be explicit and linked to operational runs; existing execution claims are not optimizer-consumption claims.
-
-For GRPO, claim complete prompt groups with valid grading, captured artifacts, compatible policy identity and the requested staleness bound. Persist batch membership and reconcile claim/ack state with the restored training checkpoint. SQL row locks do not themselves provide exactly-once optimizer updates. The existing DataBuffer `put/get/get_metrics` seam also needs training-step acknowledgement integration for durable recovery.
-
-## Validation progression
-
-1. **This PR:** CPU tests of snapshot integrity, partial/conflicting uploads, independent replica loaders, registration errors and engine replacement. Modal's SDK is substituted at its network boundary; SGLang is represented by loopback HTTP fixtures. No model weights are deserialized or generated against.
-2. **First actual rollout:** one frozen compatible policy, one platform task, CPU TITO service/driver and a persisted Miles Sample. No training GPU needed.
-3. **Shared-volume serving test:** two real replicas and two existing compatible adapters; publish vB during a vA rollout, test version selection and replica replacement, measure distribution latency.
-4. **Actual training update:** integrate the existing train-to-inference update boundary, export/publish a newly trained adapter, verify train/serve math, staleness and recovery. Broader compaction, multi-policy branches and asynchronous overlap follow explicit learning contracts.
-
-This code does not provision or tear down Volumes, containers, GPU jobs or replicas. Live operations require separate run authorization; writing this prototype and passing CPU tests does not establish deployed compatibility.
-
-## References
-
-- [Miles environment integration layers](../user-guide/environments.md)
-- [Miles LoRA training](../advanced/lora.md)
-- [Modal Volume semantics](https://modal.com/docs/guide/volumes)
-- [Modal server routing](https://modal.com/docs/guide/servers)
-- [SGLang LoRA serving](https://docs.sglang.io/docs/advanced_features/lora)
+CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.

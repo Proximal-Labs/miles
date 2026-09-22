@@ -148,3 +148,24 @@ class ReplicaLoRALoader:
         if cached.manifest.metadata.base_model != self._config.base_model:
             raise ValueError("Cached snapshot base model does not match this replica")
         return destination
+
+    def unload_idle(self, reference: SnapshotReference) -> None:
+        """Caller must hold its request-admission lock and prove no active users.
+
+        Authority is the same replica-scoped capability used to register adapters;
+        this does not delete a Volume artifact or any platform resource.
+        """
+        with self._lock:
+            loaded = self._loaded.get(reference.sha256)
+            if loaded is None:
+                return
+            response = self._client.post(
+                f"{self._config.backend_url}/unload_lora_adapter",
+                json={"lora_name": loaded.adapter_name},
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            reply = _LoadReply.model_validate_json(response.content)
+            if not reply.success or loaded.adapter_name in reply.loaded_adapters:
+                raise ValueError("SGLang did not acknowledge adapter eviction")
+            del self._loaded[reference.sha256]

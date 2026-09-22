@@ -44,13 +44,20 @@ def test_remote_mutations_stay_in_authorized_adapters():
                 continue
             method = node.func.attr
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
-            if method in {"batch_upload", "post"}:
+            # FastAPI route decorators are not outbound network calls.
+            receiver = ast.unparse(node.func.value)
+            if method in {"batch_upload", "post", "request"} and receiver not in {"app", "self.app"}:
                 mutations.append((path.name, method))
             if method == "from_name":
                 [create] = [kw.value for kw in node.keywords if kw.arg == "create_if_missing"]
                 assert isinstance(create, ast.Constant) and create.value is False
     assert sorted(mutations) == [
+        ("capture_server.py", "post"),
+        ("capture_server.py", "post"),
+        ("clients.py", "request"),
+        ("gateway.py", "post"),
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),
+        ("replica.py", "post"),
         ("replica.py", "post"),
     ]

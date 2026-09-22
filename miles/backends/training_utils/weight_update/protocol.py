@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import ClassVar
 
 import torch
+from pydantic import JsonValue
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
@@ -25,6 +26,7 @@ class WeightTransferProtocol(ABC):
     supports_lora: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
+    initial_weight_version: int = 0
 
     def __init__(self, args: Namespace) -> None:
         self.args = args
@@ -32,6 +34,9 @@ class WeightTransferProtocol(ABC):
         self.is_sender: bool | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
+
+    def configure_lora(self, config: dict[str, JsonValue]) -> None:  # noqa: B027
+        """Receive the training backend's authoritative PEFT configuration."""
 
     @abstractmethod
     def connect(
@@ -71,6 +76,13 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+    if path := getattr(args, "custom_weight_transfer_protocol_path", None):
+        from miles.utils.function_registry import load_function
+
+        protocol = load_function(path)(args)
+        if not isinstance(protocol, WeightTransferProtocol):
+            raise TypeError("Custom transfer must implement WeightTransferProtocol")
+        return protocol
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 

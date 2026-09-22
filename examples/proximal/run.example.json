@@ -1,0 +1,42 @@
+{
+  "run_id": "deepswe-features-001",
+  "base_model": {"name": "agentica-org/DeepSWE-Preview", "revision": "4887205c533cd162baac7ba758159cfc3304cf94"},
+  "dataset": {
+    "schema_version": 1,
+    "project_id": 123,
+    "tasks": [{"environment_id": 456, "image_id": 789, "source_commit_sha": "REPLACE_WITH_EXACT_TASK_COMMIT"}]
+  },
+  "harness": {
+    "agent_type": "REPLACE_WITH_SUPPORTED_AGENT_PX_HARNESS",
+    "revision": "REPLACE_WITH_HARNESS_REVISION",
+    "max_turns": 60,
+    "max_session_tokens": 32768,
+    "timeout_seconds": 1800,
+    "p2p_enforce": true
+  },
+  "research": {
+    "behavior_correction": "rollout_logprobs",
+    "sampling": {
+      "temperature": 1.0, "top_p": 1.0, "top_k": -1,
+      "max_tokens": 4096, "max_sequence_tokens": 32768,
+      "logprob_semantics": "untransformed", "budget_policy": "cap_to_remaining_context"
+    },
+    "group_size": 8,
+    "max_policy_lag": 2,
+    "unused_groups": "retry",
+    "max_consecutive_failed_groups": 3
+  },
+  "platform": {"url": "https://REPLACE.platform.example", "api_key_env": "PROXIMAL_API_KEY"},
+  "capture": {"url": "https://REPLACE.capture.example", "api_key_env": "MILES_CAPTURE_ADMIN_KEY"},
+  "inference_url": "https://REPLACE.modal.run",
+  "inference_header_env": {"Authorization": "MILES_GATEWAY_AUTHORIZATION", "Modal-Key": "MODAL_PROXY_KEY", "Modal-Secret": "MODAL_PROXY_SECRET"},
+  "volume": {"volume_name": "miles-adapters", "environment_name": "main"},
+  "artifact_directory": "/artifacts",
+  "tokenizer_path": "/models/DeepSWE-Preview-4887205c533cd162baac7ba758159cfc3304cf94",
+  "tito_model": "qwen3",
+  "enable_thinking": true,
+  "max_in_flight_samples": 32,
+  "completed_group_capacity": 16,
+  "request_timeout_seconds": 1800,
+  "poll_interval_seconds": 2.0
+}
