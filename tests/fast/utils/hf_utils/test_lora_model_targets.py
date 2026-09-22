@@ -2,7 +2,7 @@ from fnmatch import fnmatchcase
 
 import pytest
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, PretrainedConfig
 
 from miles.utils.hf_utils.lora_targets import _HF_LORA_MODELS, get_hf_lora_targets, resolve_hf_lora_targets
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
@@ -154,3 +154,16 @@ def test_targets_match_native_hf_model(model_type, overrides):
     assert set(defaults) == set(layout.attention + layout.mlp)
     all_groups = resolve_hf_lora_targets(config.to_dict(), train_attn=True, train_mlp=True, train_unembed=True)
     assert set(all_groups) == set(layout.attention + layout.mlp + layout.unembed)
+
+
+def test_remote_config_with_native_class_name():
+    config = _small_config("deepseek_v2", {})
+    remote_config_class = type("DeepseekV2Config", (PretrainedConfig,), {"model_type": "deepseek_v2"})
+    remote_fields = config.to_dict()
+    remote_fields.pop("head_dim")
+    remote_config = remote_config_class(**remote_fields)
+
+    assert (
+        HfWeightMapping.from_config(remote_config).parameter_shapes
+        == HfWeightMapping.from_config(config).parameter_shapes
+    )
