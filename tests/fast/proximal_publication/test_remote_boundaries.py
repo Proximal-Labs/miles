@@ -48,7 +48,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
             receiver = ast.unparse(node.func.value)
             if method in {"batch_upload", "post", "request"} and receiver not in {"app", "self.app"}:
                 mutations.append((path.name, method))
-            if method == "from_name":
+            if method == "from_name" and not receiver.endswith("Secret"):
+                # Volumes are referenced, never created. (Secret.from_name cannot create.)
                 [create] = [kw.value for kw in node.keywords if kw.arg == "create_if_missing"]
                 assert isinstance(create, ast.Constant) and create.value is False
     assert sorted(mutations) == [

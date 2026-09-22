@@ -1,0 +1,22 @@
+{
+  "app_name": "miles-deepswe-features-001",
+  "image": "radixark/miles@sha256:REPLACE_WITH_THE_MILES_IMAGE_DIGEST_THE_TRAINER_USES_0000000000",
+  "gpu": "H100:2",
+  "tensor_parallel": 2,
+  "routing_region": "us-west",
+  "min_replicas": 1,
+  "max_replicas": 8,
+  "target_concurrency": 16,
+  "scaledown_window_seconds": 1200,
+  "startup_timeout_seconds": 3600,
+  "base_volume": {"volume_name": "deepswe-base-weights", "environment_name": "main"},
+  "base_mount": "/models",
+  "adapter_mount": "/adapters",
+  "local_cache": "/cache",
+  "max_loaded_adapters": 4,
+  "reasoning_parser": "qwen3",
+  "tool_call_parser": "qwen25",
+  "gateway_secret": "miles-gateway",
+  "gateway_key_env": "MILES_GATEWAY_KEY",
+  "extra_engine_args": ["--mem-fraction-static", "0.85"]
+}

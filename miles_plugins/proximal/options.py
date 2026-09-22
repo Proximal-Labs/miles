@@ -43,12 +43,20 @@ def validate_args(args: Namespace) -> None:
         "rollout_max_response_len": config.research.sampling.max_tokens,
         "rollout_max_context_len": config.research.sampling.max_sequence_tokens,
         "hf_checkpoint": str(config.tokenizer_path),
+        "lora_rank": config.research.lora.rank,
+        "lora_alpha": config.research.lora.alpha,
     }
     for name, expected in required.items():
         if getattr(args, name, None) != expected:
             raise ValueError(f"Platform run requires --{name.replace('_', '-')}={expected!r}")
-    if args.lora_rank <= 0 or args.lora_train_only or args.lora_dropout != 0:
+    if args.lora_train_only or args.lora_dropout != 0:
         raise ValueError("Platform training requires a served LoRA with zero dropout")
+    # Serving engines derive their LoRA targets from the same run config (serving.py).
+    targets = args.target_modules
+    if isinstance(targets, str):
+        targets = targets.split(",")
+    if list(targets or []) != list(config.research.lora.target_modules):
+        raise ValueError("Platform run requires --target-modules to match the run config's LoRA targets")
     for name in (
         "colocate",
         "use_critic",

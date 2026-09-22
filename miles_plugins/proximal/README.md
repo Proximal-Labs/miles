@@ -10,7 +10,7 @@ Use Miles's existing Megatron/bridge training environment on your trainer cluste
 
 Copy [run.example.json](../../examples/proximal/run.example.json). Replace project/task/image/harness pins and URLs. Deliberately invalid placeholders prevent accidental execution. The DeepSWE example is pinned to HF revision `4887205c533cd162baac7ba758159cfc3304cf94`; stage that exact base checkpoint/tokenizer on training and serving machines, and the same tokenizer files on capture. Configure Qwen3 thinking/tool parsing consistently. Do not point the base checkpoint at a changing `main` revision.
 
-The config's sampling, group size, staleness and behavior-logprob convention are authoritative. The launcher translates them into existing Miles flags, and validation rejects conflicting overrides. Objective, clipping, optimizer, LoRA rank/targets, learning rate, checkpoint paths and training duration remain ordinary explicit Miles arguments. The example numbers are an initial experiment choice, not an established DeepSWE recipe.
+The config's sampling, group size, staleness and behavior-logprob convention are authoritative. The launcher translates them into existing Miles flags, and validation rejects conflicting overrides. LoRA rank, alpha and target modules come from `research.lora` and feed both the trainer and the serving pool. Objective, clipping, optimizer, learning rate, checkpoint paths and training duration remain ordinary explicit Miles arguments. The example numbers are an initial experiment choice, not an established DeepSWE recipe.
 
 Provide secrets through the named environment variables on processes that need them. `MILES_GATEWAY_AUTHORIZATION` contains `Bearer <gateway-key>`; the gateway's `MILES_GATEWAY_KEY` contains the raw key. Modal proxy headers are optional: remove their entries if your platform endpoint does not use them. Capture's administrator credential never goes to a sandbox; each rollout receives its own scoped credential.
 
@@ -23,24 +23,24 @@ python -m miles_plugins.proximal.runtime validate --config /config/run.json
 python -m miles_plugins.proximal.runtime train-args --config /config/run.json
 ```
 
-## 2. Attach the serving gateway to your existing Modal fleet
+## 2. Deploy the Miles-owned serving pool
 
-Mount the **same existing Modal Volume** on each inference replica, for example at `/adapters`. Start SGLang with the pinned base, LoRA enabled, matching targets and sufficient maximum rank/adapter capacity. Give the gateway sole control of its `miles-*` adapters. Keep SGLang loopback-only and restart it together with the gateway.
+Miles owns the inference replicas so serving cannot drift from training. The pool runs the **same Miles image** as the trainer. Its SGLang arguments are derived from the run config's `research.lora` (rank and target modules), base model and tokenizer, then re-parsed by SGLang before any GPU is used. Operational shape (GPU type, tensor parallelism, replica bounds, parsers, adapter slots) lives in a separate serving config: see [serving.example.json](../../examples/proximal/serving.example.json).
 
-Inside each platform-owned replica, expose the gateway port through the existing Modal endpoint:
+Prerequisites, created once outside this integration:
+
+- A Modal Volume holding the pinned base weights at `<base_mount>/<basename of tokenizer_path>`.
+- The run's adapter Volume (`volume` in the run config).
+- A Modal secret named `gateway_secret` that sets `gateway_key_env`.
+
+Deploy:
 
 ```bash
-python -m miles_plugins.proximal.serve_replica \
-  --config /config/replica.json \
-  --volume-name miles-adapters --environment-name main \
-  --volume-mount /adapters --local-cache /tmp/miles-adapter-cache \
-  --engine-api-key-env SGLANG_API_KEY \
-  --host 0.0.0.0 --port 8092 --yes-load
+PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \
+  modal deploy --env main -m miles_plugins.proximal.serving_app
 ```
 
-[replica.example.json](../../examples/proximal/replica.example.json) declares the expected base path and adapter capacity. The gateway checks the reported engine path at startup. It serves `/policies/prepare` and `/v1/chat/completions`; authentication is mandatory. It verifies the shared Volume artifact before registering each version and keeps active requests pinned during LRU eviction. Registration ambiguity fails closed; recycle the replica with the platform's normal lifecycle.
-
-This command runs a gateway in an existing container. It does not deploy an app, rent a GPU, create a Volume, or enumerate replicas. Use the resulting single fleet URL in the run config. Keep at least one replica available for the initial policy acknowledgement if your Modal routing requires it.
+Each replica starts SGLang on loopback, then the gateway in front of it. If either exits, the replica exits and Modal replaces it. The deployed `*.modal.direct` URL is the run config's `inference_url`, and it is what the platform endpoint registry records. Every replica mounts the same adapter Volume and independently loads and verifies the immutable version each request names. The gateway serves `/policies/prepare` and `/v1/chat/completions`; authentication is mandatory.
 
 ## 3. Start the CPU capture service
 
@@ -89,8 +89,6 @@ Run the launcher in the existing Miles trainer environment attached to your Ray 
 python -m miles_plugins.proximal.runtime train \
   --config /config/run.json --yes-rollouts --yes-publish -- \
   --actor-num-nodes 1 --actor-num-gpus-per-node 8 \
-  --lora-rank 64 --lora-alpha 128 --lora-dropout 0 \
-  --target-modules linear_qkv linear_proj linear_fc1 linear_fc2 \
   --advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.01 \
   --eps-clip 0.2 --eps-clip-high 0.2 \
   --rollout-batch-size 4 --global-batch-size 32 --num-rollout 100 \

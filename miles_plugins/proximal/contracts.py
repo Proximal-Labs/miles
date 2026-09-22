@@ -79,8 +79,18 @@ class Sampling(Contract):
         return self
 
 
+class LoRA(Contract):
+    """The trained adapter's shape. Single source for trainer args and serving engines."""
+
+    rank: Positive
+    alpha: Positive
+    # Megatron module names, as Miles's --target-modules takes them.
+    target_modules: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
+
+
 class Research(Contract):
     behavior_correction: Literal["rollout_logprobs"]
+    lora: LoRA
     sampling: Sampling
     group_size: Annotated[int, Field(ge=2)]
     max_policy_lag: Annotated[int, Field(ge=0)]

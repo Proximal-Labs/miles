@@ -95,6 +95,11 @@ def config(tmp_path, monkeypatch, store_dsn):
         },
         "research": {
             "behavior_correction": "rollout_logprobs",
+            "lora": {
+                "rank": 8,
+                "alpha": 16,
+                "target_modules": ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"],
+            },
             "sampling": {
                 "temperature": 1.0,
                 "top_p": 1.0,

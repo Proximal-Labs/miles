@@ -20,12 +20,6 @@ def test_runtime_arguments_use_actual_miles_parser(config, tmp_path, monkeypatch
     argv = training_argv(str(path)) + [
         "--proximal-yes-rollouts",
         "--proximal-yes-publish",
-        "--lora-rank",
-        "8",
-        "--lora-alpha",
-        "16",
-        "--lora-dropout",
-        "0",
         "--rollout-batch-size",
         "1",
     ]
@@ -36,6 +30,10 @@ def test_runtime_arguments_use_actual_miles_parser(config, tmp_path, monkeypatch
     assert resolve_rollout_function_paths(args)[0] == ROLLOUT
     args.use_rollout_logprobs = False
     with pytest.raises(ValueError, match="use-rollout-logprobs"):
+        validate_args(args)
+    args.use_rollout_logprobs = True
+    args.target_modules = "linear_qkv"
+    with pytest.raises(ValueError, match="target-modules"):
         validate_args(args)
 
 

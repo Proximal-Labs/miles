@@ -18,8 +18,10 @@ The implementation lives in `miles_plugins/proximal`. See [investigation](invest
 | Policy registry: which immutable adapter each version names, and lineage on resume | `RolloutStore` policies table | Miles |
 | Train-to-serving transfer | `WeightUpdater` → `ModalVolumeTransfer` | Miles |
 | Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publishes; platform mounts |
-| Per-request policy selection and adapter slots | `ReplicaGateway` + `ReplicaLoRALoader` | Platform replica |
-| Replica placement and all physical resource teardown | Existing platform/Modal lifecycle | Platform |
+| Serving pool: image, SGLang arguments, LoRA settings, replica bounds | `serving.py` + `serving_app.py` (Modal `app.server`), derived from the run config | Miles |
+| Per-request policy selection and adapter slots | `ReplicaGateway` + `ReplicaLoRALoader`, one per replica | Miles serving pool |
+| Endpoint selection for rollouts | Platform endpoint registry records the pool's URL | Platform |
+| Sandboxes and all rollout resource teardown | Existing platform lifecycle | Platform |
 
 The trainer can cancel a logical run. It never deletes a platform container or makes training eligibility depend on teardown evidence. The adapter is harness-neutral; the platform certifies which harness revisions support the required capture contract.
 

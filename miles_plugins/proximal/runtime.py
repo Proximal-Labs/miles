@@ -41,6 +41,10 @@ def training_argv(path: str) -> list[str]:
         "rollout-max-response-len": config.research.sampling.max_tokens,
         "rollout-max-context-len": config.research.sampling.max_sequence_tokens,
         "hf-checkpoint": str(config.tokenizer_path),
+        "lora-rank": config.research.lora.rank,
+        "lora-alpha": config.research.lora.alpha,
+        "lora-dropout": 0,
+        "target-modules": ",".join(config.research.lora.target_modules),
         "train-backend": "megatron",
         "megatron-to-hf-mode": "bridge",
     }

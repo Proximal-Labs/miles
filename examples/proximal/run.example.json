@@ -15,6 +15,7 @@
   },
   "research": {
     "behavior_correction": "rollout_logprobs",
+    "lora": {"rank": 64, "alpha": 128, "target_modules": ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]},
     "sampling": {
       "temperature": 1.0, "top_p": 1.0, "top_k": -1,
       "max_tokens": 4096, "max_sequence_tokens": 32768,
