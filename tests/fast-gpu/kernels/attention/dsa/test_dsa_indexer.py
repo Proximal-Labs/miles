@@ -16,7 +16,7 @@ from miles.kernels.attention.dsa import (  # noqa: E402
     lighting_indexer,
 )
 
-_spec = importlib.util.spec_from_file_location("dsa_reference", pathlib.Path(__file__).with_name("reference.py"))
+_spec = importlib.util.spec_from_file_location("dsa_reference", pathlib.Path(__file__).with_name("dsa_reference.py"))
 reference = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(reference)
 
