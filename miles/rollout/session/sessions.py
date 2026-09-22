@@ -109,7 +109,7 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
             return JSONResponse(status_code=400, content={"error": str(exc)})
         return await core.create_session(
             evaluation=params.evaluation,
-            sampling_defaults=params.model_dump(exclude={"evaluation"}, exclude_none=True),
+            requested_sampling=params.model_dump(exclude={"evaluation"}, exclude_none=True),
         )
 
     @app.get("/sessions/{session_id}")

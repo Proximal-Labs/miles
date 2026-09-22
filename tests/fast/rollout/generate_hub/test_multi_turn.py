@@ -174,8 +174,11 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "return_routed_experts": False,
         "return_indexer_topk": False,
         # The mock agent drops request_kwargs; the session fills the temperature the
-        # generator registered at creation.
+        # generator registered at creation and, for the fields the sample left unset,
+        # the run's --rollout-top-p / --rollout-top-k (parser defaults here).
         "temperature": DEFAULT_SAMPLING_PARAMS["temperature"],
+        "top_p": 1.0,
+        "top_k": -1,
         "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }

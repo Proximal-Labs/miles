@@ -84,6 +84,12 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         num_layers=_NUM_LAYERS,
         lora_rank=0,
         lora_adapter_path=None,
+        rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
+        eval_temperature=None,
+        eval_top_p=None,
+        eval_top_k=None,
     )
     config = compute_session_server_config(
         args,

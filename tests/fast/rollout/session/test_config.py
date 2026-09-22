@@ -32,6 +32,9 @@ _ARGS_TO_CONFIG_FIELD = {
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
 
+# built from several sampling flags each; covered by the sampling tests below
+_SAMPLING_CONFIG_FIELDS = ("rollout_sampling", "eval_sampling")
+
 _OPTIONAL_ARGS_ATTRS = (
     "num_layers",
     "pause_generation_mode",
@@ -61,6 +64,12 @@ _DISTINCT_ARGS_VALUES = dict(
     pause_generation_mode="in_place",
     session_sample_picker_path="fake.picker",
     session_sample_postprocessor_path="fake.postprocessor",
+    rollout_temperature=0.7,
+    rollout_top_p=0.95,
+    rollout_top_k=40,
+    eval_temperature=0.3,
+    eval_top_p=0.85,
+    eval_top_k=10,
 )
 
 
@@ -70,10 +79,16 @@ def _make_args(**overrides) -> Namespace:
     return Namespace(**defaults)
 
 
+def _compute(**arg_overrides) -> SessionServerConfig:
+    return compute_session_server_config(
+        _make_args(**arg_overrides), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://10.0.0.2:3000"
+    )
+
+
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
+        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values()) | set(_SAMPLING_CONFIG_FIELDS)
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
@@ -114,6 +129,24 @@ class TestComputeSessionServerConfig:
         )
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
+    def test_rollout_sampling_carries_the_rollout_flags(self):
+        assert _compute().rollout_sampling == {"temperature": 0.7, "top_p": 0.95, "top_k": 40}
+
+    def test_eval_sampling_carries_the_eval_flags_when_they_are_set(self):
+        assert _compute().eval_sampling == {"temperature": 0.3, "top_p": 0.85, "top_k": 10}
+
+    def test_an_unset_eval_flag_inherits_the_rollout_flag_field_by_field(self):
+        """The fallback is decided per field at launch, so the server never has to know the rollout flags at creation."""
+        assert _compute(eval_top_p=None, eval_top_k=None).eval_sampling == {
+            "temperature": 0.3,
+            "top_p": 0.95,
+            "top_k": 40,
+        }
+
+    def test_a_zero_eval_temperature_is_a_value_and_not_an_unset_flag(self):
+        """Greedy eval is spelled --eval-temperature 0; a falsy check would hand it the rollout temperature instead."""
+        assert _compute(eval_temperature=0.0).eval_sampling["temperature"] == 0.0
+
 
 _COMPLETE_CONFIG_KWARGS = dict(
     host="127.0.0.1",
@@ -139,6 +172,8 @@ _COMPLETE_CONFIG_KWARGS = dict(
     pause_generation_mode=None,
     session_sample_picker_path=None,
     session_sample_postprocessor_path=None,
+    rollout_sampling={},
+    eval_sampling={},
 )
 
 

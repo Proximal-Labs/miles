@@ -30,6 +30,8 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         pause_generation_mode=None,
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
+        rollout_sampling={},
+        eval_sampling={},
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

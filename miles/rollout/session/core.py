@@ -231,7 +231,10 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self, *, evaluation: bool = False, sampling_defaults: dict | None = None) -> Response:
+    async def create_session(self, *, evaluation: bool = False, requested_sampling: dict | None = None) -> Response:
+        # the caller's fields win; the run's flags fill the rest (eval_sampling already fell back to rollout at launch)
+        cli_sampling = self.config.eval_sampling if evaluation else self.config.rollout_sampling
+        sampling_defaults = {**cli_sampling, **(requested_sampling or {})}
         session_id = self.registry.create_session(evaluation=evaluation, sampling_defaults=sampling_defaults)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 

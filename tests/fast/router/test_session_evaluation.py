@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import httpx
@@ -67,23 +68,44 @@ class _Backend:
         }
 
 
-@pytest_asyncio.fixture(params=[True, "v2"], ids=["v1", "v2"])
-async def env(request, tokenizer, monkeypatch):
+@asynccontextmanager
+async def _serve(version, tokenizer, monkeypatch, **config_overrides):
     monkeypatch.setattr(sessions, "load_tokenizer", lambda *args, **kwargs: tokenizer)
     backend = _Backend(tokenizer)
     config = make_session_server_config(
         hf_checkpoint="Qwen/Qwen3-0.6B",
         apply_chat_template_kwargs={"enable_thinking": False},
-        use_session_server=request.param,
+        use_session_server=version,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=True,
         session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
         session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+        **config_overrides,
     )
     app = FastAPI()
     sessions.setup_session_routes(app, backend, config, use_addition_r3=True)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://session") as client:
-        yield SimpleNamespace(client=client, backend=backend, version=request.param)
+        yield SimpleNamespace(client=client, backend=backend, version=version)
+
+
+@pytest_asyncio.fixture(params=[True, "v2"], ids=["v1", "v2"])
+async def env(request, tokenizer, monkeypatch):
+    async with _serve(request.param, tokenizer, monkeypatch) as served:
+        yield served
+
+
+# what compute_session_server_config hands over for --rollout-temperature 0.8 --rollout-top-p 0.95
+# --rollout-top-k 40 --eval-temperature 0: the unset eval flags already inherited the rollout values
+FLAG_ROLLOUT = {"temperature": 0.8, "top_p": 0.95, "top_k": 40}
+FLAG_EVAL = {**FLAG_ROLLOUT, "temperature": 0}
+
+
+@pytest_asyncio.fixture(params=[True, "v2"], ids=["v1", "v2"])
+async def flag_env(request, tokenizer, monkeypatch):
+    async with _serve(
+        request.param, tokenizer, monkeypatch, rollout_sampling=FLAG_ROLLOUT, eval_sampling=FLAG_EVAL
+    ) as served:
+        yield served
 
 
 async def _create(env, body=b""):
@@ -211,6 +233,24 @@ async def test_concurrent_sessions_keep_their_own_sampling_defaults(env):
     first, second = await asyncio.gather(_create(env, b'{"temperature": 0.2}'), _create(env, b'{"temperature": 0.8}'))
     await asyncio.gather(_chat(env, first, [USER]), _chat(env, second, [USER]))
     assert sorted(request["temperature"] for request in env.backend.requests) == [0.2, 0.8]
+
+
+@pytest.mark.parametrize(
+    "body,expected", [(b"", FLAG_ROLLOUT), (b'{"evaluation": true}', FLAG_EVAL)], ids=["train", "eval"]
+)
+async def test_a_session_created_without_values_takes_the_flags_of_its_purpose(flag_env, body, expected):
+    sid = await _create(flag_env, body)
+    await _chat(flag_env, sid, [USER])
+    assert {key: flag_env.backend.requests[-1][key] for key in expected} == expected
+
+
+async def test_creation_and_request_values_win_over_the_flags_field_by_field(flag_env):
+    sid = await _create(flag_env, b'{"evaluation": true, "temperature": 0.6}')
+    await _chat(flag_env, sid, [USER])
+    await _chat(flag_env, sid, [USER, ASSISTANT, TOOL], temperature=0.1)
+    from_creation, from_request = flag_env.backend.requests[-2:]
+    assert {key: from_creation[key] for key in FLAG_EVAL} == {**FLAG_EVAL, "temperature": 0.6}
+    assert {key: from_request[key] for key in FLAG_EVAL} == {**FLAG_EVAL, "temperature": 0.1}
 
 
 @pytest.mark.parametrize("field", ["input_ids", "logprob_start_len", "lora_path"])

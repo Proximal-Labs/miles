@@ -27,11 +27,18 @@ class SessionServerConfig(FrozenStrictBaseModel):
     pause_generation_mode: str | None
     session_sample_picker_path: str | None
     session_sample_postprocessor_path: str | None
+    # the run's sampling flags, filled into sessions created without a value
+    rollout_sampling: dict[str, Any]
+    eval_sampling: dict[str, Any]
 
 
 def compute_session_server_config(
     args, *, host: str, port: int, instance_id: str | None, backend_url: str
 ) -> SessionServerConfig:
+    rollout_sampling = dict(temperature=args.rollout_temperature, top_p=args.rollout_top_p, top_k=args.rollout_top_k)
+    eval_flags = dict(temperature=args.eval_temperature, top_p=args.eval_top_p, top_k=args.eval_top_k)
+    # an unset eval flag inherits the rollout flag; --eval-temperature 0 is a value, not unset
+    eval_sampling = {key: rollout_sampling[key] if value is None else value for key, value in eval_flags.items()}
     return SessionServerConfig(
         host=host,
         port=port,
@@ -56,4 +63,6 @@ def compute_session_server_config(
         pause_generation_mode=getattr(args, "pause_generation_mode", None),
         session_sample_picker_path=getattr(args, "session_sample_picker_path", None),
         session_sample_postprocessor_path=getattr(args, "session_sample_postprocessor_path", None),
+        rollout_sampling=rollout_sampling,
+        eval_sampling=eval_sampling,
     )

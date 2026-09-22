@@ -58,6 +58,12 @@ def _serve_router(extra_args: dict | None = None):
             "pause_generation_mode": "retract",
             "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+            "rollout_temperature": 1.0,
+            "rollout_top_p": 1.0,
+            "rollout_top_k": -1,
+            "eval_temperature": None,
+            "eval_top_p": None,
+            "eval_top_k": None,
         }
         args_values.update(extra_args or {})
         args = SimpleNamespace(**args_values)
