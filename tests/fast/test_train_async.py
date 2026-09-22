@@ -24,6 +24,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         eval_overflow_policy="skip",
         eval_uses_snapshots=True,
         ft_components=[],
+        fully_async=False,
         hf_checkpoint=None,
         keep_old_actor=False,
         num_critic_only_steps=0,
@@ -172,3 +173,29 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+
+class TestFullyAsyncConsumption:
+    async def test_next_batch_is_selected_after_publication(self, monkeypatch):
+        events = []
+        args = _make_args(num_rollout=2, fully_async=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        await train_async_driver.train(args)
+        assert events.index("actor_train:0") < events.index("update_weights:0")
+        assert events.index("update_weights:0") < events.index("generate_start:1")
+        assert components.actor_model.trained == [0, 1]
+
+    async def test_training_failure_reaches_rollout_shutdown(self, monkeypatch):
+        events = []
+        args = _make_args(num_rollout=2, fully_async=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail(*args, **kwargs):
+            raise RuntimeError("optimizer failure")
+
+        monkeypatch.setattr(components.actor_model, "train", fail)
+        with pytest.raises(RuntimeError, match="optimizer failure"):
+            await train_async_driver.train(args)
+        assert "executor_dispose" in events
+        assert "inference_dispose" in events
+        assert "actor_dispose" in events

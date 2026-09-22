@@ -46,6 +46,7 @@ class ProxyRequest:
 
     method: str
     query: str = ""
+    session_id: str | None = None
 
 
 def _render_json(payload) -> bytes:
@@ -348,13 +349,26 @@ class SessionCore:
         # --- Phase 2: proxy to backend (NO lock held) ---
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
+            ProxyRequest(method=method, query=query, session_id=session_id),
+            "v1/chat/completions",
+            body=proxy_body,
+            headers=headers,
         )
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
+
+        # Record the actual transport request (a bound backend may resolve a
+        # smaller remaining-context budget or an immutable model selector).
+        effective_request = json.loads(result["request_body"])
+        if (
+            effective_request.get("input_ids") != prompt_token_ids
+            or effective_request.get("messages") != request_messages
+        ):
+            raise UpstreamResponseError("Proxy transport changed the rendered model input")
+        request_body = effective_request
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
         assistant_message = tito_tokenizer.postprocess_completion(
@@ -409,6 +423,6 @@ class SessionCore:
     ) -> Response:
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), path, body=body, headers=headers
+            ProxyRequest(method=method, query=query, session_id=session_id), path, body=body, headers=headers
         )
         return proxy_result_to_response(result)

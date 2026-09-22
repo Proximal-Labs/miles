@@ -63,10 +63,11 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         self.weights_getter = weights_getter
-        self.weight_version = 0
+        self.weight_version = self.protocol.initial_weight_version
         self.is_lora = is_lora
         if is_lora:
             assert lora_sync_config is not None
+            self.protocol.configure_lora(lora_sync_config)
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
 
@@ -97,7 +98,7 @@ class WeightUpdater:
         protocol = self.protocol
         if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
             return
-        self.weight_version += 1
+        next_version = self.weight_version + 1
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
@@ -133,13 +134,14 @@ class WeightUpdater:
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
-            protocol.finalize(self.weight_version)
+            protocol.finalize(next_version)
             if protocol.use_weight_update_session and driver:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, self.weight_version)
+                set_weight_version(protocol.rollout_engines, next_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+        self.weight_version = next_version
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

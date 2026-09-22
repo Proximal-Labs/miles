@@ -8,7 +8,10 @@ _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 
 
 def _build_updater() -> WeightUpdater:
-    with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=MagicMock(supports_lora=False)):
+    with patch(
+        f"{_UPDATER_MODULE}.get_weight_transfer_protocol",
+        return_value=MagicMock(supports_lora=False, initial_weight_version=0),
+    ):
         return WeightUpdater(
             Namespace(),
             [],

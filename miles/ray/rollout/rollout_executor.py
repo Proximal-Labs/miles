@@ -21,6 +21,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -101,6 +102,10 @@ class RolloutExecutor:
     # TODO: may have a `async def init` here later
 
     def dispose(self):
+        if isinstance(self.generate_rollout, FullyAsyncRolloutFn):
+            from miles.utils.async_utils import run
+
+            run(self.generate_rollout.close())
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
