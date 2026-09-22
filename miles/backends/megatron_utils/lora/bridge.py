@@ -10,6 +10,7 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
+from megatron.core.transformer.moe.router import TopKRouter
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.utils.hf_config import load_hf_config
@@ -181,6 +182,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
 
     def apply_lora_hook(model_chunks):
         transformed = lora(model_chunks, training=True)
+        if is_multi_lora_enabled(args):
+            for chunk in transformed:
+                for module in chunk.modules():
+                    if isinstance(module, TopKRouter):
+                        module.frozen_expert_bias = True
         lora.set_params_to_save(transformed)
         return transformed
 
