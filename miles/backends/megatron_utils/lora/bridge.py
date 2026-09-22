@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import torch.distributed as dist
 from megatron.core.tensor_parallel import ColumnParallelLinear
+from megatron.core.transformer.moe.router import TopKRouter
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
@@ -216,6 +217,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         lora = create_adapter(args, target_modules=list(candidates))
         transformed = lora(model_chunks, training=True)
         validate_lora_target_adapters(transformed, candidates)
+        if is_multi_lora_enabled(args):
+            for chunk in transformed:
+                for module in chunk.modules():
+                    if isinstance(module, TopKRouter):
+                        module.frozen_expert_bias = True
         lora.set_params_to_save(transformed)
         return transformed
 
