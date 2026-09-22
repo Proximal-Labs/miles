@@ -27,6 +27,8 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
+FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
@@ -36,13 +38,21 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
-        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
+    if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
+        # Naming the class is the same selection --fully-async makes, so treat it as the
+        # mode rather than an arbitrary plugin. Without this, such a run skips every check
+        # below and the driver scheduling the mode implies, which the class cannot supply
+        # on its own. A subclass still has to pass the flag.
+        logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
+        args.fully_async = True
+        args.rollout_function_path = None
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
             "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
