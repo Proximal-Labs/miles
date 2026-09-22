@@ -20,15 +20,16 @@ def sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink=None):
     batch, seq_len, heads, _ = q.shape
     seq_len_kv, groups = kv.shape[1], kv.shape[2]
     heads_per_group = heads // groups
-    key_positions = torch.arange(seq_len_kv, device=q.device)
     outs = []
     for g in range(groups):
         q_g = q[:, :, g * heads_per_group : (g + 1) * heads_per_group]
         kv_g = kv[:, :, g]
         idx = indices[:, :, g].long()
         valid = idx != -1
-        selected = torch.zeros(batch, seq_len, seq_len_kv, dtype=torch.bool, device=q.device)
-        selected.scatter_(-1, idx.clamp(min=0), valid)
+        # Padded slots clamp to key 0, so accumulate hits instead of scattering booleans: a plain
+        # scatter of `valid` would let a padded slot overwrite a real selection of key 0.
+        hits = torch.zeros(batch, seq_len, seq_len_kv, dtype=torch.int32, device=q.device)
+        selected = hits.scatter_add_(-1, idx.clamp(min=0), valid.int()) > 0
         scores = torch.einsum("bshd,bkd->bshk", q_g, kv_g) * sm_scale
         scores = scores.masked_fill(~selected.unsqueeze(2), float("-inf"))
         row_max = scores.amax(dim=-1, keepdim=True).clamp(min=-1e30)
@@ -39,7 +40,6 @@ def sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink=None):
             denom = denom + torch.exp(sink_g.view(1, 1, -1) - row_max.squeeze(-1))
         numer = torch.einsum("bshk,bkd->bshd", weights, kv_g[..., :d_v])
         outs.append(numer / denom.unsqueeze(-1))
-    del key_positions
     return torch.cat(outs, dim=2)
 
 
