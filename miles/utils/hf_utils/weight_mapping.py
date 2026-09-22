@@ -6,6 +6,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 from transformers.conversion_mapping import get_model_conversion_mapping
 from transformers.core_model_loading import Concatenate, MergeModulelist, WeightConverter, WeightRenaming
+from transformers.models.auto.auto_factory import _get_model_class
 
 from miles.utils.hf_utils.lora_targets import matches_hf_lora_target
 
@@ -20,6 +21,10 @@ class HfWeightMapping:
         # VLMs may also register a CausalLM compatibility class that drops the vision/text namespace.
         for auto_model in (AutoModelForImageTextToText, AutoModelForCausalLM):
             if type(config) in auto_model._model_mapping:
+                # HF's lazy mapping also matches remote-code configs by class name.
+                config_class = _get_model_class(config, auto_model._model_mapping).config_class
+                if type(config) is not config_class:
+                    config = config_class.from_dict(config.to_dict())
                 # Only structure is needed; never allocate or load base weights.
                 with torch.random.fork_rng(devices=[]), torch.device("meta"):
                     model = auto_model.from_config(config, attn_implementation="eager")
