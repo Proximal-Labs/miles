@@ -29,7 +29,7 @@ class ConfigSnapshotDumper:
     @classmethod
     def configure(cls, *, args: Namespace, source: ProcessIdentity) -> None:
         cls._state = None
-        if args.config_snapshot_dir is None:
+        if args.ci_disable_config_snapshot or not (args.ci_test or args.config_snapshot_dir is not None):
             return
 
         replacements = (
