@@ -2,6 +2,8 @@ import re
 
 import torch
 
+from miles.backends.megatron_utils.megatron_to_hf.gdn_layout import gdn_weight_to_hf_layout
+
 
 def _convert_mtp_layer(args, name, param, layer_idx):
     """Convert MTP layer parameters from Megatron to HuggingFace format."""
@@ -189,6 +191,6 @@ def convert_qwen3_5_to_hf(args, name, param):
             "self_attn.v_proj.weight",
         ]:
             rest = rest[len("self_attention.") :]
-            return [(f"{prefix}.{rest}", param)]
+            return [(f"{prefix}.{rest}", gdn_weight_to_hf_layout(args, rest, param))]
 
     raise ValueError(f"Unknown parameter name: {name}")

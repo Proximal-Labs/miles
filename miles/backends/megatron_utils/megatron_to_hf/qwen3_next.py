@@ -2,6 +2,8 @@ import re
 
 import torch
 
+from miles.backends.megatron_utils.megatron_to_hf.gdn_layout import gdn_weight_to_hf_layout
+
 
 def convert_qwen3_next_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":
@@ -137,7 +139,7 @@ def convert_qwen3_next_to_hf(args, name, param):
             "self_attn.v_proj.weight",
         ]:
             rest = rest[len("self_attention.") :]
-            return [(f"model.layers.{layer_idx}.{rest}", param)]
+            return [(f"model.layers.{layer_idx}.{rest}", gdn_weight_to_hf_layout(args, rest, param))]
 
     # MTP (Multi-Token Prediction) layers
     mtp_layer_pattern = r"module\.module\.mtp\.layers\.(\d+)\.(.+)"

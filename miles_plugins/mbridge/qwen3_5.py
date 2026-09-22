@@ -6,6 +6,19 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 
+from miles_plugins.models.layers.delta_rule_layout import (
+    DeltaRuleHeads,
+    qkv_flat_to_group_major,
+    qkv_group_major_to_flat,
+)
+
+# Megatron shards GDN heads, so the fused qkv projection and the conv are stored group-major
+# (see delta_rule_layout); HF stores them as flat [Q_all, K_all, V_all].
+_GDN_GROUP_MAJOR_WEIGHTS = (
+    "self_attention.linear_attn.in_proj_qkv.weight",
+    "self_attention.linear_attn.conv1d.weight",
+)
+
 
 @register_model(["qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe"])
 class Qwen3_5Bridge(Qwen2MoEBridge):
@@ -340,6 +353,10 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             # from Bridge's global pre-cast to self.dtype.
             return hf_weights[0].to(dtype=torch.float32).contiguous()
 
+        if mcore_weights_name.endswith(_GDN_GROUP_MAJOR_WEIGHTS):
+            assert len(hf_weights) == 1
+            return qkv_flat_to_group_major(hf_weights[0], self._gdn_heads())
+
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv
             assert len(hf_weights) == 3
@@ -387,7 +404,19 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
     ) -> tuple[list[str], list[torch.Tensor]]:
-        return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        names, weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        if mcore_weights_name.endswith(_GDN_GROUP_MAJOR_WEIGHTS):
+            weights = [qkv_group_major_to_flat(weights[0], self._gdn_heads())]
+        return names, weights
+
+    def _gdn_heads(self) -> DeltaRuleHeads:
+        text_config = self._get_text_config()
+        return DeltaRuleHeads(
+            num_k_heads=text_config.linear_num_key_heads,
+            num_v_heads=text_config.linear_num_value_heads,
+            head_k_dim=text_config.linear_key_head_dim,
+            head_v_dim=text_config.linear_value_head_dim,
+        )
 
     def _build_config(self):
         text_config = self._get_text_config()

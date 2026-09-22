@@ -2,6 +2,16 @@ import torch
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 
+from miles_plugins.models.layers.delta_rule_layout import (
+    DeltaRuleHeads,
+    qkv_flat_to_group_major,
+    qkv_group_major_to_flat,
+)
+
+# Megatron shards GDN heads, so the conv weight is stored group-major (see delta_rule_layout); HF
+# stores it flat [Q_all, K_all, V_all]. The fused in_proj_qkvz rows are group-major in HF already.
+_GDN_CONV_WEIGHT = "self_attention.linear_attn.conv1d.weight"
+
 
 @register_model("qwen3_next")
 class Qwen3NextBridge(Qwen2MoEBridge):
@@ -41,6 +51,10 @@ class Qwen3NextBridge(Qwen2MoEBridge):
     def _weight_to_mcore_format(
         self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
     ) -> tuple[list[str], list[torch.Tensor]]:
+        if mcore_weights_name.endswith(_GDN_CONV_WEIGHT):
+            assert len(hf_weights) == 1
+            return qkv_flat_to_group_major(hf_weights[0], self._gdn_heads())
+
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv
             assert len(hf_weights) == 3
@@ -74,6 +88,22 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             return qgkv
 
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+
+    def _weight_to_hf_format(
+        self, mcore_weights_name: str, mcore_weights: torch.Tensor
+    ) -> tuple[list[str], list[torch.Tensor]]:
+        names, weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        if mcore_weights_name.endswith(_GDN_CONV_WEIGHT):
+            weights = [qkv_group_major_to_flat(weights[0], self._gdn_heads())]
+        return names, weights
+
+    def _gdn_heads(self) -> DeltaRuleHeads:
+        return DeltaRuleHeads(
+            num_k_heads=self.hf_config.linear_num_key_heads,
+            num_v_heads=self.hf_config.linear_num_value_heads,
+            head_k_dim=self.hf_config.linear_key_head_dim,
+            head_v_dim=self.hf_config.linear_value_head_dim,
+        )
 
     def _build_config(self):
         mtp_args = {}

@@ -38,9 +38,23 @@ per kernel.
    copies on a GPU box. Flag unification (`--dsv4-impl`, `--dsa-attention-backend`,
    `--dsa-kernel-backend`) touches the Megatron provider and launch scripts and is left for a
    later change.
-3. **Delta-rule unification.** One head-sharded module (Kimi-K3 layout) in
-   `miles_plugins/models/layers/` selecting `chunk_gated_delta_rule` or `chunk_kda`; Qwen3.5,
-   Qwen3-Next, Kimi-K3, GLM-5.3-flash point at it. Depends on `kimi-k3` landing.
+3. **Delta-rule unification** (branch `zhichen/kernels-delta-rule`, stacked on phase 2).
+   `miles_plugins/models/layers/delta_rule_attention.py` holds one head-sharded module for GDN and
+   KDA: `LinearAttentionLayer` owns the HF input norm, the TP collectives (one in, one out, the
+   Megatron attention pattern: identity/all-reduce or all-gather/reduce-scatter under SP) and the CP
+   zigzag relayout; `DeltaRuleAttention` is the core (local head-sharded projections, one
+   group-major conv, the fla kernel, a gated RMSNorm whose replicated weight gets a TP grad
+   all-reduce through `copy_to_tensor_model_parallel_region`, row-parallel `out_proj`). Models
+   subclass the core to declare projections under their HF names: `Qwen3_5GatedDeltaNet`,
+   `Qwen3NextGatedDeltaNet`, and `KimiDeltaAttention` (K3 / GLM-5.3-flash layout, no consumer on
+   main yet). Fused projection and conv rows are stored group-major in Megatron
+   (`delta_rule_layout.py`), so a TP chunk is exactly a rank's heads for any TP size; the bridges
+   permute on load and export. This replaces the TP-replicated GDN (`hf_attention.py`, deleted).
+   Measured on H200, Qwen3.5-35B-A3B GDN layer, fwd+bwd, vs the replicated module: TP=2 1.7x faster
+   and 1.8x less memory at 32k tokens, TP=4 2.7x / 3.2x; at 8k the layer is launch-bound and wall
+   time is flat while GPU time still drops 1.7x. Checkpoint note: Megatron checkpoints of Qwen3.5 /
+   Qwen3-Next GDN layers saved before this change have a different row layout for `in_proj_qkv`
+   (Qwen3.5) and `conv1d` and cannot be resumed.
 
 ## File map, phase 1
 
