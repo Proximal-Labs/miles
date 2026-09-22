@@ -910,10 +910,11 @@ def initialize_model_and_optimizer(
         load_ctx = nullcontext()
 
     load_dir = getattr(args, "load", None)
+    native_optimizer_restored = False
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
-            iteration, _ = load_checkpoint(
+            iteration, _, native_optimizer_restored = load_checkpoint(
                 model,
                 optimizer,
                 opt_param_scheduler,
@@ -932,7 +933,7 @@ def initialize_model_and_optimizer(
         and getattr(args, "lora_adapter_path", None)
         and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
     ):
-        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists() and not native_optimizer_restored:
             from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
 
             load_inkling_lora_adapter(model, args.lora_adapter_path)

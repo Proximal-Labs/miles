@@ -866,7 +866,7 @@ class MegatronTrainRayActor(TrainRayActor):
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.opd_teacher_ckpt_step
 
-        _, _ = load_checkpoint(
+        load_checkpoint(
             self.model,
             None,
             None,

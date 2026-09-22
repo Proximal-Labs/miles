@@ -447,7 +447,7 @@ class TestLoadTrainingState:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == 3
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -456,7 +456,7 @@ class TestLoadTrainingState:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == 3
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, True)
         assert optimizer_loads == [{"step": 7}]
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -481,7 +481,7 @@ class TestLoadTrainingStateOptimizerGate:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler, load_optimizer=False) == 11
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler, load_optimizer=False) == (11, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -495,7 +495,7 @@ class TestLoadTrainingStateOptimizerGate:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        loaded, iteration = load_lora_adapter(
+        loaded, iteration, optimizer_restored = load_lora_adapter(
             model,
             str(tmp_path),
             optimizer=optimizer,
@@ -503,6 +503,6 @@ class TestLoadTrainingStateOptimizerGate:
             load_optimizer=False,
         )
 
-        assert (loaded, iteration) == (True, 11)
+        assert (loaded, iteration, optimizer_restored) == (True, 11, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
