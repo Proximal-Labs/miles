@@ -2,7 +2,7 @@
 
 import asyncio
 
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir, write_snapshot_dir
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
@@ -86,8 +86,7 @@ class FakeBackend:
     def _write_checkpoint(self, name, path, metadata, **kwargs):
         failure = self._record(name, path=path, metadata=metadata, **kwargs)
         if failure is None and metadata is not None:
-            write = write_checkpoint_dir if name == "save_slot" else write_snapshot_dir
-            write(path, lambda _: None, metadata=metadata, overwrite=name == "save_slot")
+            write_checkpoint_dir(path, lambda _: None, metadata=metadata, overwrite=name == "save_slot")
         return failure
 
     async def sample(self, payload, lora_name, lora_path=None):

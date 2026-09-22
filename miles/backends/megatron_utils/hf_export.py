@@ -10,7 +10,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint_io import write_snapshot_dir
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
@@ -75,7 +75,7 @@ def save_hf_model(
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")
     try:
-        write_snapshot_dir(path, write_weights, completion_marker=HF_EXPORT_COMPLETE_MARKER)
+        write_checkpoint_dir(path, write_weights, completion_marker=HF_EXPORT_COMPLETE_MARKER)
     except Exception as e:
         if raise_on_error:
             raise
