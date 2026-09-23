@@ -60,9 +60,11 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: f
 def _services(config_path: Path, run: RunConfig, logs: Path) -> Iterator[None]:
     commands: list[tuple[str, list[str], str]] = []
     capture_port = _loopback_port(run.capture.url)
-    platform_port = _loopback_port(run.platform.url)
-    if capture_port is None or platform_port is None:
-        raise ValueError("Stage A runs capture and the stub platform on loopback URLs")
+    platform_port = _loopback_port(run.platform.url)  # None: a real platform, no stub.
+    if capture_port is None:
+        raise ValueError(
+            "The launcher runs capture locally; its URL must be loopback (expose it to a platform separately)"
+        )
     python = [sys.executable, "-m"]
     commands.append(
         (

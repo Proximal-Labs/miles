@@ -10,9 +10,9 @@ import hashlib
 import hmac
 import json
 import math
-import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -31,9 +31,28 @@ from miles_plugins.proximal.store import RolloutStore
 @dataclass
 class LiveSession:
     attempt: Attempt
-    token: str
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sealed: bool = False
+
+
+# agent-px rebuilds replayed assistant messages and re-serializes tool arguments
+# compactly. This Miles matcher accepts JSON-equivalent arguments and nothing else;
+# on a match the prefix tokens still come from the session's own checkpoint. With
+# the strict matcher every such turn looks like a retry and is rolled back.
+MESSAGE_MATCHER = "loose_tool_call"
+
+
+def capture_registry(config: RunConfig, tokenizer: Any) -> SessionRegistry:
+    """The one way to build the capture session registry: TITO renderer + matcher."""
+    from miles.utils.chat_template_utils import get_tito_tokenizer
+    from miles.utils.chat_template_utils.message_matcher_hub import resolve_session_message_matcher
+
+    tito = get_tito_tokenizer(
+        tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
+    )
+    return SessionRegistry(
+        tokenizer, tito_tokenizer=tito, message_matcher=resolve_session_message_matcher(MESSAGE_MATCHER)
+    )
 
 
 def session_config(config: RunConfig) -> SessionServerConfig:
@@ -58,7 +77,8 @@ def session_config(config: RunConfig) -> SessionServerConfig:
         lora_adapter_path=None,
         lora_train_only=False,
         use_session_server=True,
-        session_message_matcher="strict",
+        # Informational: SessionCore reads the matcher from the registry (capture_registry).
+        session_message_matcher=MESSAGE_MATCHER,
         pause_generation_mode=None,
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
@@ -82,6 +102,9 @@ class BoundTransport:
             raise HTTPException(422, "Sequence token budget exhausted")
         payload["max_tokens"] = min(payload["max_tokens"], remaining)
         payload["model"] = f"{self.config.base_model.name}:miles-{attempt.policy.snapshot.sha256}"
+        # The engine call is always complete, never streamed; the gateway requires it explicitly.
+        payload["stream"] = False
+        payload.pop("stream_options", None)
         outbound = json.dumps(payload).encode()
         response = await self.client.post(
             f"{self.config.inference_url}/v1/chat/completions",
@@ -133,12 +156,39 @@ class BoundTransport:
         }
 
 
+def normalize_agent_request(body: dict[str, Any], *, reasoning_effort: str) -> None:
+    """Map agent-px's Chat Completions request onto the training sampling contract.
+
+    - Cache hints do not affect sampling: dropped.
+    - ``reasoning_effort`` must be the contract's value; the TITO renderer owns how
+      thinking is rendered, so it is not forwarded.
+    - ``max_completion_tokens`` is the per-turn budget, like ``max_tokens``.
+    - ``strict`` tools make SGLang constrain decoding to the schema, so behavior
+      logprobs would come from a different distribution than training computes.
+      Dropped: sampling stays unconstrained and a malformed call is a real tool error.
+    """
+    body.pop("prompt_cache_key", None)
+    body.pop("prompt_cache_retention", None)
+    if (effort := body.pop("reasoning_effort", None)) is not None and effort != reasoning_effort:
+        raise HTTPException(422, f"reasoning_effort {effort!r} differs from the training contract")
+    if (cap := body.pop("max_completion_tokens", None)) is not None:
+        if body.get("max_tokens", cap) != cap:
+            raise HTTPException(422, "max_tokens and max_completion_tokens disagree")
+        body["max_tokens"] = cap
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if isinstance(function, dict):
+                function.pop("strict", None)
+
+
 class CaptureServer:
     def __init__(
         self,
         authorization: AuthorizedRun,
         *,
-        registry: SessionRegistry,
+        tokenizer: Any,
         client: httpx.AsyncClient,
         store: RolloutStore,
     ):
@@ -146,12 +196,15 @@ class CaptureServer:
         self.client = client  # Borrowed: the process composition root owns it.
         self.store = store  # Borrowed, likewise.
         self.admin_key = secret_env(self.config.capture.api_key_env)
+        self.platform_key = secret_env(self.config.capture.platform_key_env)
         self.root = self.config.artifact_directory / self.config.run_id / "capture"
         write_immutable(self.root / "run.json", canonical_bytes(self.config))
         self.sessions: dict[str, LiveSession] = {}
         self.attempts: dict[str, str] = {}
         self._create_lock = asyncio.Lock()
         self.transport = BoundTransport(self.config, client, self.sessions)
+        # Built here, never passed in: the registry's matcher is part of capture correctness.
+        registry = capture_registry(self.config, tokenizer)
         self.core = SessionCore(self.transport, registry, session_config(self.config), self.config.run_id)
         self.app = FastAPI()
         self._routes()
@@ -160,13 +213,14 @@ class CaptureServer:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.admin_key}"):
             raise HTTPException(401, "Invalid capture control credential")
 
-    def _live(self, request: Request, session_id: str) -> LiveSession:
-        entry = self.sessions.get(session_id)
-        if entry is None:
-            raise HTTPException(404, "Live session was lost or released; regenerate the attempt")
-        if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {entry.token}"):
-            raise HTTPException(401, "Invalid session credential")
-        return entry
+    def _rollout_session(self, request: Request, run_id: str, rollout_index: int) -> str:
+        """The platform's rollout route: one run per attempt, so the run ID is the attempt ID."""
+        if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.platform_key}"):
+            raise HTTPException(401, "Invalid platform credential")
+        session_id = self.attempts.get(run_id)
+        if rollout_index != 0 or session_id is None or session_id not in self.sessions:
+            raise HTTPException(404, "No live capture session for this run; regenerate the attempt")
+        return session_id
 
     def _directory(self, session_id: str) -> Path:
         # Session IDs are generated here, never caller-controlled filesystem paths.
@@ -229,7 +283,7 @@ class CaptureServer:
                 write_immutable(
                     index, json.dumps({"session_id": session_id, "request_sha256": digest(attempt)}).encode()
                 )
-                self.sessions[session_id] = LiveSession(attempt, secrets.token_urlsafe(32))
+                self.sessions[session_id] = LiveSession(attempt)
                 self.attempts[attempt.attempt_id] = session_id
             entry = self.sessions.get(session_id)
             if entry is None:
@@ -238,13 +292,13 @@ class CaptureServer:
                 raise HTTPException(409, "Attempt identity reused with different inputs")
             return {
                 "session_id": session_id,
-                "base_url": f"{self.config.capture.url}/sessions/{session_id}",
-                "api_key": entry.token,
+                # What the platform's registry derives for this run; informational here.
+                "base_url": f"{self.config.capture.url}/runs/{attempt.attempt_id}/0/v1",
                 "request_sha256": digest(attempt),
             }
 
     async def _chat_completion(self, session_id: str, request: Request) -> Response:
-        entry = self._live(request, session_id)
+        entry = self.sessions[session_id]
         if request.url.query:
             raise HTTPException(422, "Query parameters are not supported")
         async with entry.lock:
@@ -266,9 +320,15 @@ class CaptureServer:
                 "top_k",
                 "n",
                 "max_tokens",
+                # Sent by agent-px's Chat Completions adapter on every call.
+                "max_completion_tokens",
+                "reasoning_effort",
+                "prompt_cache_key",
+                "prompt_cache_retention",
             }
             if set(body) - allowed:
-                raise HTTPException(422, "Unsupported training request fields")
+                raise HTTPException(422, f"Unsupported training request fields: {sorted(set(body) - allowed)}")
+            normalize_agent_request(body, reasoning_effort=self.config.model_protocol.reasoning_effort)
             if body.get("tool_choice", "auto") not in ("auto", "none"):
                 raise HTTPException(422, "Constrained tool selection changes the sampling distribution")
             for message in body.get("messages", []):
@@ -288,7 +348,7 @@ class CaptureServer:
                 body[key] = value
             if body.get("n", 1) != 1:
                 raise HTTPException(422, "One completion per request is required")
-            budget = body.get("max_tokens", sampling.max_tokens)
+            budget = body.get("max_tokens", sampling.max_tokens)  # Normalized from max_completion_tokens.
             if type(budget) is not int or not 0 < budget <= sampling.max_tokens:
                 raise HTTPException(422, "Invalid per-turn token budget")
             body["max_tokens"] = budget
@@ -311,9 +371,9 @@ class CaptureServer:
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:
             return await self._create_session(attempt, request)
 
-        @app.post("/sessions/{session_id}/v1/chat/completions")
-        async def chat(session_id: str, request: Request) -> Response:
-            return await self._chat_completion(session_id, request)
+        @app.post("/runs/{run_id}/{rollout_index}/v1/chat/completions")
+        async def chat(run_id: str, rollout_index: int, request: Request) -> Response:
+            return await self._chat_completion(self._rollout_session(request, run_id, rollout_index), request)
 
         @app.post("/sessions/{session_id}/seal")
         async def seal(session_id: str, request: Request) -> CaptureReceipt:

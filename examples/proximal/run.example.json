@@ -52,9 +52,14 @@
     "url": "https://REPLACE.platform.example",
     "api_key_env": "PROXIMAL_API_KEY"
   },
+  "platform_route": {
+    "model": "miles/deepswe-features-001",
+    "endpoint_name": "miles-capture"
+  },
   "capture": {
     "url": "https://REPLACE.capture.example",
-    "api_key_env": "MILES_CAPTURE_ADMIN_KEY"
+    "api_key_env": "MILES_CAPTURE_ADMIN_KEY",
+    "platform_key_env": "MILES_CAPTURE_PLATFORM_KEY"
   },
   "inference_url": "https://REPLACE.modal.run",
   "inference_header_env": {
@@ -77,7 +82,8 @@
   "poll_interval_seconds": 2.0,
   "model_protocol": {
     "reasoning_parser": "qwen3",
-    "tool_call_parser": "qwen25"
+    "tool_call_parser": "qwen25",
+    "reasoning_effort": "high"
   },
   "artifact_storage": {
     "kind": "modal_volume",
