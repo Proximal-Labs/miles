@@ -36,7 +36,7 @@ from pathlib import Path
 
 import modal
 
-from miles_plugins.proximal.serving_app import CONFIG_ENV, DEPLOYMENT, RUN, RUN_JSON, base_volume
+from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, RUN_JSON, base_volume, with_configs
 
 REPO = Path(__file__).resolve().parents[3]
 SNAPSHOT = Path("/snapshot")
@@ -60,11 +60,13 @@ MEGATRON_ENV = {
 }
 
 image = (
-    modal.Image.from_registry(DEPLOYMENT.image)
-    .entrypoint([])
-    .apt_install("postgresql")
-    .pip_install("psycopg[binary]")
-    .env({**CONFIG_ENV, **MEGATRON_ENV})
+    with_configs(
+        modal.Image.from_registry(DEPLOYMENT.image)
+        .entrypoint([])
+        .apt_install("postgresql")
+        .pip_install("psycopg[binary]")
+        .env(MEGATRON_ENV)
+    )
     .add_local_file(REPO / "train_async.py", str(FORK / "train_async.py"))
     .add_local_file(REPO / "scripts/models/qwen3-0.6B.py", str(FORK / "scripts/models/qwen3-0.6B.py"))
     .add_local_file(TRAIN_ARGS, str(FORK / "train_args.txt"))

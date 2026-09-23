@@ -23,6 +23,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -34,30 +35,50 @@ import modal
 from miles_plugins.proximal.contracts import RunConfig
 from miles_plugins.proximal.serving import ENGINE_PORT, GATEWAY_PORT, ServingDeployment, engine_argv, gateway_config
 
-_RUN_JSON = "PROXIMAL_RUN_CONFIG_JSON"
-_SERVING_JSON = "PROXIMAL_SERVING_CONFIG_JSON"
-_ENGINE_ARGV_JSON = "PROXIMAL_ENGINE_ARGV_JSON"
+_RUN_PATH = "PROXIMAL_RUN_CONFIG"
+_SERVING_PATH = "PROXIMAL_SERVING_CONFIG"
+_ENGINE_ARGV_PATH = "PROXIMAL_ENGINE_ARGV"
 _ENGINE_KEY_ENV = "MILES_ENGINE_API_KEY"
+_CONTAINER_CONFIG_DIR = "/proximal-config"
 
 
-def _read(json_env: str, path_env: str) -> str:
-    # Deploy time: read the local file. In the container: the copy baked into the image.
-    if value := os.environ.get(json_env):
-        return value
+def _read(path_env: str) -> str:
+    # Deploy time: the local file. In the container: the copy baked into the image.
     path = os.environ.get(path_env)
     if not path:
         raise RuntimeError(f"Set {path_env} to the config file to deploy")
     return Path(path).read_text()
 
 
-RUN_JSON = _read(_RUN_JSON, "PROXIMAL_RUN_CONFIG")
-SERVING_JSON = _read(_SERVING_JSON, "PROXIMAL_SERVING_CONFIG")
+RUN_JSON = _read(_RUN_PATH)
+SERVING_JSON = _read(_SERVING_PATH)
 RUN = RunConfig.model_validate_json(RUN_JSON)
 DEPLOYMENT = ServingDeployment.model_validate_json(SERVING_JSON)
-ENGINE_ARGV_JSON = os.environ.get(_ENGINE_ARGV_JSON) or json.dumps(engine_argv(RUN, DEPLOYMENT))
-# Baked into every image whose container imports this module: configs, and the engine
-# argv resolved at deploy time (the container need not import SGLang to read it).
-CONFIG_ENV = {_RUN_JSON: RUN_JSON, _SERVING_JSON: SERVING_JSON, _ENGINE_ARGV_JSON: ENGINE_ARGV_JSON}
+# Resolved at deploy time, so the container need not import SGLang to read it.
+_engine_argv_path = os.environ.get(_ENGINE_ARGV_PATH)
+ENGINE_ARGV_JSON = (
+    Path(_engine_argv_path).read_text() if _engine_argv_path else json.dumps(engine_argv(RUN, DEPLOYMENT))
+)
+
+
+def with_configs(image: modal.Image) -> modal.Image:
+    """Bake the deploy-time configs into an image as files, for every container that imports this module.
+
+    Files, not environment variables: a run config pinning thousands of tasks exceeds
+    the kernel's 128 KiB limit on one environment string, and the container cannot exec.
+    """
+    local = Path(tempfile.mkdtemp(prefix="proximal-config-"))
+    files = {
+        _RUN_PATH: ("run.json", RUN_JSON),
+        _SERVING_PATH: ("serving.json", SERVING_JSON),
+        _ENGINE_ARGV_PATH: ("engine-argv.json", ENGINE_ARGV_JSON),
+    }
+    image = image.env({env: f"{_CONTAINER_CONFIG_DIR}/{name}" for env, (name, _) in files.items()})
+    for name, text in files.values():
+        (local / name).write_text(text)
+        image = image.add_local_file(local / name, f"{_CONTAINER_CONFIG_DIR}/{name}")
+    return image
+
 
 base_volume = modal.Volume.from_name(
     DEPLOYMENT.base_volume.volume_name,
@@ -69,9 +90,7 @@ adapter_volume = modal.Volume.from_name(
 )
 
 image = (
-    modal.Image.from_registry(DEPLOYMENT.image)
-    .entrypoint([])
-    .env(CONFIG_ENV)
+    with_configs(modal.Image.from_registry(DEPLOYMENT.image).entrypoint([]))
     # This fork's plugin and Miles sources, over the Miles image's installed copy.
     .add_local_python_source("miles", "miles_plugins")
 )
