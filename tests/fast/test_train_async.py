@@ -25,7 +25,6 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         eval_uses_snapshots=True,
         fully_async=False,
         ft_components=[],
-        fully_async=False,
         hf_checkpoint=None,
         keep_old_actor=False,
         num_critic_only_steps=0,
