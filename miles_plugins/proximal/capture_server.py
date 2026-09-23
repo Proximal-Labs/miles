@@ -156,6 +156,15 @@ class BoundTransport:
         }
 
 
+# The platform names a run's rollouts ``<run id>-rollout-<index>``; Miles runs have one.
+ROLLOUT_SUFFIX = "-rollout-0"
+
+
+def rollout_id(attempt_id: str) -> str:
+    """The platform rollout ID of an attempt's single-instance run."""
+    return f"{attempt_id}{ROLLOUT_SUFFIX}"
+
+
 def normalize_agent_request(body: dict[str, Any], *, reasoning_effort: str) -> None:
     """Map agent-px's Chat Completions request onto the training sampling contract.
 
@@ -213,13 +222,15 @@ class CaptureServer:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.admin_key}"):
             raise HTTPException(401, "Invalid capture control credential")
 
-    def _rollout_session(self, request: Request, run_id: str, rollout_index: int) -> str:
-        """The platform's rollout route: one run per attempt, so the run ID is the attempt ID."""
+    def _rollout_session(self, request: Request, platform_rollout_id: str) -> str:
+        """The platform's rollout route. One run per attempt, so the run ID is the attempt ID
+        and its only rollout is ``<attempt id>-rollout-0``."""
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.platform_key}"):
             raise HTTPException(401, "Invalid platform credential")
-        session_id = self.attempts.get(run_id)
-        if rollout_index != 0 or session_id is None or session_id not in self.sessions:
-            raise HTTPException(404, "No live capture session for this run; regenerate the attempt")
+        attempt_id = platform_rollout_id.removesuffix(ROLLOUT_SUFFIX)
+        session_id = self.attempts.get(attempt_id) if platform_rollout_id.endswith(ROLLOUT_SUFFIX) else None
+        if session_id is None or session_id not in self.sessions:
+            raise HTTPException(404, "No live capture session for this rollout; regenerate the attempt")
         return session_id
 
     def _directory(self, session_id: str) -> Path:
@@ -293,7 +304,7 @@ class CaptureServer:
             return {
                 "session_id": session_id,
                 # What the platform's registry derives for this run; informational here.
-                "base_url": f"{self.config.capture.url}/runs/{attempt.attempt_id}/0/v1",
+                "base_url": f"{self.config.capture.url}/rollouts/{rollout_id(attempt.attempt_id)}/v1",
                 "request_sha256": digest(attempt),
             }
 
@@ -348,10 +359,12 @@ class CaptureServer:
                 body[key] = value
             if body.get("n", 1) != 1:
                 raise HTTPException(422, "One completion per request is required")
+            # The harness's cap is a ceiling from the platform's model family; the training
+            # contract's per-turn budget is authoritative, so the smaller one applies.
             budget = body.get("max_tokens", sampling.max_tokens)  # Normalized from max_completion_tokens.
-            if type(budget) is not int or not 0 < budget <= sampling.max_tokens:
+            if type(budget) is not int or budget <= 0:
                 raise HTTPException(422, "Invalid per-turn token budget")
-            body["max_tokens"] = budget
+            body["max_tokens"] = min(budget, sampling.max_tokens)
             return await self.core.chat_completions(
                 session_id, method="POST", query="", headers={}, body=json.dumps(body).encode()
             )
@@ -371,9 +384,9 @@ class CaptureServer:
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:
             return await self._create_session(attempt, request)
 
-        @app.post("/runs/{run_id}/{rollout_index}/v1/chat/completions")
-        async def chat(run_id: str, rollout_index: int, request: Request) -> Response:
-            return await self._chat_completion(self._rollout_session(request, run_id, rollout_index), request)
+        @app.post("/rollouts/{platform_rollout_id}/v1/chat/completions")
+        async def chat(platform_rollout_id: str, request: Request) -> Response:
+            return await self._chat_completion(self._rollout_session(request, platform_rollout_id), request)
 
         @app.post("/sessions/{session_id}/seal")
         async def seal(session_id: str, request: Request) -> CaptureReceipt:

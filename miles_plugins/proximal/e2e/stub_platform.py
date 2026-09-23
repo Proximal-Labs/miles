@@ -2,7 +2,8 @@
 
 It answers the Connect calls Miles's PlatformClient makes, and acts as the endpoint
 registry: a run whose agent names the configured endpoint gets the base URL
-``<capture url>/runs/<run id>/0/v1`` and the registry's static credential.
+``<capture url>/rollouts/<run id>-rollout-0/v1`` (the platform's rollout ID) and the
+registry's static credential.
 
 Each run plays agent-px's mini-swe traffic, as read from proximal-mono ``593de5e46063``
 (agent-px/provider/openai-chat-completions/src/internals.ts,
@@ -192,7 +193,7 @@ class StubPlatform:
 
     async def _agent(self, state: RunState) -> None:
         run_id = state.request.run_id
-        url = f"{self.run.capture.url}/runs/{run_id}/0/v1/chat/completions"
+        url = f"{self.run.capture.url}/rollouts/{run_id}-rollout-0/v1/chat/completions"
         headers = {"Authorization": f"Bearer {self.capture_key}"}
         messages: list[dict[str, object]] = [
             {"role": "system", "content": SYSTEM_PROMPT},

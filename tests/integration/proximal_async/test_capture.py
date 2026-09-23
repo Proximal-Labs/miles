@@ -211,7 +211,7 @@ async def test_task_to_captured_and_graded_miles_sample(
                     [agent] = submitted["config"]["agents"]
                     assert (agent["agentModel"], agent["endpointName"]) == ("miles/test", "miles-capture")
                     # The registry's derived rollout route for this run.
-                    route = f"{config.capture.url}/runs/{submitted['runId']}/0/v1"
+                    route = f"{config.capture.url}/rollouts/{submitted['runId']}-rollout-0/v1"
                     messages = [{"role": "user", "content": "Implement the feature."}]
                     for turn in range(2):
                         reply = await capture_http.post(
@@ -353,12 +353,17 @@ async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
                 "tool_call_id": assistant["tool_calls"][0]["id"],
                 "content": '{\n  "returncode": 0\n}',
             }
-            second = await http.post(url, headers=PLATFORM, json=agent_px([*messages, assistant, tool]))
+            # The platform's family ceiling exceeds the contract: capped, not rejected.
+            second = await http.post(
+                url, headers=PLATFORM, json=agent_px([*messages, assistant, tool], max_completion_tokens=16_000)
+            )
             assert second.status_code == 200, second.text
             receipt, _ = await client.collect(handle, attempt)
             assert receipt.num_calls == 2  # No silent rollback of the first turn.
             for sent in requests:
-                assert sent["stream"] is False and sent["max_tokens"] <= 48
+                assert sent["stream"] is False
                 assert "reasoning_effort" not in sent and "prompt_cache_key" not in sent
                 assert all("strict" not in tool_def["function"] for tool_def in sent.get("tools", []))
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
+            assert requests[0]["max_tokens"] == 48
+            assert requests[1]["max_tokens"] == config.research.sampling.max_tokens

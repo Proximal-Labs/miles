@@ -12,7 +12,7 @@ from miles_plugins.proximal.contracts import RunConfig, SessionHandle, digest
 def session(config, attempt):
     return SessionHandle(
         session_id="a" * 32,
-        base_url=f"{config.capture.url}/runs/{attempt.attempt_id}/0/v1",
+        base_url=f"{config.capture.url}/rollouts/{attempt.attempt_id}-rollout-0/v1",
         request_sha256=digest(attempt),
     )
 

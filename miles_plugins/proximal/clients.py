@@ -94,7 +94,8 @@ class CaptureClient:
             self.client, "POST", f"{self.url}/sessions", headers=self.headers, body=attempt.model_dump(mode="json")
         )
         handle = SessionHandle.model_validate_json(response.content)
-        if handle.request_sha256 != digest(attempt) or handle.base_url != f"{self.url}/runs/{attempt.attempt_id}/0/v1":
+        expected = f"{self.url}/rollouts/{attempt.attempt_id}-rollout-0/v1"
+        if handle.request_sha256 != digest(attempt) or handle.base_url != expected:
             raise ValueError("Session service returned a mismatched binding")
         return handle
 

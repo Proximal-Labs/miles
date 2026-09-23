@@ -127,7 +127,7 @@ class CaptureService(Service):
 class PlatformRoute(Contract):
     """How the platform sends a run's model calls to capture: the registry entry
     (``endpoint_name``) under the platform model id (``model``). The registry derives
-    ``<capture url>/runs/<run id>/<rollout index>/v1`` as the run's base URL."""
+    ``<capture url>/rollouts/<platform rollout id>/v1`` as each rollout's base URL."""
 
     model: Nonempty
     endpoint_name: Nonempty
