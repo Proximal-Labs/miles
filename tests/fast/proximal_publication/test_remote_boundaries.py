@@ -37,17 +37,22 @@ def test_raw_config_does_not_authorize_engine_mutation(tmp_path, metadata):
 def test_remote_mutations_stay_in_authorized_adapters():
     plugin = Path(__file__).resolve().parents[3] / "miles_plugins" / "proximal"
     mutations = []
-    for path in plugin.glob("*.py"):
+    for path in plugin.rglob("*.py"):
         tree = ast.parse(path.read_text())
+        name = str(path.relative_to(plugin))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             method = node.func.attr
+            # The one paid Modal function call: the explicit base-weight staging script.
+            if method == "remote" and name == "e2e/stage_base.py":
+                mutations.append((name, method))
+                continue
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
             # FastAPI route decorators are not outbound network calls.
             receiver = ast.unparse(node.func.value)
             if method in {"batch_upload", "post", "request"} and receiver not in {"app", "self.app"}:
-                mutations.append((path.name, method))
+                mutations.append((name, method))
             if method == "from_name" and not receiver.endswith("Secret"):
                 # Volumes are referenced, never created. (Secret.from_name cannot create.)
                 [create] = [kw.value for kw in node.keywords if kw.arg == "create_if_missing"]
@@ -55,6 +60,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
     assert sorted(mutations) == [
         ("capture_server.py", "post"),  # Recorded inference only; policy warm-up moved to the pool client.
         ("clients.py", "request"),  # The shared retrying request helper every client uses.
+        ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
+        ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.
         ("gateway.py", "post"),
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),

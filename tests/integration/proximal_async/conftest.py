@@ -1,10 +1,6 @@
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -15,53 +11,17 @@ from miles_plugins.proximal.snapshot import SnapshotReference
 
 @pytest.fixture(scope="session")
 def postgres_server():
-    """A throwaway local Postgres on a Unix socket; no network needed.
+    """A throwaway local Postgres, or PROXIMAL_TEST_POSTGRES_DSN if set.
 
-    Set PROXIMAL_TEST_POSTGRES_DSN to use an existing server instead. A missing
-    server is a failure, not a skip: the store is part of the tested contract.
+    A missing server is a failure, not a skip: the store is part of the tested contract.
     """
     if dsn := os.environ.get("PROXIMAL_TEST_POSTGRES_DSN"):
         yield dsn
         return
-    binaries = sorted(Path("/usr/lib/postgresql").glob("*/bin"))
-    if not binaries:
-        raise RuntimeError("Postgres server binaries are required; use the proximal_async test image")
-    bindir = binaries[-1]
-    # Not under pytest's tmp root: the unprivileged server user must traverse it.
-    root = Path(tempfile.mkdtemp(prefix="proximal-pg-"))
-    data, socket = root / "data", root / "socket"
-    socket.mkdir()
-    as_postgres: list[str] = []
-    if os.geteuid() == 0:  # initdb refuses to run as root.
-        shutil.chown(root, "postgres")
-        shutil.chown(socket, "postgres")
-        as_postgres = ["runuser", "-u", "postgres", "--"]
-    subprocess.run(
-        [*as_postgres, str(bindir / "initdb"), "-D", str(data), "-U", "postgres", "--auth=trust"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            *as_postgres,
-            str(bindir / "pg_ctl"),
-            "-D",
-            str(data),
-            "-l",
-            str(root / "server.log"),
-            "-o",
-            f"-k {socket} -c listen_addresses=''",
-            "-w",
-            "start",
-        ],
-        check=True,
-        capture_output=True,
-    )
-    try:
-        yield f"host={socket} user=postgres dbname=postgres"
-    finally:
-        subprocess.run([*as_postgres, str(bindir / "pg_ctl"), "-D", str(data), "-m", "fast", "stop"], check=False)
-        shutil.rmtree(root, ignore_errors=True)
+    from miles_plugins.proximal.e2e.local_postgres import local_postgres
+
+    with local_postgres() as dsn:
+        yield dsn
 
 
 @pytest.fixture

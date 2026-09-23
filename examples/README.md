@@ -38,6 +38,7 @@ Not fully verified — for experimental and development use.
 - **[eval_multi_task](./experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](./experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
 - **[multi_agent](./experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
+- **[proximal/e2e](./proximal/e2e)**: Stage A harness for Proximal platform rollouts: the real rollout, store and capture path from a Mac against Modal replicas, with training faked.
 - **[nemo-gym](./experimental/nemo-gym)**: SWE-agent training with NVIDIA NeMo Gym as the environment ecosystem.
 - **[openenv](./experimental/openenv)**: Rollouts against OpenEnv-hosted environments.
 - **[reproducibility](./experimental/reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
