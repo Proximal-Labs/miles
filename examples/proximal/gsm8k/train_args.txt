@@ -36,5 +36,5 @@
 --attention-softmax-in-fp32
 --attention-backend flash
 --save /state/checkpoints
---save-interval 20
+--save-interval 1
 --seed 42
