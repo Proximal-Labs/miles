@@ -141,7 +141,9 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             result = await asyncio.gather(*tasks)
         except (IneligibleAttempt, httpx.HTTPError) as exc:
             # Messages carry only our own text or the request method, URL and status, never headers.
-            logger.warning("Platform group %s failed (%s: %s); no fabricated rewards", group_id, type(exc).__name__, exc)
+            logger.warning(
+                "Platform group %s failed (%s: %s); no fabricated rewards", group_id, type(exc).__name__, exc
+            )
             result = [replace(sample, status=Sample.Status.ABORTED) for sample in prompt_group]
         finally:
             for task in tasks:
