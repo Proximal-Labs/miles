@@ -40,6 +40,7 @@ test image so SGLang and this fork are importable.
    modal volume create miles-gsm8k-state --env main
    modal secret create miles-gsm8k-gateway MILES_GATEWAY_KEY=$(openssl rand -hex 32) --env main
    modal secret create miles-gsm8k-proxy MODAL_PROXY_KEY=wk-... MODAL_PROXY_SECRET=ws-... --env main
+   modal secret create miles-gsm8k-wandb WANDB_API_KEY=... --env main
    ```
 2. **Stage the base model and the data** (small CPU jobs).
    ```bash

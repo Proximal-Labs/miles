@@ -96,6 +96,8 @@ def training_command(resume_step: int | None) -> list[str]:
     lines = (FORK / "train_args.txt").read_text().splitlines()
     args = [token for line in lines if line.strip() and not line.lstrip().startswith("#") for token in shlex.split(line)]
     model_args = shlex.split(load_model_args("qwen3-0.6B", model_script_dir=FORK / "scripts/models"))
+    # One W&B run per training run: a restart after a crash keeps logging to the same curve.
+    args += ["--wandb-run-id", RUN.run_id]
     if resume_step is not None:
         # LoRA resume: the base from the HF checkpoint, the adapter (with optimizer and
         # step) from the restored checkpoint; the task source restores its cursor.
@@ -157,6 +159,7 @@ def _run_trainer(command: list[str]) -> int:
     secrets=[
         modal.Secret.from_name(DEPLOYMENT.gateway_secret, environment_name=RUN.volume.environment_name),
         modal.Secret.from_name("miles-gsm8k-proxy", environment_name=RUN.volume.environment_name),
+        modal.Secret.from_name("miles-gsm8k-wandb", environment_name=RUN.volume.environment_name),
     ],
     timeout=24 * 3600,
 )

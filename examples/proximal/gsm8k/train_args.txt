@@ -38,3 +38,6 @@
 --save /state/checkpoints
 --save-interval 1
 --seed 42
+--use-wandb
+--wandb-project miles-gsm8k
+--wandb-group gsm8k-qwen3-0p6b
