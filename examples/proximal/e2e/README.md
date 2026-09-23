@@ -57,10 +57,10 @@ Uses `run.stage-a.local.json`: the fake serving pool on loopback, local publicat
 
 ```bash
 export STAGE_A_GATEWAY_AUTHORIZATION="Bearer $(openssl rand -hex 16)"
-STAGE_A_DOCKER="--network none" stage_a sh -c "python -m miles_plugins.proximal.e2e.launch --config examples/proximal/e2e/run.stage-a.local.json \
+STAGE_A_DOCKER="--network none" stage_a sh -c "python -m miles_plugins.proximal.e2e.launch --config examples/proximal/e2e/run.stage-a.local.json --platform stub \
   --adapters /stage-a/adapters --workdir /stage-a/offline --publish local --steps 4 --yes-rollouts --yes-publish"
 # Resume from the step-1 checkpoint against the same store:
-STAGE_A_DOCKER="--network none" stage_a sh -c "python -m miles_plugins.proximal.e2e.launch --config examples/proximal/e2e/run.stage-a.local.json \
+STAGE_A_DOCKER="--network none" stage_a sh -c "python -m miles_plugins.proximal.e2e.launch --config examples/proximal/e2e/run.stage-a.local.json --platform stub \
   --adapters /stage-a/adapters --workdir /stage-a/offline --publish local --steps 4 --resume-step 1 --yes-rollouts --yes-publish"
 ```
 
@@ -104,7 +104,7 @@ If the printed URL differs from `inference_url` in `run.stage-a.json`, update th
 **2e. Run Stage A against the pool.** Publication uploads each version to `miles-stage-a-adapters`; replicas load and verify it on demand.
 
 ```bash
-stage_a sh -c "python -m miles_plugins.proximal.e2e.launch --config examples/proximal/e2e/run.stage-a.json \
+stage_a sh -c "python -m miles_plugins.proximal.e2e.launch --config examples/proximal/e2e/run.stage-a.json --platform stub \
   --adapters /stage-a/adapters --workdir /stage-a/modal --publish modal --steps 6 --yes-rollouts --yes-publish"
 ```
 

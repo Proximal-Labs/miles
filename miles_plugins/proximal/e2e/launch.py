@@ -6,9 +6,13 @@ network namespace. Ports come from the config's platform/capture/inference URLs.
 Offline (no paid resources): a loopback ``inference_url`` starts the fake serving pool
 and publication stays local.
 
-    python -m miles_plugins.proximal.e2e.launch --config run.local.json \\
+    python -m miles_plugins.proximal.e2e.launch --config run.local.json --platform stub \\
         --adapters /work/.stage-a/adapters --workdir /tmp/stage-a --publish local \\
         --yes-rollouts --yes-publish
+
+``--platform stub`` serves the stub platform on the config's platform port;
+``--platform real`` starts none and talks to the platform at that URL (a local
+proximal-mono backend on loopback, or a remote one).
 
 Against the Modal serving pool: an HTTPS ``inference_url`` and ``--publish modal``
 upload each version to the adapter Volume. Nothing here deploys, creates or deletes a
@@ -57,10 +61,12 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: f
 
 
 @contextlib.contextmanager
-def _services(config_path: Path, run: RunConfig, logs: Path) -> Iterator[None]:
+def _services(config_path: Path, run: RunConfig, logs: Path, *, stub_platform: bool) -> Iterator[None]:
     commands: list[tuple[str, list[str], str]] = []
     capture_port = _loopback_port(run.capture.url)
-    platform_port = _loopback_port(run.platform.url)  # None: a real platform, no stub.
+    platform_port = _loopback_port(run.platform.url)
+    if stub_platform and platform_port is None:
+        raise ValueError("The stub platform runs locally; its URL must be loopback")
     if capture_port is None:
         raise ValueError(
             "The launcher runs capture locally; its URL must be loopback (expose it to a platform separately)"
@@ -83,20 +89,21 @@ def _services(config_path: Path, run: RunConfig, logs: Path) -> Iterator[None]:
             f"{run.capture.url}/health",
         )
     )
-    commands.append(
-        (
-            "stub-platform",
-            [
-                *python,
-                "miles_plugins.proximal.e2e.stub_platform",
-                "--config",
-                str(config_path),
-                "--port",
-                str(platform_port),
-            ],
-            f"{run.platform.url}/health",
+    if stub_platform:
+        commands.append(
+            (
+                "stub-platform",
+                [
+                    *python,
+                    "miles_plugins.proximal.e2e.stub_platform",
+                    "--config",
+                    str(config_path),
+                    "--port",
+                    str(platform_port),
+                ],
+                f"{run.platform.url}/health",
+            )
         )
-    )
     if (pool_port := _loopback_port(run.inference_url)) is not None:
         commands.append(
             (
@@ -136,6 +143,7 @@ def main() -> None:
     parser.add_argument("--adapters", type=Path, required=True)
     parser.add_argument("--workdir", type=Path, required=True, help="Checkpoints, logs and the report")
     parser.add_argument("--publish", choices=["local", "modal"], required=True)
+    parser.add_argument("--platform", choices=["stub", "real"], required=True)
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--publish-every", type=int, default=2)
@@ -152,7 +160,7 @@ def main() -> None:
             # Kept under the workdir: a resumed launch must see the same store.
             os.environ[run.store_dsn_env] = stack.enter_context(local_postgres(args.workdir / "postgres"))
             print(f"[stage-a] local Postgres for the rollout store at {args.workdir / 'postgres'}", flush=True)
-        stack.enter_context(_services(args.config, run, args.workdir / "logs"))
+        stack.enter_context(_services(args.config, run, args.workdir / "logs", stub_platform=args.platform == "stub"))
         trainer_args = argparse.Namespace(
             config=args.config,
             adapters=args.adapters,
