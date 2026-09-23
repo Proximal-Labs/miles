@@ -249,10 +249,14 @@ def test_the_flag_and_a_matching_path_agree():
 
 
 def test_the_flag_still_rejects_a_different_rollout_function():
-    """Two different selections remain a misconfiguration."""
-    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
+    """A custom rollout with the flag must extend FullyAsyncRolloutFn (this fork allows
+    subclasses, e.g. the Proximal platform rollout); any other selection is a misconfiguration."""
+    args = _fully_async_candidate_args(
+        fully_async=True,
+        rollout_function_path="miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn",
+    )
 
-    with pytest.raises(AssertionError, match="pass only one"):
+    with pytest.raises(AssertionError, match="must extend FullyAsyncRolloutFn"):
         _resolve_rollout_functions(args)
 
 
