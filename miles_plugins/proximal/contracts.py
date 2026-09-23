@@ -298,5 +298,26 @@ def digest(value: Contract) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+class PinnedDataset:
+    """A run's dataset hash and task set, computed once: per-attempt checks must not
+    re-serialize the whole pinned dataset (7,473 tasks is ~1 MB, ~8 ms per digest)."""
+
+    def __init__(self, dataset: TaskDataset):
+        self.dataset = dataset
+        self.sha256 = digest(dataset)
+        self.tasks = frozenset(dataset.tasks)
+
+
+_PINNED: dict[int, PinnedDataset] = {}
+
+
+def pinned_dataset(dataset: TaskDataset) -> PinnedDataset:
+    """The cached hash and task set of a dataset object (contracts are immutable)."""
+    entry = _PINNED.get(id(dataset))
+    if entry is None or entry.dataset is not dataset:  # The entry holds the object, so its id is never reused.
+        entry = _PINNED[id(dataset)] = PinnedDataset(dataset)
+    return entry
+
+
 def read_run_config(path: str | Path) -> RunConfig:
     return RunConfig.model_validate_json(Path(path).read_bytes())

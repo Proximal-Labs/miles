@@ -6,7 +6,14 @@ from typing import cast
 
 from miles.rollout.fully_async_data_buffer import DataBuffer, DataBufferConstructorInput, DataBufferInput
 from miles.utils.types import Sample
-from miles_plugins.proximal.contracts import AcceptedAttempt, Policy, RunConfig, digest, read_run_config
+from miles_plugins.proximal.contracts import (
+    AcceptedAttempt,
+    Policy,
+    RunConfig,
+    digest,
+    pinned_dataset,
+    read_run_config,
+)
 from miles_plugins.proximal.data_source import ConsumptionLedger
 from miles_plugins.proximal.store import RolloutStore
 
@@ -70,8 +77,8 @@ def validate_group(config: RunConfig, samples: list[Sample]) -> Policy:
             attempt.run_id != config.run_id
             or attempt.harness != config.harness
             or attempt.sampling != config.research.sampling
-            or attempt.dataset_sha256 != digest(config.dataset)
-            or attempt.task not in config.dataset.tasks
+            or attempt.dataset_sha256 != pinned_dataset(config.dataset).sha256
+            or attempt.task not in pinned_dataset(config.dataset).tasks
             or attempt.policy.base_model != config.base_model
         ):
             raise ValueError("Group member was produced under a different training contract")

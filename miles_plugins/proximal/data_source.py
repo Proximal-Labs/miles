@@ -17,7 +17,7 @@ from pathlib import Path
 
 from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
-from miles_plugins.proximal.contracts import Contract, digest, read_run_config
+from miles_plugins.proximal.contracts import Contract, pinned_dataset, read_run_config
 from miles_plugins.proximal.storage import write_atomic
 
 
@@ -97,7 +97,7 @@ class PlatformTaskSource(DataSource):
     def save(self, rollout_id: int) -> None:
         if self.args.save is not None:
             state = Cursor(
-                dataset_sha256=digest(self.config.dataset),
+                dataset_sha256=pinned_dataset(self.config.dataset).sha256,
                 next_group=self.next_group,
                 pending_tasks=tuple(self._retry),
                 consumed=self.consumed.snapshot(),
@@ -134,7 +134,7 @@ class PlatformTaskSource(DataSource):
                 "resume from the previous complete checkpoint"
             )
         state = Cursor.model_validate_json(path.read_bytes())
-        if state.dataset_sha256 != digest(self.config.dataset):
+        if state.dataset_sha256 != pinned_dataset(self.config.dataset).sha256:
             raise ValueError("Checkpoint task membership/source differs from this run")
         return state
 

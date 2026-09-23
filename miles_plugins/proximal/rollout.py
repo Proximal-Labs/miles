@@ -16,7 +16,14 @@ from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
-from miles_plugins.proximal.contracts import AcceptedAttempt, Attempt, Task, canonical_bytes, digest, read_run_config
+from miles_plugins.proximal.contracts import (
+    AcceptedAttempt,
+    Attempt,
+    Task,
+    canonical_bytes,
+    pinned_dataset,
+    read_run_config,
+)
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import add_arguments
 from miles_plugins.proximal.storage import write_immutable
@@ -117,7 +124,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
                 run_id=self.config.run_id,
                 group_id=group_id,
                 sample_index=_sample_index(sample),
-                dataset_sha256=digest(self.config.dataset),
+                dataset_sha256=pinned_dataset(self.config.dataset).sha256,
                 task=Task.model_validate(sample.metadata["proximal_task"]),
                 harness=self.config.harness,
                 policy=policy,
