@@ -4,6 +4,8 @@ This fork runs Miles's existing fully asynchronous trainer against Proximal feat
 
 The implementation lives in `miles_plugins/proximal`. See [investigation](investigation.md), [platform contract](platform-contract.md), and [runbook](../../miles_plugins/proximal/README.md). This is executable integration code, with CPU tests of the actual Miles async worker, TITO core, sample codec, argument parser, and weight updater. It still requires the documented platform binding changes and live train/serve verification.
 
+**Selected next step:** retain the separate CPU capture service for the first live integration. The [capture topology proposal](capture-topology-proposal.md) records the smaller registry-based platform contract in pending [PR #3](https://github.com/Proximal-Labs/miles/pull/3), its recovery limits, and the longer-term direct-replica design. This page's capture-binding details describe the merged implementation; PR #3 replaces that binding and is not yet merged. The topology proposal changes no runtime behavior.
+
 ## Ownership and placement
 
 | Capability | Existing home used by this implementation | Owner |
@@ -17,19 +19,19 @@ The implementation lives in `miles_plugins/proximal`. See [investigation](invest
 | Consumption ledger (which groups this run trained on) | `DataSource` checkpoint → `PlatformTaskSource` | Miles |
 | Policy registry: which immutable adapter each version names, and lineage on resume | `RolloutStore` policies table | Miles |
 | Train-to-serving transfer | `WeightUpdater` → `ModalVolumeTransfer` | Miles |
-| Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publishes; platform mounts |
+| Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publisher and serving pool |
 | Serving pool: image, SGLang arguments, LoRA settings, replica bounds | `serving.py` + `serving_app.py` (Modal `app.server`), derived from the run config | Miles |
 | Per-request policy selection and adapter slots | `ReplicaGateway` + `ReplicaLoRALoader`, one per replica | Miles serving pool |
-| Endpoint selection for rollouts | Platform endpoint registry records the pool's URL | Platform |
+| Endpoint selection for rollouts | Capture binding; proposed registry route points to capture, which selects the serving pool | Platform |
 | Sandboxes and all rollout resource teardown | Existing platform lifecycle | Platform |
 
-The trainer can cancel a logical run. It never deletes a platform container or makes training eligibility depend on teardown evidence. The adapter is harness-neutral; the platform certifies which harness revisions support the required capture contract.
+The trainer can cancel a logical run. It never deletes a platform container or makes training eligibility depend on teardown evidence. The adapter keeps harness execution on the platform. The merged binding requires platform certification of compatible harness revisions; the selected next-step proposal instead begins with a non-compacting mini-swe harness and an operator-asserted revision, an explicit provenance limitation.
 
 ```mermaid
 flowchart LR
     D["Pinned project environments, images, commits"] --> P["Miles continuous CPU producer"]
     P --> S["Platform: agent-px + sandboxes + verifier"]
-    S -->|"Scoped Chat Completions credential"| C["CPU capture: immutable policy + real TITO"]
+    S -->|"Authenticated Chat Completions"| C["CPU capture: immutable policy + real TITO"]
     C --> F["One Modal fleet endpoint"]
     F --> R1["Replica 1: verified named LoRA"]
     F --> R2["Replica 2: verified named LoRA"]
@@ -39,7 +41,7 @@ flowchart LR
     V -->|"reload / verify / local copy / load"| R2
     W -->|"Commit version only after artifact and serving acknowledgement"| DB["Rollout store: policies + stored groups"]
     DB -->|"Committed policy"| C
-    S -->|"Grade + task and harness provenance"| J["Accepted attempt + sealed safetensors"]
+    S -->|"Grade + task provenance"| J["Accepted attempt + sealed safetensors"]
     C -->|"Exact IDs / logprobs / masks / policy"| J
     J -->|"DataBuffer.put: persist"| DB
     DB -->|"DataBuffer.get: batch query (fresh, live lineage, unconsumed)"| T
@@ -65,6 +67,8 @@ Base identity remains a trusted deployment assertion: the gateway checks SGLang'
 ## Capture and acceptance
 
 Each prompt group selects one committed policy. Its members use distinct execution/session identities but the same task, harness, sampling contract and policy. Different groups can span versions within the configured lag.
+
+The binding and certification requirements below describe the merged code. The [selected next-step contract](capture-topology-proposal.md#platform-changes-for-the-first-run) replaces the capability RPC, per-session credential delivery, and platform request-fingerprint echo with an endpoint-registry route. Those earlier platform requirements are not prerequisites for that proposal; the remaining provenance gaps are explicit there.
 
 The run configuration contains a pinned project membership subset, environment IDs, image IDs, source commits, harness revision and execution limits. The client checks project membership and training capabilities before creating a run. The platform must reject a different request reusing an execution identity and return the stored training request fingerprint on submission and final summary.
 
@@ -94,9 +98,11 @@ Sealed captures and accepted attempts are immutable, checksum-addressed artifact
 
 One trainer consumes each run's store, so no row locking or leases are needed. They become necessary only if several consumers ever share one training run.
 
-## Open: capture ownership
+## Capture placement: keep the CPU service first
 
-The capture service in this pass is a separate CPU proxy between the platform's model calls and the serving pool. The intended topology has agent-px calling the Miles-owned serving endpoint directly, with the platform returning per-call evidence. Exact token continuity across Qwen3 turns needs per-rollout token state somewhere: in a front like this proxy, in agent-px, or in Miles's Python TITO machinery at the serving endpoint with agent-px recording and returning the per-call evidence. That contract is not settled; the queue, store and serving pool do not depend on the choice.
+For the first live integration, keep `agent-px -> Miles CPU capture service -> Modal replica gateway -> local SGLang`. Capture is a separately addressable CPU service; it need not run on the training GPU node. It owns live TITO state and exact training evidence, while the platform owns the harness, sandbox, verifier, and teardown. The next platform change is the registry route described in pending PR #3, not a continuation-state or training-evidence extension to agent-px's kernel.
+
+Longer term, the preferred direction is to move Python TITO to the replica gateway, have agent-px carry continuation state and durably record accepted training evidence, and remove the separate capture hop. This requires a versioned continuation contract, recovery/acceptance semantics, and a new evidence export path. It is deferred, not an implemented capability or a prerequisite for the first run. The [proposal](capture-topology-proposal.md) compares both placements, quantifies the additional payload, and defines the migration gates. The trainer, queue, store, policy publication, and serving pool retain their roles under either choice.
 
 The platform owns sandbox retention. The operator owns retention for stored groups, local accepted samples, replica disk caches, and immutable Volume versions; this pass never deletes artifact history. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
 
