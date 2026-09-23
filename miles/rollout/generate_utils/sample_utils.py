@@ -1,4 +1,4 @@
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import fields
 from typing import Any
 
@@ -35,8 +35,14 @@ def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
 
 
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
-    """Merge two samples generated from sibling inference engine calls."""
-    a, b = deepcopy(a), deepcopy(b)
+    """Merge two samples generated from sibling inference engine calls.
+
+    Neither input is mutated: defaults are filled on shallow copies and every merged
+    per-token list is a new list. No deep copy: ``merge_samples`` folds a trajectory
+    turn by turn, and deep-copying the growing accumulator and each turn's full-prefix
+    sample made sealing quadratic in Python time (seconds per long trajectory).
+    """
+    a, b = copy(a), copy(b)
 
     def _merge_equal_value(field):
         x = getattr(a, field)
@@ -63,7 +69,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     def _pop_opd_student_top_logprobs(metadata):
         if metadata is None:
             return None, None
-        metadata = deepcopy(metadata)
+        metadata = dict(metadata)  # Only the top level is modified (pop).
         top_logprobs = metadata.pop(_OPD_STUDENT_TOP_LOGPROBS_KEY, None)
         return metadata, top_logprobs
 

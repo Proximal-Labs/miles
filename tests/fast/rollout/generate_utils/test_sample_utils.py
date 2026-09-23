@@ -1,3 +1,4 @@
+import time
 from unittest.mock import MagicMock
 
 import numpy
@@ -232,3 +233,40 @@ class TestMergeSamples:
         assert merged is t0
         assert merged.tokens == t0.tokens
         assert merged.rollout_routed_experts is not None
+
+
+class TestMergeLeavesInputsUnchanged:
+    def test_inputs_and_metadata_are_not_mutated(self, mock_tokenizer):
+        # Defaults are filled and metadata keys popped on copies, never on the inputs.
+        a = make_sample(tokens=[1, 2, 10], response_length=1)
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, status=Sample.Status.TRUNCATED)
+        a.metadata = {"opd_student_top_logprobs": [[(-0.1, 10)]], "lifecycle": ["t1"], "run": {"id": 1}}
+        b.metadata = {"opd_student_top_logprobs": [[(-0.2, 30)]], "lifecycle": ["t2"], "run": {"id": 1}}
+        a_metadata = {**a.metadata}
+        b_metadata = {**b.metadata}
+
+        merged = _merge_sample_pair(a, b, mock_tokenizer)
+
+        assert a.loss_mask is None and a.rollout_log_probs is None
+        assert b.loss_mask is None and b.rollout_log_probs is None
+        assert a.metadata == a_metadata and b.metadata == b_metadata
+        assert merged.loss_mask == [1, 0, 1]
+        assert merged.metadata["lifecycle"] == ["t1", "t2"]
+        assert merged.metadata["opd_student_top_logprobs"] == [[(-0.1, 10)], [], [(-0.2, 30)]]
+
+    def test_long_trajectory_merges_without_quadratic_copies(self, mock_tokenizer):
+        # 200 turns over a 100k-token prefix; like session records, each turn's sample
+        # carries the full prefix. Deep copies made this take tens of seconds.
+        tokens = list(range(100_000)) + [0]
+        turns = [make_sample(tokens=list(tokens), response_length=1, loss_mask=[1])]
+        for turn in range(1, 200):
+            tokens = tokens + [7] * 20 + [turn]  # 20 observation tokens, then 1 output token
+            turns.append(make_sample(tokens=list(tokens), response_length=1, loss_mask=[1]))
+
+        started = time.perf_counter()
+        merged = merge_samples(turns, mock_tokenizer)
+
+        assert time.perf_counter() - started < 5
+        assert merged.tokens == tokens
+        assert merged.response_length == 1 + 199 * 21
+        assert merged.loss_mask == [1] + ([0] * 20 + [1]) * 199
