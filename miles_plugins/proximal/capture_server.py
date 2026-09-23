@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import orjson
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
@@ -85,10 +86,38 @@ def session_config(config: RunConfig) -> SessionServerConfig:
     )
 
 
+ENGINE_ATTEMPTS = 3
+
+
 class BoundTransport:
     def __init__(self, config: RunConfig, client: httpx.AsyncClient, sessions: dict[str, LiveSession]):
         self.config, self.client, self.sessions = config, client, sessions
         self.headers = {name: secret_env(env) for name, env in config.inference_header_env.items()}
+
+    async def _post_engine(self, outbound: bytes, policy_sha256: str) -> httpx.Response:
+        """One engine call, retried when the connection fails.
+
+        Safe to retry: nothing is recorded until a reply is accepted, so a lost request or
+        reply only costs a repeated generation. Retrying on transport failures does not
+        depend on what was sampled, so it does not bias which completions are trained.
+        """
+        for attempt in range(ENGINE_ATTEMPTS):
+            try:
+                return await self.client.post(
+                    f"{self.config.inference_url}/v1/chat/completions",
+                    content=outbound,
+                    headers={
+                        **self.headers,
+                        "Content-Type": "application/json",
+                        "X-Proximal-Policy-Sha256": policy_sha256,
+                    },
+                    follow_redirects=False,
+                )
+            except httpx.TransportError:
+                if attempt == ENGINE_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(0.2 * 2**attempt)
+        raise AssertionError("unreachable")
 
     async def do_proxy(
         self, request: ProxyRequest, path: str, *, body: bytes, headers: dict[str, str]
@@ -96,7 +125,7 @@ class BoundTransport:
         if request.session_id is None or path != "v1/chat/completions" or request.method != "POST" or request.query:
             raise ValueError("Only bound recorded chat requests may reach inference")
         attempt = self.sessions[request.session_id].attempt
-        payload = json.loads(body)  # SDK boundary; SessionCore already rendered and validated input_ids.
+        payload = orjson.loads(body)  # SDK boundary; SessionCore already rendered and validated input_ids.
         remaining = attempt.sampling.max_sequence_tokens - len(payload["input_ids"])
         if remaining <= 0:
             raise HTTPException(422, "Sequence token budget exhausted")
@@ -105,23 +134,14 @@ class BoundTransport:
         # The engine call is always complete, never streamed; the gateway requires it explicitly.
         payload["stream"] = False
         payload.pop("stream_options", None)
-        outbound = json.dumps(payload).encode()
-        response = await self.client.post(
-            f"{self.config.inference_url}/v1/chat/completions",
-            content=outbound,
-            headers={
-                **self.headers,
-                "Content-Type": "application/json",
-                "X-Proximal-Policy-Sha256": attempt.policy.snapshot.sha256,
-            },
-            follow_redirects=False,
-        )
+        outbound = orjson.dumps(payload)
+        response = await self._post_engine(outbound, attempt.policy.snapshot.sha256)
         if response.status_code == 200:
             if response.headers.get("x-proximal-policy-sha256") != attempt.policy.snapshot.sha256:
                 raise ValueError("Inference response lacks verified immutable adapter identity")
             if response.headers.get("x-proximal-base-revision") != attempt.policy.base_model.revision:
                 raise ValueError("Inference response base revision differs")
-            result = response.json()
+            result = orjson.loads(response.content)
             if result.get("model") != payload["model"] or len(result.get("choices", [])) != 1:
                 raise ValueError("Inference response model/choice count differs")
             meta = result["choices"][0]["meta_info"]
@@ -145,7 +165,7 @@ class BoundTransport:
                 raise ValueError("Inference exceeded the effective output token budget")
             meta.pop("weight_versions", None)
             meta["weight_version"] = str(attempt.policy.version)
-            content = json.dumps(result).encode()
+            content = orjson.dumps(result)
         else:
             content = response.content
         return {
@@ -315,7 +335,7 @@ class CaptureServer:
         async with entry.lock:
             if entry.sealed:
                 raise HTTPException(409, "Session is sealed")
-            body = await request.json()  # OpenAI SDK boundary, not a domain contract.
+            body = orjson.loads(await request.body())  # OpenAI SDK boundary, not a domain contract.
             if not isinstance(body, dict) or body.get("model") != self.config.base_model.name:
                 raise HTTPException(422, "Wrong model for this session")
             allowed = {
@@ -366,7 +386,7 @@ class CaptureServer:
                 raise HTTPException(422, "Invalid per-turn token budget")
             body["max_tokens"] = min(budget, sampling.max_tokens)
             return await self.core.chat_completions(
-                session_id, method="POST", query="", headers={}, body=json.dumps(body).encode()
+                session_id, method="POST", query="", headers={}, body=orjson.dumps(body)
             )
 
     def _routes(self) -> None:

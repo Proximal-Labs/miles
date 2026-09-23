@@ -224,7 +224,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
-        self.turn_args_history.append(deepcopy(turn_args or {}))
+        self.turn_args_history.append(_copy_turn_args(turn_args or {}))
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -407,3 +407,16 @@ class SessionRegistry:
             return [m.to_dict() for m in mismatches]
         except Exception as e:
             raise TokenizationError(f"failed to compute tito_session_mismatch: {e}") from e
+
+
+def _copy_turn_args(turn_args: dict[str, Any]) -> dict[str, Any]:
+    """An isolated copy of a turn's resolved request.
+
+    ``input_ids`` holds immutable ints, so a flat copy isolates it as well as a deep
+    copy; deep-copying it walked every token in Python on every turn, which dominated
+    the per-call cost on long trajectories.
+    """
+    return {
+        key: list(value) if key == "input_ids" and isinstance(value, list) else deepcopy(value)
+        for key, value in turn_args.items()
+    }
