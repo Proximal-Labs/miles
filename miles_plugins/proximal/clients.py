@@ -7,7 +7,6 @@ No container, replica or Volume lifecycle operations exist in this client.
 import asyncio
 import hashlib
 import time
-from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, FiniteFloat
@@ -37,18 +36,9 @@ class Memberships(Wire):
     memberships: list[Membership]
 
 
-class Capabilities(Wire):
-    protocol_version: Literal[1]
-    harness_revision: str
-    supported_agent_types: list[str]
-    pinned_source: Literal[True]
-    linear_tito: Literal[True]
-
-
 class CreatedRun(Wire):
     run_id: str
-    instances_started: int
-    training_request_sha256: str
+    instances_started: int = 0  # Proto JSON omits zero: an idempotent replay starts none.
 
 
 class Container(Wire):
@@ -69,7 +59,6 @@ class Summary(Wire):
     run_id: str
     image_id: int
     source_commit_sha: str
-    training_request_sha256: str
 
 
 class IneligibleAttempt(RuntimeError):
@@ -105,12 +94,16 @@ class CaptureClient:
             self.client, "POST", f"{self.url}/sessions", headers=self.headers, body=attempt.model_dump(mode="json")
         )
         handle = SessionHandle.model_validate_json(response.content)
-        if handle.request_sha256 != digest(attempt) or handle.base_url != f"{self.url}/sessions/{handle.session_id}":
+        expected = f"{self.url}/rollouts/{attempt.attempt_id}-rollout-0/v1"
+        if handle.request_sha256 != digest(attempt) or handle.base_url != expected:
             raise ValueError("Session service returned a mismatched binding")
         return handle
 
+    def _session(self, handle: SessionHandle) -> str:
+        return f"{self.url}/sessions/{handle.session_id}"
+
     async def collect(self, handle: SessionHandle, attempt: Attempt) -> tuple[CaptureReceipt, bytes]:
-        response = await request(self.client, "POST", f"{handle.base_url}/seal", headers=self.headers)
+        response = await request(self.client, "POST", f"{self._session(handle)}/seal", headers=self.headers)
         receipt = CaptureReceipt.model_validate_json(response.content)
         if (
             receipt.session_id != handle.session_id
@@ -118,13 +111,13 @@ class CaptureClient:
             or receipt.policy != attempt.policy
         ):
             raise ValueError("Sealed capture provenance differs from the attempt")
-        payload = (await request(self.client, "GET", f"{handle.base_url}/samples", headers=self.headers)).content
+        payload = (await request(self.client, "GET", f"{self._session(handle)}/samples", headers=self.headers)).content
         if hashlib.sha256(payload).hexdigest() != receipt.payload_sha256:
             raise ValueError("Sealed capture payload checksum mismatch")
         return receipt, payload
 
     async def release(self, handle: SessionHandle) -> None:
-        await request(self.client, "DELETE", handle.base_url, headers=self.headers)
+        await request(self.client, "DELETE", self._session(handle), headers=self.headers)
 
 
 class ServingPoolClient:
@@ -168,28 +161,57 @@ class PlatformClient:
     async def _rpc(self, name: str, body: object) -> httpx.Response:
         return await request(self.client, "POST", f"{self.url}/{name}", headers=self.headers, body=body)
 
-    async def preflight(self) -> Capabilities:
-        response = await self._rpc("GetTrainingCapabilities", {})
-        capabilities = Capabilities.model_validate_json(response.content)
-        if (
-            capabilities.harness_revision != self.config.harness.revision
-            or self.config.harness.agent_type not in capabilities.supported_agent_types
-        ):
-            raise ValueError("Platform does not certify this harness revision/type for training inference")
-        if not self._membership_checked:
-            response = await request(
-                self.client,
-                "POST",
-                f"{self.config.platform.url}/proximal.v1.ProjectService/ListProjectEnvironments",
-                headers=self.headers,
-                body={"projectId": self.config.dataset.project_id},
-            )
-            members = Memberships.model_validate_json(response.content)
-            present = {member.environment_id for member in members.memberships}
-            if any(task.environment_id not in present for task in self.config.dataset.tasks):
-                raise ValueError("Pinned task is no longer in the declared platform project")
-            self._membership_checked = True
-        return capabilities
+    async def preflight(self) -> None:
+        """Free check before the first paid run: the pinned tasks are still project members."""
+        if self._membership_checked:
+            return
+        response = await request(
+            self.client,
+            "POST",
+            f"{self.config.platform.url}/proximal.v1.ProjectService/ListProjectEnvironments",
+            headers=self.headers,
+            body={"projectId": self.config.dataset.project_id},
+        )
+        members = Memberships.model_validate_json(response.content)
+        present = {member.environment_id for member in members.memberships}
+        if any(task.environment_id not in present for task in self.config.dataset.tasks):
+            raise ValueError("Pinned task is no longer in the declared platform project")
+        self._membership_checked = True
+
+    def run_request(self, attempt: Attempt) -> dict[str, object]:
+        """A CreateEnvironmentRun body using only existing run API fields.
+
+        The run ID is the attempt ID: retries are idempotent, and it is the key the
+        registry puts in the capture rollout route. Routing to capture is the
+        platform route's endpoint name; no credential or session URL is sent.
+        """
+        route = self.config.platform_route
+        return {
+            "runId": attempt.attempt_id,
+            "environmentId": attempt.task.environment_id,
+            "imageId": attempt.task.image_id,
+            "sourceCommitSha": attempt.task.source_commit_sha,
+            "instances": 1,
+            "ensureRolloutLaunchWorkflows": True,
+            "autoTriggerAnalysis": False,
+            "autoTriggerPostQa": False,
+            "config": {
+                "agents": [
+                    {
+                        "agentType": attempt.harness.agent_type,
+                        "agentModel": route.model,
+                        "endpointName": route.endpoint_name,
+                        "agentTimeoutSec": attempt.harness.timeout_seconds,
+                        "reasoningEffort": f"AGENT_REASONING_EFFORT_{self.config.model_protocol.reasoning_effort.upper()}",
+                    }
+                ],
+                "harborOptions": {
+                    "maxTurns": attempt.harness.max_turns,
+                    "maxSessionTokens": attempt.sampling.max_sequence_tokens,
+                    "p2pEnforce": attempt.harness.p2p_enforce,
+                },
+            },
+        }
 
     async def execute(self, attempt: Attempt, session: SessionHandle) -> Grade:
         if (
@@ -199,52 +221,13 @@ class PlatformClient:
             or attempt.sampling != self.config.research.sampling
             or attempt.dataset_sha256 != digest(self.config.dataset)
             or attempt.policy.base_model != self.config.base_model
+            or session.request_sha256 != digest(attempt)
         ):
             raise ValueError("Attempt is outside the authorized run")
-        # Read capability before any run submission, including after a service downgrade.
         await self.preflight()
-        fingerprint = digest(attempt)
-        response = await self._rpc(
-            "CreateEnvironmentRun",
-            {
-                "runId": attempt.attempt_id,
-                "environmentId": attempt.task.environment_id,
-                "imageId": attempt.task.image_id,
-                "sourceCommitSha": attempt.task.source_commit_sha,
-                "instances": 1,
-                "ensureRolloutLaunchWorkflows": True,
-                "autoTriggerAnalysis": False,
-                "autoTriggerPostQa": False,
-                "config": {
-                    "agents": [
-                        {
-                            "agentType": attempt.harness.agent_type,
-                            "agentModel": self.config.base_model.name,
-                            "agentTimeoutSec": attempt.harness.timeout_seconds,
-                        }
-                    ],
-                    "harborOptions": {
-                        "maxTurns": attempt.harness.max_turns,
-                        "maxSessionTokens": attempt.sampling.max_sequence_tokens,
-                        "p2pEnforce": attempt.harness.p2p_enforce,
-                    },
-                },
-                "trainingBinding": {
-                    "protocolVersion": 1,
-                    "requestSha256": fingerprint,
-                    "sessionBaseUrl": f"{session.base_url}/v1",
-                    "sessionApiKey": session.api_key.get_secret_value(),
-                    "model": self.config.base_model.name,
-                    "harnessRevision": attempt.harness.revision,
-                },
-            },
-        )
+        response = await self._rpc("CreateEnvironmentRun", self.run_request(attempt))
         created = CreatedRun.model_validate_json(response.content)
-        if (
-            created.run_id != attempt.attempt_id
-            or created.training_request_sha256 != fingerprint
-            or created.instances_started not in (0, 1)
-        ):
+        if created.run_id != attempt.attempt_id or created.instances_started not in (0, 1):
             raise IneligibleAttempt("Platform did not acknowledge the exact single-rollout request")
         deadline = time.monotonic() + attempt.harness.timeout_seconds + self.config.request_timeout_seconds
         while time.monotonic() < deadline:
@@ -270,13 +253,12 @@ class PlatformClient:
         summary = Summary.model_validate_json(
             (await self._rpc("GetRunSummary", {"runId": attempt.attempt_id})).content
         )
-        if (summary.run_id, summary.image_id, summary.source_commit_sha, summary.training_request_sha256) != (
+        if (summary.run_id, summary.image_id, summary.source_commit_sha) != (
             attempt.attempt_id,
             attempt.task.image_id,
             attempt.task.source_commit_sha,
-            digest(attempt),
         ):
-            raise IneligibleAttempt("Completed run provenance differs from the submitted task/binding")
+            raise IneligibleAttempt("Completed run provenance differs from the submitted task")
         if container.agent_type != attempt.harness.agent_type or not container.reward_scored:
             raise IneligibleAttempt("Missing valid verifier grade or wrong harness")
         if container.error:

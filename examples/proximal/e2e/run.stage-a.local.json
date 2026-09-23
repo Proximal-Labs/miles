@@ -57,9 +57,14 @@
     "url": "http://127.0.0.1:9010",
     "api_key_env": "STAGE_A_PLATFORM_KEY"
   },
+  "platform_route": {
+    "model": "miles/stage-a",
+    "endpoint_name": "miles-capture"
+  },
   "capture": {
     "url": "http://127.0.0.1:9011",
-    "api_key_env": "STAGE_A_CAPTURE_KEY"
+    "api_key_env": "STAGE_A_CAPTURE_KEY",
+    "platform_key_env": "STAGE_A_CAPTURE_PLATFORM_KEY"
   },
   "inference_url": "http://127.0.0.1:9012",
   "inference_header_env": {
@@ -79,7 +84,8 @@
   "enable_thinking": true,
   "model_protocol": {
     "reasoning_parser": "qwen3",
-    "tool_call_parser": "qwen25"
+    "tool_call_parser": "qwen25",
+    "reasoning_effort": "high"
   },
   "max_in_flight_samples": 8,
   "completed_group_capacity": 4,

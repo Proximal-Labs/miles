@@ -1,104 +1,96 @@
-# Required proximal-mono integration
+# Required proximal-mono change: route a rollout's model calls to Miles capture
 
-Audited against `origin/main` `f30a80d7099d68594a7153f148cd5d4d095cba45`. This document describes **proposed additions**, not already-deployed APIs. Miles fails capability checks before submitting a rollout against an older server. No proximal-mono checkout is modified by this PR.
+Audited against proximal-mono `origin/main` `593de5e46063`. This is the one platform change Miles needs. Everything else uses run APIs that already exist.
 
-Two cohesive platform changes are needed, plus deployment configuration for the provided replica gateway. These changes belong at the shared execution/completion boundary, not a mini-SWE-specific branch.
+## What Miles sends and reads (no change)
 
-## 1. Scoped training inference binding on the existing run RPC
-
-Extend `packages/proto/proximal/v1/environment_run.proto` and the typed CreateEnvironmentRun domain input with an optional binding. Allocate currently unused protobuf field numbers when implementing; do not reuse retired tags.
-
-```protobuf
-message TrainingInferenceBinding {
-  uint32 protocol_version = 1; // exactly 1
-  string request_sha256 = 2;  // immutable execution request fingerprint
-  string session_base_url = 3; // standard OpenAI base URL, ending /sessions/<id>/v1
-  string session_api_key = 4; // secret scoped to this session
-  string model = 5;           // public base model name, not a mutable alias
-  string harness_revision = 6;
-}
-```
-
-Add `training_binding` to `CreateEnvironmentRunRequest`. For a training-bound run:
-
-- Authenticate and authorize normal project/environment access before resources.
-- Validate protocol, approved capture URL origin, nonempty scoped credential, exact supported harness revision, explicit image/source pin and one requested instance.
-- Route **all** model calls for this rollout through the supplied Chat Completions client, including reasoning/tool responses. Do not fall back to the standard model catalog, Responses client, or a default provider. Fail before launch for unsupported harness capabilities.
-- Persist the training fingerprint and resolved source/image/harness binding with the run. Duplicate `runId` with exactly equal execution inputs and the same session binding is idempotent. A mismatch is `ALREADY_EXISTS`/409. Do not compare just `environmentId` and `instances`.
-- Keep `session_api_key` private: secret-backed durable workflow input/reference as appropriate, redacted from logs, UI, tracing, public run metadata and normal RPC responses. Do not place it in model-visible context or a shared endpoint catalog.
-- Preserve sampling fields supplied by the harness only when accepted by the session contract. The capture service supplies the required distribution, token budgets, thinking mode, logprobs and token capture. Disable compaction, subagents and provider-native unrecorded tools for this contract; unsupported attempts must fail explicitly.
-
-The client sends the existing fields:
+Miles creates one platform run per attempt with the existing `EnvironmentRunService.CreateEnvironmentRun`, using only existing fields:
 
 ```json
 {
-  "runId": "unique-attempt-id",
-  "environmentId": 123,
-  "imageId": 456,
-  "sourceCommitSha": "<pinned 40-hex commit>",
+  "runId": "<attempt id: deterministic, retries are idempotent>",
+  "environmentId": 123, "imageId": 456, "sourceCommitSha": "<40-hex>",
   "instances": 1,
-  "ensureRolloutLaunchWorkflows": true,
-  "autoTriggerAnalysis": false,
-  "autoTriggerPostQa": false,
+  "ensureRolloutLaunchWorkflows": true, "autoTriggerAnalysis": false, "autoTriggerPostQa": false,
   "config": {
-    "agents": [{"agentType": "<supported harness>", "agentModel": "<base model>", "agentTimeoutSec": 1800}],
+    "agents": [{
+      "agentType": "<mini-swe harness>",
+      "agentModel": "<run config platform_route.model>",
+      "endpointName": "<run config platform_route.endpoint_name>",
+      "agentTimeoutSec": 1800,
+      "reasoningEffort": "AGENT_REASONING_EFFORT_HIGH"
+    }],
     "harborOptions": {"maxTurns": 60, "maxSessionTokens": 32768, "p2pEnforce": true}
-  },
-  "trainingBinding": {
-    "protocolVersion": 1,
-    "requestSha256": "<sha256 of canonical Miles Attempt JSON>",
-    "sessionBaseUrl": "https://capture.example/sessions/<session>/v1",
-    "sessionApiKey": "<secret>",
-    "model": "agentica-org/DeepSWE-Preview",
-    "harnessRevision": "<pinned platform harness commit>"
   }
 }
 ```
 
-Thread the typed binding through the existing run/workflow/solver input path. Relevant audited homes are `core/environmentRun`, `servers/environmentRunServer.ts`, `temporal/workflows/rollout-solver/rolloutSolverAgent.ts`, and `core/llmRuntime/completionClient.ts`. The latter's current Modal path uses Responses. Select a scoped OpenAI Chat Completions adapter at this shared seam; each supported agent-px harness receives the same typed completion capability. An adapter specific to mini-SWE would leave sibling harnesses able to bypass training capture.
+It reads results with the existing `GetEnvironmentRunContainers` (status, `rolloutIndex`, `agentType`, `rewardScored`, `reward`, `error`) and `GetRunSummary` (`imageId`, `sourceCommitSha`), and checks project membership with `ProjectService.ListProjectEnvironments` before the first run. `StopEnvironmentRun` is a logical cancel; Miles never tears anything down.
 
-## 2. Capability and stored-provenance acknowledgements
+Eligible: `SUCCESS`/`COMPLETED`, no execution error, `rewardScored` (a scored zero is valid). Anything else is an execution failure and never becomes a zero-reward sample.
 
-Add a read-only `EnvironmentRunService.GetTrainingCapabilities` RPC. JSON request is `{}`; response:
+## The change: a rollout capture entry in the Modal endpoint registry
+
+Implemented in proximal-mono (`packages/backend/src/core/llmRuntime/modal`). The existing registry (LiveConfig `modal.inference.endpoints`) gains a second, tagged entry kind:
 
 ```json
-{
-  "protocolVersion": 1,
-  "harnessRevision": "<40-hex revision>",
-  "supportedAgentTypes": ["<actual supported generic harness names>"],
-  "pinnedSource": true,
-  "linearTito": true
+"miles/stage-a": {
+  "defaultEndpoint": "capture",
+  "endpoints": {
+    "capture": {
+      "kind": "rollout_capture",
+      "mode": "dedicated",
+      "baseURL": "https://<capture host>",
+      "model": "Qwen/Qwen3-0.6B",
+      "apiKeyEnv": "MILES_CAPTURE_PLATFORM_KEY"
+    }
+  }
 }
 ```
 
-Return only capabilities the live execution path enforces. `linearTito` means text-only, linear, append-compatible model history using the scoped Chat client, with no compaction/subagent model calls. The harness revision must change when prompts/tools/verifier semantics change, or resolve to an immutable contract digest represented by the revision.
+1. **`miles/<name>` models** (lowercase `[a-z0-9._-]`) are recognized as a model family that routes through the registry; they are not catalog models, and a run without a registry entry fails at its boundary. They accept the platform's reasoning-effort names.
+2. **A `rollout_capture` entry selects agent-px's Chat Completions adapter** instead of the Modal Responses provider. A Modal model never resolves to a capture entry, and a Miles model never to a Responses entry.
+3. **Per-rollout base URL**: `${baseURL}/rollouts/${rolloutId}/v1`, where `rolloutId` is the platform rollout ID, `<run id>-rollout-<index>`. Miles creates one-instance runs whose run ID is the attempt ID, so the capture service maps `<attempt id>-rollout-0` to the attempt it registered.
+4. **Credential by reference**: `apiKeyEnv` names a variable the rollout workers must have; its value (the capture service's `platform_key_env`) is sent as `Authorization: Bearer <key>`. Only the name is stored in config and in the per-run assignment snapshot.
+5. **`baseURL`** is HTTPS, or plain HTTP to `127.0.0.1`/`localhost` for a capture service on the worker's own host.
+6. **Budgets are ceilings** (131,072-token context, 16,000 output tokens for the family). The capture service applies the training contract's smaller per-turn budget and sequence limit, and Miles sets `maxSessionTokens`.
+7. **Sampling parameters are not sent**; the run's reasoning effort is sent as `reasoning_effort`.
 
-Add `training_request_sha256` to both `CreateEnvironmentRunResponse` and `GetRunSummaryResponse`. Read it from the **stored execution binding**. Never merely reflect the query's input. Submission acknowledges the accepted binding; final summary certifies the binding actually used by execution. Existing `runId`, `imageId`, `sourceCommitSha`, and container `agentType` are also checked by Miles.
+The per-run endpoint snapshot (`modal_endpoint_assignments`) already pins the entry for a run's lifetime; the rollout URL is derived from the snapshot and the rollout ID, so nothing new is persisted. Register an entry with `packages/backend/scripts/modal/switch-endpoint.ts --kind rollout_capture --api-key-env <NAME>`.
 
-`instancesStarted` may be 0 on an idempotent replay or 1 on a new single-instance submission. More than one is rejected. A duplicate must not launch a second rollout. If the execution can substitute inputs after submission, reject that substitution for training-bound runs and surface failure; the original digest must not certify a different execution.
+## What the capture service accepts from agent-px
 
-No new result store or teardown API is needed. Existing generic APIs already provide the required result facts:
+Read from agent-px at the pinned commit; covered by Miles's tests.
 
-- `ProjectService.ListProjectEnvironments`: pinned dataset membership validation.
-- `EnvironmentRunService.GetEnvironmentRunContainers`: terminal status, rollout ID, agent type, canonical reward, `rewardScored`, and execution `error`.
-- `EnvironmentRunService.GetRunSummary`: resolved image/source and the proposed stored fingerprint.
-- `EnvironmentRunService.StopEnvironmentRun`: logical cancellation only.
+- Streaming requests with `stream_options.include_usage`: the reply is one SSE chunk with the full message and usage, then `[DONE]`. The engine call itself is never streamed.
+- `prompt_cache_key`, `prompt_cache_retention`: ignored (no effect on sampling).
+- `reasoning_effort`: must equal the run config's `model_protocol.reasoning_effort` (sent as `agents[].reasoningEffort`); otherwise 422. Not forwarded: the TITO renderer owns thinking.
+- `max_completion_tokens` (or `max_tokens`): a ceiling; the training contract's per-turn budget applies when smaller.
+- Tools with `strict: true`: `strict` is removed before the engine. With it, SGLang constrains decoding to the schema, and behavior logprobs would come from a different distribution than training computes.
+- No `temperature`/`top_p`/`top_k`: the capture service applies the training contract's sampling.
+- Replayed history as agent-px rebuilds it: `content: null` on tool-only turns, `reasoning_content`, compact re-serialized tool arguments. Miles's `loose_tool_call` matcher accepts JSON-equivalent arguments, so the prefix tokens come from the session's own record and nothing is rolled back.
+- A history agent-px rewrote differently (unparseable arguments replayed as `"{}"`, the truncated-reasoning placeholder) does not match. Miles then rolls back one turn and re-renders it as context: that turn's tokens are not trained, the rest are.
 
-Miles accepts only SUCCESS/COMPLETED with no execution error and a finite scored reward. A scored proto-JSON omitted reward is zero. ERROR/TIMEOUT/STOPPED/FAILED, absent grading, or failed provenance are ineligible. The result reader uses the generic boundary shared by Harbor and taskrunner. Submission currently carries the platform’s existing `harborOptions` execution limits. Advertise a harness only when training-bound execution enforces all those limits; the current taskrunner restriction on these fields must not be bypassed or silently ignored. Supporting another execution engine requires translating the same declared limits at the platform boundary. Miles does not select or tear down sandboxes.
+## Harness and limits
 
-## Serving configuration
+The first supported harness is **mini-swe**: it disables compaction, so every rollout is one linear token history. `maxTurns` and `maxSessionTokens` come from `harborOptions`. The default harness compacts with a separate summary request and needs multi-segment samples; not supported yet.
 
-Run the provided `ReplicaGateway` beside each existing Modal SGLang process. Mount the same existing Volume on every replica, use a separate local cache, and expose the gateway through the existing authenticated fleet endpoint. It loads immutable adapters against loopback SGLang before inference and returns evidence headers. It must be the sole owner of the `miles-*` namespace; SGLang and the gateway restart together.
+## Deliberately not required (follow-ups)
 
-Configure the same pinned base, Qwen3 reasoning/tool parsers and adapter target modules/rank on every replica. Set SGLang's adapter capacity at least to the gateway capacity. Miles does not enumerate replicas or call a load-balanced engine-control endpoint as if it were a broadcast. A Modal scale-to-zero fleet may require a warm replica for the first publication; choose keep-warm/autoscaling in the platform deployment.
+The earlier proposal also had a `GetTrainingCapabilities` RPC, a per-run training binding with a per-session URL and key, and a stored request fingerprint echoed on `CreateEnvironmentRun`/`GetRunSummary`. They are dropped from the first version:
+
+- **Routing is proven by the capture service.** A run whose calls never reach the capture service has no captured tokens, so its sample is rejected, not trained.
+- **Harness revision is operator-asserted.** The run config pins it as part of the training contract, but the platform does not certify which revision executed. Certifying it (capability or summary field) is the main follow-up.
+- **The run ID binds the grade to the attempt**, together with image and source commit from `GetRunSummary`.
+
+## Reachability
+
+The rollout workers that run agent-px must reach the capture service URL. With a local platform worker on the same host, loopback works (the offline Stage A harness does this). Against staging, the capture service needs a public HTTPS URL, e.g. deployed as a Modal `app.server` next to the serving pool.
 
 ## Platform test checklist
 
-- Missing/unsupported binding fails before sandbox launch; no fallback model call.
-- Exercise at least two agent-px harnesses through the shared completion seam.
-- Every model call uses the scoped URL/key; capture admin and inference keys never enter the run.
-- Duplicate equal Create is idempotent; source/harness/session/sampling fingerprint conflict fails.
-- Final digest comes from the executed binding, with matching source/image and canonical reward.
-- Valid zero grade is distinct from missing/failed grading; cleanup state does not affect eligibility.
-- Unknown protocol, wrong harness revision, compaction and subagent calls fail explicitly.
-- Run ordinary TypeScript checks and the relevant platform unit tests before a live rollout.
+- A `rollout_capture` entry builds `${baseURL}/rollouts/${rolloutId}/v1` and uses the credential reference; no fallback to another provider or the global Modal key.
+- The rendered key never appears in logs, traces, run metadata or the persisted endpoint snapshot.
+- A run with `agents[].endpointName` for that entry sends every mini-swe model call there, with `agents[].reasoningEffort` as `reasoning_effort`.
+- Existing Modal Responses endpoints are unchanged.
+- One capped live rollout (e.g. `maxTurns` 3) reaches a Miles capture service and returns a scored container.

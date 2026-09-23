@@ -59,22 +59,16 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
     import uvicorn
     from transformers import AutoTokenizer
 
-    from miles.rollout.session.linear_trajectory import SessionRegistry
-    from miles.utils.chat_template_utils import get_tito_tokenizer
     from miles_plugins.proximal.capture_server import CaptureServer
     from miles_plugins.proximal.store import open_store
 
     tokenizer = AutoTokenizer.from_pretrained(
         str(config.tokenizer_path), local_files_only=True, trust_remote_code=False
     )
-    tito = get_tito_tokenizer(
-        tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
-    )
-    registry = SessionRegistry(tokenizer, tito_tokenizer=tito)
     store = await open_store(config)
     try:
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
-            service = CaptureServer(authorization, registry=registry, client=client, store=store)
+            service = CaptureServer(authorization, tokenizer=tokenizer, client=client, store=store)
             await uvicorn.Server(
                 uvicorn.Config(service.app, host=host, port=port, workers=1, access_log=False)
             ).serve()

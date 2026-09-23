@@ -41,6 +41,7 @@ def store_dsn(postgres_server, monkeypatch):
 def config(tmp_path, monkeypatch, store_dsn):
     monkeypatch.setenv("PX_TEST_KEY", "platform-secret")
     monkeypatch.setenv("CAPTURE_TEST_KEY", "capture-secret")
+    monkeypatch.setenv("CAPTURE_PLATFORM_TEST_KEY", "capture-platform-secret")
     monkeypatch.setenv("FLEET_TEST_KEY", "fleet-secret")
     data = {
         "run_id": "test-run",
@@ -75,7 +76,12 @@ def config(tmp_path, monkeypatch, store_dsn):
             "max_consecutive_failed_groups": 2,
         },
         "platform": {"url": "http://127.0.0.1:9010", "api_key_env": "PX_TEST_KEY"},
-        "capture": {"url": "http://127.0.0.1:9011", "api_key_env": "CAPTURE_TEST_KEY"},
+        "platform_route": {"model": "miles/test", "endpoint_name": "miles-capture"},
+        "capture": {
+            "url": "http://127.0.0.1:9011",
+            "api_key_env": "CAPTURE_TEST_KEY",
+            "platform_key_env": "CAPTURE_PLATFORM_TEST_KEY",
+        },
         "inference_url": "http://127.0.0.1:9012",
         "inference_header_env": {"Authorization": "FLEET_TEST_KEY"},
         "volume": {"volume_name": "adapters", "environment_name": "dev"},
@@ -85,7 +91,7 @@ def config(tmp_path, monkeypatch, store_dsn):
         "tokenizer_path": str(tmp_path),
         "tito_model": "qwen3",
         "enable_thinking": True,
-        "model_protocol": {"reasoning_parser": "qwen3", "tool_call_parser": "qwen25"},
+        "model_protocol": {"reasoning_parser": "qwen3", "tool_call_parser": "qwen25", "reasoning_effort": "high"},
         "max_in_flight_samples": 4,
         "completed_group_capacity": 2,
         "request_timeout_seconds": 10,

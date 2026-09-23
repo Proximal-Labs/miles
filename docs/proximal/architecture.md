@@ -94,9 +94,11 @@ Sealed captures and accepted attempts are immutable, checksum-addressed artifact
 
 One trainer consumes each run's store, so no row locking or leases are needed. They become necessary only if several consumers ever share one training run.
 
-## Open: capture ownership
+## Capture: Miles session front, reached through the platform's endpoint registry
 
-The capture service in this pass is a separate CPU proxy between the platform's model calls and the serving pool. The intended topology has agent-px calling the Miles-owned serving endpoint directly, with the platform returning per-call evidence. Exact token continuity across Qwen3 turns needs per-rollout token state somewhere: in a front like this proxy, in agent-px, or in Miles's Python TITO machinery at the serving endpoint with agent-px recording and returning the per-call evidence. That contract is not settled; the queue, store and serving pool do not depend on the choice.
+Decided: the capture service (Miles's session code) stays in the inference path. The platform's endpoint registry points agent-px at it with a per-rollout base URL, `<capture>/rollouts/<platform rollout id>/v1`, and a static credential; the capture service renders exact prompt tokens (TITO), calls the serving pool non-streaming, and records output tokens and logprobs. The platform returns only the grade; it never handles tokens. Miles creates runs with existing run API fields only. See [platform-contract.md](platform-contract.md) for the one platform change and for how agent-px's requests are normalized (cache hints ignored, reasoning effort pinned, `strict` tools unconstrained, loose tool-call matching).
+
+The capture service is one stateful process per run today. Its memory grows with turns times context (Miles keeps each turn's full prompt IDs); sharding by run ID across several instances, as Miles itself shards session servers, is the known scaling step.
 
 The platform owns sandbox retention. The operator owns retention for stored groups, local accepted samples, replica disk caches, and immutable Volume versions; this pass never deletes artifact history. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
 

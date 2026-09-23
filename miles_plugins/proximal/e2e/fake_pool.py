@@ -4,7 +4,8 @@ It honors the gateway's contract (see gateway.py): ``/policies/prepare`` returns
 verification evidence for any requested immutable version, and
 ``/v1/chat/completions`` requires the version header plus the matching adapter model
 name, then answers with SGLang-shaped exact token IDs and logprobs from the real
-tokenizer. It calls the bash tool once per rollout, then replies DONE. Swap the run
+tokenizer. It calls the bash tool once (tool arguments with a space, so agent-px's
+compact re-serialization is exercised), then submits with mini-swe's command. Swap the run
 config's ``inference_url`` to the real pool to test real SGLang and LoRA loading.
 
     python -m miles_plugins.proximal.e2e.fake_pool --config run.json --port 9012
@@ -23,7 +24,10 @@ from miles_plugins.proximal.gateway import PreparePolicy
 TOOL_TEXT = (
     'Let me look.</think>\n\n<tool_call>\n{"name": "bash", "arguments": {"command": "ls"}}\n</tool_call><|im_end|>'
 )
-DONE_TEXT = "Implemented.</think>\n\nDONE<|im_end|>"
+SUBMIT_TEXT = (
+    'Implemented.</think>\n\n<tool_call>\n{"name": "bash", "arguments": '
+    '{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}}\n</tool_call><|im_end|>'
+)
 
 
 class FakePool:
@@ -56,8 +60,22 @@ class FakePool:
                 ],
             }
             return message, "tool_calls", self.tokenizer.encode(TOOL_TEXT, add_special_tokens=False)  # type: ignore[attr-defined]
-        message = {"role": "assistant", "reasoning_content": "Implemented.", "content": "DONE"}
-        return message, "stop", self.tokenizer.encode(DONE_TEXT, add_special_tokens=False)  # type: ignore[attr-defined]
+        message = {
+            "role": "assistant",
+            "reasoning_content": "Implemented.",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": '{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}',
+                    },
+                }
+            ],
+        }
+        return message, "tool_calls", self.tokenizer.encode(SUBMIT_TEXT, add_special_tokens=False)  # type: ignore[attr-defined]
 
     def _routes(self) -> None:
         @self.app.get("/health")
@@ -80,7 +98,8 @@ class FakePool:
             self._authorize(request)
             sha256 = request.headers.get("x-proximal-policy-sha256", "")
             body = await request.json()
-            if body.get("model") != self._request_model(sha256) or body.get("stream") not in (False, None):
+            # As strict as gateway.py: explicitly non-streaming.
+            if body.get("model") != self._request_model(sha256) or body.get("stream") is not False:
                 raise HTTPException(409, "Request must name the verified adapter, non-streaming")
             input_ids = body["input_ids"]
             message, finish_reason, ids = self._reply(input_ids)

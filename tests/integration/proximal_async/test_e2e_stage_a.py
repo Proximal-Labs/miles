@@ -17,11 +17,9 @@ import pytest
 import uvicorn
 from transformers import AutoTokenizer
 
-from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.capture_server import CaptureServer
-from miles_plugins.proximal.contracts import Service
+from miles_plugins.proximal.contracts import CaptureService, Service
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.e2e import fake_trainer
 from miles_plugins.proximal.e2e.adapters import DenseDecoderShape, write_adapter
@@ -57,7 +55,11 @@ def stage_a(config, tmp_path):
     run = config.model_copy(
         update={
             "platform": Service(url=f"http://127.0.0.1:{ports[0]}", api_key_env="PX_TEST_KEY"),
-            "capture": Service(url=f"http://127.0.0.1:{ports[1]}", api_key_env="CAPTURE_TEST_KEY"),
+            "capture": CaptureService(
+                url=f"http://127.0.0.1:{ports[1]}",
+                api_key_env="CAPTURE_TEST_KEY",
+                platform_key_env="CAPTURE_PLATFORM_TEST_KEY",
+            ),
             "inference_url": f"http://127.0.0.1:{ports[2]}",
             "tokenizer_path": tokenizer_path,
             "max_in_flight_samples": 4,
@@ -73,17 +75,15 @@ def stage_a(config, tmp_path):
 
 async def run_stage_a(run, path, ports, tmp_path, **overrides):
     tokenizer = AutoTokenizer.from_pretrained(str(run.tokenizer_path), local_files_only=True)
-    registry = SessionRegistry(
-        tokenizer,
-        tito_tokenizer=get_tito_tokenizer(tokenizer, "qwen3", chat_template_kwargs={"enable_thinking": True}),
-    )
     authorization = authorize_run(run, yes_rollouts=True, yes_publish=True)
     store = await open_store(run)
     servers = []
     async with httpx.AsyncClient(timeout=30) as backend, httpx.AsyncClient(timeout=30) as agent_http:
         pool = FakePool(run, tokenizer=tokenizer, api_key="fleet-secret")
-        capture = CaptureServer(authorization, registry=registry, client=backend, store=store)
-        stub = StubPlatform(run, api_key="platform-secret", turns=3, reward="mixed", client=agent_http)
+        capture = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        stub = StubPlatform(
+            run, api_key="platform-secret", capture_key="capture-platform-secret", reward="mixed", client=agent_http
+        )
         try:
             for app, port in ((stub.app, ports[0]), (capture.app, ports[1]), (pool.app, ports[2])):
                 servers.append(await serve(app, port))
@@ -124,7 +124,7 @@ async def test_stage_a_offline_trains_on_captured_platform_rollouts(config, tmp_
             assert 0 <= lag <= run.research.max_policy_lag
             assert set(group["rewards"]) <= {0.0, 1.0}
             assert all(tokens > 0 for tokens in group["loss_tokens"])
-            # The scripted agent: a bash tool call, a tool result, then DONE.
+            # agent-px mini-swe traffic: a bash call, its result, then the submission command.
             assert group["model_calls"] == [2, 2]
     # Version 3 is published after the last step; the store checks it below.
     assert {entry["trainer_version"] for entry in report} == {1, 2}

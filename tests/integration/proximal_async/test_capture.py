@@ -12,13 +12,11 @@ import httpx
 import pytest
 from transformers import AutoTokenizer
 
-from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
-from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.types import Sample
 from miles_plugins.proximal.capture_server import CaptureServer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
-from miles_plugins.proximal.contracts import AcceptedAttempt, digest
+from miles_plugins.proximal.contracts import AcceptedAttempt
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.rollout import execute_attempt
 
@@ -28,11 +26,7 @@ def tokenizer():
     return AutoTokenizer.from_pretrained(os.environ["PROXIMAL_TEST_TOKENIZER"], local_files_only=True)
 
 
-def registry(tokenizer):
-    return SessionRegistry(
-        tokenizer,
-        tito_tokenizer=get_tito_tokenizer(tokenizer, "qwen3", chat_template_kwargs={"enable_thinking": True}),
-    )
+PLATFORM = {"Authorization": "Bearer capture-platform-secret"}  # The registry's credential.
 
 
 def scripted_engine(config, policy, tokenizer, requests, *, tool_turn=False):
@@ -105,14 +99,14 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
+        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
             client = CaptureClient(authorization, http)
             await store.commit_policy(policy)
             handle = await client.create(attempt)
             assert await client.create(attempt) == handle
-            url = handle.base_url + "/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {handle.api_key.get_secret_value()}"}
+            url = handle.base_url + "/chat/completions"
+            headers = PLATFORM
             messages = [{"role": "user", "content": "Inspect this feature."}]
             first = await http.post(url, headers=headers, json={"model": config.base_model.name, "messages": messages})
             assert first.status_code == 200, first.text
@@ -138,7 +132,7 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
             assert wrong.status_code == 401
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
             await client.release(handle)
-        replacement = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
+        replacement = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=replacement.app)) as http:
             client = CaptureClient(authorization, http)
             assert await client.collect(handle, attempt) == (receipt, payload)
@@ -170,7 +164,7 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
+        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=server.app, raise_app_exceptions=False)
         ) as http:
@@ -181,9 +175,9 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
             if mutation == "sampling":
                 body["temperature"] = 0.7
             reply = await http.post(
-                handle.base_url + "/v1/chat/completions",
+                handle.base_url + "/chat/completions",
                 json=body,
-                headers={"Authorization": f"Bearer {handle.api_key.get_secret_value()}"},
+                headers=PLATFORM,
             )
             assert reply.status_code >= 400
             with pytest.raises(httpx.HTTPStatusError):
@@ -202,7 +196,7 @@ async def test_task_to_captured_and_graded_miles_sample(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=tool_turn)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, registry=registry(tokenizer), client=backend, store=store)
+        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as capture_http:
             capture = CaptureClient(authorization, capture_http)
             await store.commit_policy(policy)
@@ -210,26 +204,22 @@ async def test_task_to_captured_and_graded_miles_sample(
             async def platform_rpc(request):
                 method = request.url.path.rsplit("/", 1)[-1]
                 methods.append(method)
-                if method == "GetTrainingCapabilities":
-                    body = {
-                        "protocolVersion": 1,
-                        "harnessRevision": config.harness.revision,
-                        "supportedAgentTypes": [config.harness.agent_type],
-                        "pinnedSource": True,
-                        "linearTito": True,
-                    }
-                elif method == "ListProjectEnvironments":
+                if method == "ListProjectEnvironments":
                     body = {"memberships": [{"environmentId": attempt.task.environment_id}]}
                 elif method == "CreateEnvironmentRun":
-                    binding = json.loads(request.content)["trainingBinding"]
+                    submitted = json.loads(request.content)
+                    [agent] = submitted["config"]["agents"]
+                    assert (agent["agentModel"], agent["endpointName"]) == ("miles/test", "miles-capture")
+                    # The registry's derived rollout route for this run.
+                    route = f"{config.capture.url}/rollouts/{submitted['runId']}-rollout-0/v1"
                     messages = [{"role": "user", "content": "Implement the feature."}]
                     for turn in range(2):
                         reply = await capture_http.post(
-                            binding["sessionBaseUrl"] + "/chat/completions",
-                            headers={"Authorization": "Bearer " + binding["sessionApiKey"]},
+                            route + "/chat/completions",
+                            headers=PLATFORM,
                             json=(
                                 {
-                                    "model": binding["model"],
+                                    "model": config.base_model.name,
                                     "messages": messages,
                                     "tools": [
                                         {
@@ -246,7 +236,7 @@ async def test_task_to_captured_and_graded_miles_sample(
                                     ],
                                 }
                                 if tool_turn
-                                else {"model": binding["model"], "messages": messages}
+                                else {"model": config.base_model.name, "messages": messages}
                             ),
                         )
                         assert reply.status_code == 200, reply.text
@@ -260,7 +250,6 @@ async def test_task_to_captured_and_graded_miles_sample(
                     body = {
                         "runId": attempt.attempt_id,
                         "instancesStarted": 1,
-                        "trainingRequestSha256": digest(attempt),
                     }
                 elif method == "GetEnvironmentRunContainers":
                     body = {
@@ -279,7 +268,6 @@ async def test_task_to_captured_and_graded_miles_sample(
                         "runId": attempt.attempt_id,
                         "imageId": attempt.task.image_id,
                         "sourceCommitSha": attempt.task.source_commit_sha,
-                        "trainingRequestSha256": digest(attempt),
                     }
                 elif method == "StopEnvironmentRun":
                     body = {}
@@ -318,3 +306,64 @@ async def test_task_to_captured_and_graded_miles_sample(
                 with pytest.raises(httpx.HTTPStatusError) as caught:
                     await capture.create(attempt)
                 assert caught.value.response.status_code == 410
+
+
+async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
+    config, authorization, policy, attempt, tokenizer, store
+):
+    from miles_plugins.proximal.e2e.stub_platform import BASH_TOOL, assemble_stream, replay_assistant
+
+    requests = []
+    engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
+        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            await store.commit_policy(policy)
+            handle = await client.create(attempt)
+            url = handle.base_url + "/chat/completions"
+
+            def agent_px(messages, **overrides):
+                return {
+                    "model": config.base_model.name,
+                    "messages": messages,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                    "prompt_cache_key": "mini-swe:run",
+                    "tools": [BASH_TOOL],
+                    "max_completion_tokens": 48,
+                    "reasoning_effort": "high",
+                } | overrides
+
+            messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "Implement it."}]
+            wrong = await http.post(url, headers=PLATFORM, json=agent_px(messages, reasoning_effort="low"))
+            assert wrong.status_code == 422
+            unknown = await http.post(url, headers=PLATFORM, json=agent_px(messages, seed=1))
+            assert unknown.status_code == 422
+            first = await http.post(url, headers=PLATFORM, json=agent_px(messages))
+            assert first.status_code == 200, first.text
+            parsed, finish, usage = assemble_stream(first.text)
+            assert finish == "tool_calls" and usage is not None and parsed["calls"]
+            assistant = replay_assistant(parsed, finish)
+            # agent-px's rebuild differs textually from what the engine returned.
+            assert assistant["content"] is None
+            assert assistant["tool_calls"][0]["function"]["arguments"] == '{"command":"pwd"}'
+            tool = {
+                "role": "tool",
+                "tool_call_id": assistant["tool_calls"][0]["id"],
+                "content": '{\n  "returncode": 0\n}',
+            }
+            # The platform's family ceiling exceeds the contract: capped, not rejected.
+            second = await http.post(
+                url, headers=PLATFORM, json=agent_px([*messages, assistant, tool], max_completion_tokens=16_000)
+            )
+            assert second.status_code == 200, second.text
+            receipt, _ = await client.collect(handle, attempt)
+            assert receipt.num_calls == 2  # No silent rollback of the first turn.
+            for sent in requests:
+                assert sent["stream"] is False
+                assert "reasoning_effort" not in sent and "prompt_cache_key" not in sent
+                assert all("strict" not in tool_def["function"] for tool_def in sent.get("tools", []))
+            assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
+            assert requests[0]["max_tokens"] == 48
+            assert requests[1]["max_tokens"] == config.research.sampling.max_tokens

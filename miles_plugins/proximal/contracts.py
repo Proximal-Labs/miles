@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, ConfigDict, Field, FiniteFloat, SecretStr, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, FiniteFloat, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles_plugins.proximal.modal_volume import VolumeDestination
@@ -98,17 +98,39 @@ class Research(Contract):
     max_consecutive_failed_groups: Positive
 
 
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
 class ModelProtocol(Contract):
-    """How served text becomes reasoning and tool calls. Changes what the agent sees,
-    so it is part of the training contract, shared by serving and capture."""
+    """How served text becomes reasoning and tool calls, and what effort the harness
+    requests. Changes what the agent sees, so it is part of the training contract,
+    shared by serving, capture and the platform run request."""
 
     reasoning_parser: Nonempty
     tool_call_parser: Nonempty
+    # Sent to the platform for every run; capture rejects a model call asking otherwise.
+    reasoning_effort: ReasoningEffort
 
 
 class Service(Contract):
     url: Endpoint
     api_key_env: Nonempty
+
+
+class CaptureService(Service):
+    """``api_key_env``: Miles's admin credential. ``platform_key_env``: the credential the
+    platform's endpoint registry holds to call rollout routes on behalf of agent-px."""
+
+    platform_key_env: Nonempty
+
+
+class PlatformRoute(Contract):
+    """How the platform sends a run's model calls to capture: the registry entry
+    (``endpoint_name``) under the platform model id (``model``). The registry derives
+    ``<capture url>/rollouts/<platform rollout id>/v1`` as each rollout's base URL."""
+
+    model: Nonempty
+    endpoint_name: Nonempty
 
 
 class SharedDiskArtifacts(Contract):
@@ -136,7 +158,8 @@ class RunConfig(Contract):
     harness: Harness
     research: Research
     platform: Service
-    capture: Service
+    platform_route: PlatformRoute
+    capture: CaptureService
     inference_url: Endpoint
     # Header name -> environment variable name, never credential values.
     inference_header_env: dict[str, Nonempty]
@@ -229,9 +252,11 @@ class Attempt(Contract):
 
 
 class SessionHandle(Contract):
+    """A registered attempt's capture session. ``base_url`` is the rollout route the
+    platform derives for this run; no per-session credential leaves Miles."""
+
     session_id: SafeId
     base_url: Endpoint
-    api_key: SecretStr
     request_sha256: Digest
 
 
