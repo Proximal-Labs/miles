@@ -3,10 +3,12 @@
 # Omitted: the dataset, reward and SGLang-engine flags (the run config, the gsm8k
 # platform and the serving pool own those) and LoRA/sampling/group flags (derived
 # from the run config by `runtime train-args`). Model args are appended by the app.
+# 128 prompts x 8 samples per step, 256 samples per optimizer update: 4 updates per
+# step, each the recipe's size (the recipe runs 32 prompts, one update per step).
 --actor-num-nodes 1
 --actor-num-gpus-per-node 1
 --calculate-per-token-loss
---rollout-batch-size 32
+--rollout-batch-size 128
 --global-batch-size 256
 --num-rollout 2000
 --tensor-model-parallel-size 1

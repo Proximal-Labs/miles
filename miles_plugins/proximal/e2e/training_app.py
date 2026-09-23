@@ -39,10 +39,12 @@ import modal
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, RUN_JSON, base_volume, with_configs
 
 REPO = Path(__file__).resolve().parents[3]
-SNAPSHOT = Path("/snapshot")
+SNAPSHOT_MOUNT = Path("/snapshot")
 state_volume = modal.Volume.from_name(
     "miles-gsm8k-state", environment_name=RUN.volume.environment_name, create_if_missing=False
 )
+# One snapshot namespace per run: a new run must never resume another run's state.
+SNAPSHOT = SNAPSHOT_MOUNT / RUN.run_id
 TRAIN_ARGS = REPO / "examples/proximal/gsm8k/train_args.txt"
 FORK = Path("/fork")  # This fork's files that are not Python packages.
 CONFIG = Path("/config/run.json")
@@ -158,7 +160,7 @@ def _run_trainer(command: list[str]) -> int:
 @app.function(
     image=image,
     gpu=GPU,
-    volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT): state_volume},
+    volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
     retries=modal.Retries(max_retries=3, initial_delay=30.0),
     secrets=[
         modal.Secret.from_name(DEPLOYMENT.gateway_secret, environment_name=RUN.volume.environment_name),
