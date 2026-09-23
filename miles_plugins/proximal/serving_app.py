@@ -55,6 +55,9 @@ SERVING_JSON = _read(_SERVING_JSON, "PROXIMAL_SERVING_CONFIG")
 RUN = RunConfig.model_validate_json(RUN_JSON)
 DEPLOYMENT = ServingDeployment.model_validate_json(SERVING_JSON)
 ENGINE_ARGV_JSON = os.environ.get(_ENGINE_ARGV_JSON) or json.dumps(engine_argv(RUN, DEPLOYMENT))
+# Baked into every image whose container imports this module: configs, and the engine
+# argv resolved at deploy time (the container need not import SGLang to read it).
+CONFIG_ENV = {_RUN_JSON: RUN_JSON, _SERVING_JSON: SERVING_JSON, _ENGINE_ARGV_JSON: ENGINE_ARGV_JSON}
 
 base_volume = modal.Volume.from_name(
     DEPLOYMENT.base_volume.volume_name,
@@ -68,7 +71,7 @@ adapter_volume = modal.Volume.from_name(
 image = (
     modal.Image.from_registry(DEPLOYMENT.image)
     .entrypoint([])
-    .env({_RUN_JSON: RUN_JSON, _SERVING_JSON: SERVING_JSON, _ENGINE_ARGV_JSON: ENGINE_ARGV_JSON})
+    .env(CONFIG_ENV)
     # This fork's plugin and Miles sources, over the Miles image's installed copy.
     .add_local_python_source("miles", "miles_plugins")
 )

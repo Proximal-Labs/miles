@@ -12,10 +12,11 @@ this neither creates nor deletes it.
 import modal
 
 from miles_plugins.proximal.serving import engine_model_path
-from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume
+from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume, image
 
 app = modal.App(f"{DEPLOYMENT.app_name}-stage-base")
-image = modal.Image.debian_slim(python_version="3.12").pip_install("huggingface_hub==0.35.3")
+# The serving image: importing this module in the container needs the plugin, its
+# dependencies and the deploy-time configs, which only that image carries.
 
 
 @app.function(image=image, volumes={str(DEPLOYMENT.base_mount): base_volume}, timeout=3600)
