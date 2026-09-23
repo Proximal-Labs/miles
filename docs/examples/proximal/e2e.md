@@ -12,7 +12,7 @@ Stage A runs every part of the async platform-RL path for real except the optimi
 | Capture service (Miles TITO, exact tokens/logprobs/masks) | Real |
 | Snapshot preparation, adapter Volume upload, serving-pool verification | Real (offline: local) |
 | Serving pool: SGLang + gateway loading immutable LoRA versions on Modal | Real (offline: `fake_pool`) |
-| Platform | `stub_platform`: scripted multi-turn agent with a bash tool, deterministic mixed grades |
+| Platform | `stub_platform`: plays agent-px's mini-swe traffic (pinned proximal-mono commit) and acts as the endpoint registry, deterministic mixed grades |
 | Training | `fake_trainer`: consumes real batches, publishes pre-made random-weight adapters as new versions |
 
 Everything local runs in one Linux container (the CPU test image), because Miles and SGLang's Python code need Linux and the run config allows plain HTTP only on loopback. Configs here use Qwen3-0.6B at the revision CI pins, LoRA rank 8, groups of 4, `max_policy_lag` 1.
@@ -39,11 +39,12 @@ A zsh helper for the steps below:
 stage_a() {
   docker run --rm ${=STAGE_A_DOCKER} -v "$PWD:/work:ro" -v "$PWD/.cpu-sglang:/sglang:ro" \
     -v "$PWD/.stage-a:/stage-a" -v "$PWD/.stage-a/Qwen3-0.6B-${REV}:/models/Qwen3-0.6B-${REV}:ro" \
-    -e STAGE_A_PLATFORM_KEY -e STAGE_A_CAPTURE_KEY -e STAGE_A_GATEWAY_AUTHORIZATION \
+    -e STAGE_A_PLATFORM_KEY -e STAGE_A_CAPTURE_KEY -e STAGE_A_CAPTURE_PLATFORM_KEY -e STAGE_A_GATEWAY_AUTHORIZATION \
     -e MODAL_TOKEN_ID -e MODAL_TOKEN_SECRET -e MODAL_PROXY_KEY -e MODAL_PROXY_SECRET \
     -w /work proximal-cpu "$@"
 }
-export STAGE_A_PLATFORM_KEY=$(openssl rand -hex 16) STAGE_A_CAPTURE_KEY=$(openssl rand -hex 16)
+export STAGE_A_PLATFORM_KEY=$(openssl rand -hex 16) STAGE_A_CAPTURE_KEY=$(openssl rand -hex 16) \
+  STAGE_A_CAPTURE_PLATFORM_KEY=$(openssl rand -hex 16)
 ```
 
 Generate three random-weight adapters (distinct seeds, so versions serve distinguishable outputs):
@@ -125,3 +126,14 @@ modal app stop miles-stage-a-serving --env main
 ```
 
 Volumes and the secret cost little at rest; delete them only when Stage A is finished (`modal volume delete ...`, `modal secret delete ...`).
+
+## 3. Stage B: the real platform (after the proximal-mono change)
+
+Replace the stub with the platform once its endpoint registry supports the Chat Completions per-run route in [platform-contract.md](/proximal/platform-contract). The launcher skips the stub whenever the run config's `platform.url` is not loopback.
+
+1. **Choose where agent-px runs.** Its rollout workers must reach the capture service. The capture URL in the run config must be loopback (for the local launcher) or HTTPS.
+   - Local platform worker on this Mac: the capture service must share a network with it (for example `--network host` for the Stage A container, or run the capture service outside Docker), and the registry `baseURL` points at it.
+   - Staging: the capture service needs a public HTTPS URL, e.g. deployed as a Modal `app.server` next to the serving pool, or a tunnel.
+2. **Register the endpoint** (platform operator): an entry of kind `chat_completions`, `routing: per_run`, `baseURL` = the capture URL, credential reference holding `STAGE_A_CAPTURE_PLATFORM_KEY`'s value, wire model `Qwen/Qwen3-0.6B`, under the platform model ID in `platform_route.model` and the name in `platform_route.endpoint_name`.
+3. **Point the run config at real tasks and the platform**: `platform.url`, a real project and pinned `dataset.tasks`, the mini-swe `harness.agent_type` and revision, and a small `harness.max_turns` (e.g. 3) to keep sandbox time low.
+4. **Run** with `--publish modal` against the deployed serving pool (step 2 above), with a small `--steps`. Each rollout's model calls go agent-px → capture → serving pool; grades come back through the existing run APIs.
