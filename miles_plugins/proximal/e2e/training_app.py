@@ -78,7 +78,7 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: f
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise RuntimeError(f"{process.args} exited with {process.returncode} before {url} was healthy")
+            raise RuntimeError(f"{process.args!r} exited with {process.returncode} before {url} was healthy")
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 if response.status == 200:
@@ -94,7 +94,9 @@ def training_command(resume_step: int | None) -> list[str]:
     from miles_plugins.proximal.e2e.snapshots import iter_dir
 
     lines = (FORK / "train_args.txt").read_text().splitlines()
-    args = [token for line in lines if line.strip() and not line.lstrip().startswith("#") for token in shlex.split(line)]
+    args = [
+        token for line in lines if line.strip() and not line.lstrip().startswith("#") for token in shlex.split(line)
+    ]
     model_args = shlex.split(load_model_args("qwen3-0.6B", model_script_dir=FORK / "scripts/models"))
     # One W&B run per training run: a restart after a crash keeps logging to the same curve.
     args += ["--wandb-run-id", RUN.run_id]
@@ -197,14 +199,34 @@ def train() -> int:
             services = [
                 (
                     "capture",
-                    [sys.executable, "-m", "miles_plugins.proximal.runtime", "capture", "--config", str(CONFIG),
-                     "--yes-rollouts", "--yes-publish", "--port", "9011"],
+                    [
+                        sys.executable,
+                        "-m",
+                        "miles_plugins.proximal.runtime",
+                        "capture",
+                        "--config",
+                        str(CONFIG),
+                        "--yes-rollouts",
+                        "--yes-publish",
+                        "--port",
+                        "9011",
+                    ],
                     f"{RUN.capture.url}/health",
                 ),
                 (
                     "gsm8k-platform",
-                    [sys.executable, "-m", "miles_plugins.proximal.e2e.math_platform", "serve", "--config",
-                     str(CONFIG), "--data", str(DATA), "--port", "9010"],
+                    [
+                        sys.executable,
+                        "-m",
+                        "miles_plugins.proximal.e2e.math_platform",
+                        "serve",
+                        "--config",
+                        str(CONFIG),
+                        "--data",
+                        str(DATA),
+                        "--port",
+                        "9010",
+                    ],
                     f"{RUN.platform.url}/health",
                 ),
             ]
@@ -214,8 +236,16 @@ def train() -> int:
                 _wait_healthy(health, processes[-1])
                 print(f"[training] {name} ready", flush=True)
             subprocess.run(
-                ["ray", "start", "--head", "--node-ip-address", "127.0.0.1", "--num-gpus", "1",
-                 "--disable-usage-stats"],
+                [
+                    "ray",
+                    "start",
+                    "--head",
+                    "--node-ip-address",
+                    "127.0.0.1",
+                    "--num-gpus",
+                    "1",
+                    "--disable-usage-stats",
+                ],
                 check=True,
             )
             os.environ["RAY_ADDRESS"] = "127.0.0.1:6379"

@@ -37,7 +37,7 @@ class Problem:
 
 
 def load_problems(path: Path) -> list[Problem]:
-    import pyarrow.parquet as pq
+    import pyarrow.parquet as pq  # type: ignore[import-untyped]  # No stubs; read-only table access.
 
     rows = pq.read_table(path, columns=["messages", "label"]).to_pylist()
     return [Problem(messages=[dict(m) for m in row["messages"]], label=str(row["label"])) for row in rows]
@@ -76,7 +76,8 @@ class MathPlatform(StubPlatform):
             reply.raise_for_status()
             parsed, _finish, _usage = assemble_stream(reply.text)
             state.turns = 1
-            state.reward = 1.0 if grade_answer_verl(parsed["content"], problem.label) else 0.0
+            graded = grade_answer_verl(parsed["content"], problem.label)  # type: ignore[no-untyped-call]  # Miles's math reward.
+            state.reward = 1.0 if graded else 0.0
             state.status = (
                 "ROLLOUT_CONTAINER_STATUS_SUCCESS" if state.reward >= 1 else "ROLLOUT_CONTAINER_STATUS_COMPLETED"
             )

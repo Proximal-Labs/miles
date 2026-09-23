@@ -23,7 +23,11 @@ def stage(revision: str, target: str) -> list[str]:
     from huggingface_hub import snapshot_download
 
     snapshot_download(
-        repo_id="zhuzilin/gsm8k", repo_type="dataset", revision=revision, allow_patterns=["train.parquet"], local_dir=target
+        repo_id="zhuzilin/gsm8k",
+        repo_type="dataset",
+        revision=revision,
+        allow_patterns=["train.parquet"],
+        local_dir=target,
     )
     base_volume.commit()
     return sorted(path.name for path in Path(target).iterdir())

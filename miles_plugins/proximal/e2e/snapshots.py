@@ -31,7 +31,9 @@ def complete_steps(checkpoints: Path) -> list[int]:
     for cursor in (checkpoints / "rollout").glob("proximal_*.json"):
         step = int(cursor.stem.removeprefix("proximal_"))
         adapter = iter_dir(checkpoints, step) / "adapter"
-        if all((adapter / name).is_file() for name in ADAPTER_FILES) and any(adapter.glob("adapter_megatron_rank*.pt")):
+        if all((adapter / name).is_file() for name in ADAPTER_FILES) and any(
+            adapter.glob("adapter_megatron_rank*.pt")
+        ):
             steps.append(step)
     return sorted(steps)
 
@@ -90,7 +92,13 @@ def restore(*, snapshot_root: Path, checkpoints: Path, artifacts: Path, dsn: str
     shutil.copy2(snap_checkpoints / "rollout" / cursor, checkpoints / "rollout" / cursor)
     _copy_new(snapshot_root / "artifacts", artifacts)
     subprocess.run(
-        [str(pg_bin / "pg_restore"), "--no-owner", "--exit-on-error", f"--dbname={dsn}", str(snapshot_root / f"store-{step:07d}.dump")],
+        [
+            str(pg_bin / "pg_restore"),
+            "--no-owner",
+            "--exit-on-error",
+            f"--dbname={dsn}",
+            str(snapshot_root / f"store-{step:07d}.dump"),
+        ],
         check=True,
     )
     return step
