@@ -160,6 +160,9 @@ def _run_trainer(command: list[str]) -> int:
 @app.function(
     image=image,
     gpu=GPU,
+    # Capture, the rollout executor, the gsm8k platform, Ray and Postgres share this
+    # container's CPUs; a GPU function otherwise gets about one core and they starve.
+    cpu=16.0,
     volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
     retries=modal.Retries(max_retries=3, initial_delay=30.0),
     secrets=[
