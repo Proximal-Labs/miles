@@ -39,6 +39,7 @@ from pathlib import Path
 
 import modal
 
+from miles_plugins.proximal.modal_sources import add_fork_sources
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, RUN_JSON, base_volume, with_configs
 from miles_plugins.proximal.training import (
     Gsm8kPlatform,
@@ -82,7 +83,7 @@ MEGATRON_ENV = {
     "PYTHONUNBUFFERED": "1",
 }
 
-image = (
+image = add_fork_sources(
     with_configs(
         modal.Image.from_registry(DEPLOYMENT.image)
         .entrypoint([])
@@ -94,7 +95,6 @@ image = (
     .add_local_file(REPO / "train_async.py", str(FORK / "train_async.py"))
     .add_local_dir(REPO / "scripts/models", str(FORK / "scripts/models"))
     .add_local_file(REPO / TRAINING.train_args, str(FORK / "train_args.txt"))
-    .add_local_python_source("miles", "miles_plugins")
 )
 
 app = modal.App(TRAINING.app_name)
