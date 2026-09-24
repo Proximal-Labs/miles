@@ -27,6 +27,8 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
+FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
@@ -36,13 +38,19 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async and args.rollout_function_path is None:
-        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
+    if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
+        # The selection --fully-async makes, so enable the mode: as a plugin path it would
+        # skip the checks below and train.py's async-driver guard. A subclass passes the flag.
+        logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
+        args.fully_async = True
+        args.rollout_function_path = None
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
             "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
@@ -551,6 +559,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Requires train_async.py."
                 ),
             )
+            # Sampling values reach the engine per request only: the built-in generate path sends them
+            # itself and the session server fills fields an agent omits from its session's defaults.
+            # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
             parser.add_argument(
                 "--rollout-temperature",
                 type=float,
@@ -1825,7 +1836,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                    "onload/offload. Ignored unless --colocate and LoRA are both on. "
+                    "Also needs 'weight' in --offload-rollout-level: SGLang populates "
+                    "the mirror during release_weights_occupation, so with the weights "
+                    "never released the mirror is never built and the flag does nothing."
                 ),
             )
             parser.add_argument(
@@ -2461,6 +2475,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ci-test",
                 action="store_true",
+            )
+            parser.add_argument(
+                "--ci-tito-special-token-count-threshold",
+                type=float,
+                default=0.0,
+                help="Max TITO special_token_count mismatch rate tolerated under --ci-test; other hard types stay at 0.",
             )
             parser.add_argument(
                 "--ci-disable-kl-checker",
