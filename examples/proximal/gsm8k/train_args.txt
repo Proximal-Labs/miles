@@ -1,0 +1,45 @@
+# Miles training arguments for the gsm8k topology test, after `runtime train ... --`.
+# From examples/lora/run-qwen2.5-3B-megatron-lora-disaggregated.sh, for Qwen3-0.6B.
+# Omitted: the dataset, reward and SGLang-engine flags (the run config, the gsm8k
+# platform and the serving pool own those) and LoRA/sampling/group flags (derived
+# from the run config by `runtime train-args`). Model args are appended by the app.
+# 128 prompts x 8 samples per step, 256 samples per optimizer update: 4 updates per
+# step, each the recipe's size (the recipe runs 32 prompts, one update per step).
+--actor-num-nodes 1
+--actor-num-gpus-per-node 1
+--calculate-per-token-loss
+--rollout-batch-size 128
+--global-batch-size 256
+--num-rollout 2000
+--tensor-model-parallel-size 1
+--sequence-parallel
+--pipeline-model-parallel-size 1
+--context-parallel-size 1
+--expert-model-parallel-size 1
+--expert-tensor-parallel-size 1
+--use-dynamic-batch-size
+--max-tokens-per-gpu 4096
+--advantage-estimator grpo
+--kl-loss-coef 0.00
+--kl-loss-type low_var_kl
+--kl-coef 0.00
+--entropy-coef 0.00
+--eps-clip 0.2
+--eps-clip-high 0.28
+--optimizer adam
+--lr 1e-5
+--lr-decay-style constant
+--weight-decay 0.1
+--adam-beta1 0.9
+--adam-beta2 0.98
+--attention-dropout 0.0
+--hidden-dropout 0.0
+--accumulate-allreduce-grads-in-fp32
+--attention-softmax-in-fp32
+--attention-backend flash
+--save /state/checkpoints
+--save-interval 1
+--seed 42
+--use-wandb
+--wandb-project miles-gsm8k
+--wandb-group gsm8k-qwen3-0p6b

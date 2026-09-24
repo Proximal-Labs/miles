@@ -1,0 +1,73 @@
+"""Guard the small set of authorized remote mutation sites in this integration."""
+
+import ast
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from miles_plugins.proximal.modal_volume import VolumeDestination, modal_publish_snapshot
+from miles_plugins.proximal.replica import ReplicaConfig, ReplicaLoRALoader
+from miles_plugins.proximal.snapshot import prepare_snapshot
+
+
+def test_raw_destination_does_not_authorize_publication(tmp_path, adapter, metadata):
+    snapshot = prepare_snapshot(adapter, metadata=metadata, output_root=tmp_path / "out")
+    forged = SimpleNamespace(destination=VolumeDestination(volume_name="v", environment_name="dev"))
+    with pytest.raises(PermissionError, match="authorized"):
+        modal_publish_snapshot(forged, snapshot)
+
+
+def test_raw_config_does_not_authorize_engine_mutation(tmp_path, metadata):
+    config = ReplicaConfig(
+        base_model=metadata.base_model, served_model_name="served", backend_url="http://127.0.0.1:1"
+    )
+    with httpx.Client(trust_env=False) as client:
+        with pytest.raises(PermissionError, match="authorized"):
+            ReplicaLoRALoader(
+                SimpleNamespace(config=config),
+                volume_mount=tmp_path / "volume",
+                local_cache=tmp_path / "cache",
+                reload_volume=lambda: pytest.fail("No reload without authorization"),
+                client=client,
+            )
+
+
+def test_remote_mutations_stay_in_authorized_adapters():
+    plugin = Path(__file__).resolve().parents[3] / "miles_plugins" / "proximal"
+    mutations = []
+    for path in plugin.rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        name = str(path.relative_to(plugin))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            method = node.func.attr
+            # Paid Modal function calls, each an explicit script run by hand.
+            if method == "remote" and name in {"e2e/stage_base.py", "e2e/stage_gsm8k.py", "e2e/training_app.py"}:
+                mutations.append((name, method))
+                continue
+            assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
+            # FastAPI route decorators are not outbound network calls.
+            receiver = ast.unparse(node.func.value)
+            if method in {"batch_upload", "post", "request"} and receiver not in {"app", "self.app"}:
+                mutations.append((name, method))
+            if method == "from_name" and not receiver.endswith("Secret"):
+                # Volumes are referenced, never created. (Secret.from_name cannot create.)
+                [create] = [kw.value for kw in node.keywords if kw.arg == "create_if_missing"]
+                assert isinstance(create, ast.Constant) and create.value is False
+    assert sorted(mutations) == [
+        ("capture_server.py", "post"),  # Recorded inference only; policy warm-up moved to the pool client.
+        ("clients.py", "request"),  # The shared retrying request helper every client uses.
+        ("e2e/math_platform.py", "post"),  # The gsm8k platform's agent calling its capture session.
+        ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
+        ("e2e/stage_gsm8k.py", "remote"),  # Paid gsm8k data staging, run by hand.
+        ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.
+        ("e2e/training_app.py", "remote"),  # Paid gsm8k training node, run by hand.
+        ("gateway.py", "post"),
+        ("modal_volume.py", "batch_upload"),
+        ("modal_volume.py", "batch_upload"),
+        ("replica.py", "post"),
+        ("replica.py", "post"),
+    ]

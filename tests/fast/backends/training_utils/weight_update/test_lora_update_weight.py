@@ -65,7 +65,7 @@ class TestWeightUpdaterLoraConfig:
     """The updater requires a lora_sync_config exactly when LoRA is active."""
 
     def _make_updater(self, *, is_lora, lora_sync_config):
-        protocol = MagicMock()
+        protocol = MagicMock(initial_weight_version=0)
         protocol.supports_lora = True
         with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
             return WeightUpdater(

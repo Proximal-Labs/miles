@@ -1,0 +1,26 @@
+{
+  "app_name": "miles-stage-a-serving",
+  "image": "radixark/miles@sha256:796a29b2f2e9526ba704586d7f118defe624e76788b3e5c2bb86a551df7f891e",
+  "gpu": "L4",
+  "tensor_parallel": 1,
+  "routing_region": "us-west",
+  "min_replicas": 2,
+  "max_replicas": 2,
+  "target_concurrency": 8,
+  "scaledown_window_seconds": 600,
+  "startup_timeout_seconds": 3600,
+  "base_volume": {
+    "volume_name": "miles-stage-a-base",
+    "environment_name": "main"
+  },
+  "base_mount": "/models",
+  "adapter_mount": "/adapters",
+  "local_cache": "/cache",
+  "max_loaded_adapters": 4,
+  "gateway_secret": "miles-stage-a-gateway",
+  "gateway_key_env": "MILES_GATEWAY_KEY",
+  "extra_engine_args": [
+    "--mem-fraction-static",
+    "0.8"
+  ]
+}

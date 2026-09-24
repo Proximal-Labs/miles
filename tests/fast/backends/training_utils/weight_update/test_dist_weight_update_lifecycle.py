@@ -73,6 +73,7 @@ def _make_engines(
 
 def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract") -> WeightUpdater:
     protocol = SimpleNamespace(
+        initial_weight_version=0,
         use_weight_update_session=True,
         needs_base_resync_for_lora=False,
         is_sender=True,

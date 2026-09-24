@@ -27,6 +27,8 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
+FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
@@ -35,14 +37,20 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     else:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
-    if args.fully_async:
-        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    if args.fully_async and args.rollout_function_path is None:
+        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
+    if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
+        # The selection --fully-async makes, so enable the mode: as a plugin path it would
+        # skip the checks below and train.py's async-driver guard. A subclass passes the flag.
+        logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
+        args.fully_async = True
+        args.rollout_function_path = None
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
             "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
@@ -54,9 +62,12 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async needs the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         # Runs after validate_multi_lora_args, which selects a rollout function of its own.
         assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
-        assert (
-            args.rollout_function_path is None
-        ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
+        if args.rollout_function_path is not None:
+            from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
+
+            assert issubclass(
+                load_function(args.rollout_function_path), FullyAsyncRolloutFn
+            ), "A custom fully-async rollout must extend FullyAsyncRolloutFn"
         assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
         assert args.pause_generation_mode != "abort", (
@@ -548,6 +559,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Requires train_async.py."
                 ),
             )
+            # Sampling values reach the engine per request only: the built-in generate path sends them
+            # itself and the session server fills fields an agent omits from its session's defaults.
+            # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
             parser.add_argument(
                 "--rollout-temperature",
                 type=float,
@@ -879,6 +893,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 nargs="+",
                 help="Address and ports of the external engines.",
+            )
+            parser.add_argument(
+                "--custom-weight-transfer-protocol-path",
+                type=str,
+                default=None,
+                help="WeightTransferProtocol implementation for an external serving fleet.",
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
@@ -1816,7 +1836,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                    "onload/offload. Ignored unless --colocate and LoRA are both on. "
+                    "Also needs 'weight' in --offload-rollout-level: SGLang populates "
+                    "the mirror during release_weights_occupation, so with the weights "
+                    "never released the mirror is never built and the flag does nothing."
                 ),
             )
             parser.add_argument(
@@ -2454,6 +2477,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-tito-special-token-count-threshold",
+                type=float,
+                default=0.0,
+                help="Max TITO special_token_count mismatch rate tolerated under --ci-test; other hard types stay at 0.",
+            )
+            parser.add_argument(
                 "--ci-disable-kl-checker",
                 action="store_true",
             )
@@ -2587,6 +2616,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             for path in [
                 resolve_rollout_function_paths(args_partial)[0],
                 args_partial.custom_generate_function_path,
+                args_partial.custom_megatron_post_save_hook_path,
             ]:
                 try:
                     fn = load_function(path)
@@ -2861,6 +2891,13 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    if args.custom_megatron_post_save_hook_path is not None:
+        assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
+        post_save_hook = load_function(args.custom_megatron_post_save_hook_path)
+        validate_hook = getattr(post_save_hook, "validate_args", None)
+        if callable(validate_hook):
+            validate_hook(args)
+
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3094,9 +3131,6 @@ def miles_validate_args(args):
 
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
-
-    if args.custom_megatron_post_save_hook_path is not None:
-        assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     # Parse LoRA target modules
     if args.lora_rank > 0:
@@ -3334,7 +3368,12 @@ def miles_validate_args(args):
 
     if args.debug_train_only:
         args.rollout_num_gpus = 0
-    args.starts_inference_engines = not args.debug_train_only or args.eval_num_gpus > 0
+    opaque_external_fleet = args.rollout_external and not args.rollout_external_engine_addrs
+    if opaque_external_fleet:
+        assert args.custom_weight_transfer_protocol_path, "An opaque external fleet needs a weight transfer protocol"
+        assert args.rollout_function_path, "An opaque external fleet needs a custom rollout function"
+        assert args.eval_num_gpus == 0 and not args.colocate
+    args.starts_inference_engines = (not args.debug_train_only or args.eval_num_gpus > 0) and not opaque_external_fleet
 
     if args.use_critic and not args.debug_rollout_only:
         if args.offload_train is None:
@@ -3567,6 +3606,10 @@ def miles_validate_args(args):
 
     if args.mini_ft_controller_enable and args.api_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
+
+    if args.custom_weight_transfer_protocol_path is not None:
+        protocol_cls = load_function(args.custom_weight_transfer_protocol_path)
+        protocol_cls.validate_args(args)
 
 
 def validate_skip_actor_forward_only(args) -> None:

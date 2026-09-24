@@ -88,6 +88,8 @@ class LinearTrajectory:
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
+    evaluation: bool = False
+    sampling_defaults: dict[str, Any] = field(default_factory=dict)
 
     @property
     def turn_args(self) -> dict[str, Any]:
@@ -126,7 +128,14 @@ class LinearTrajectory:
         request_messages = client_args.get("messages", [])
         checkpoint_index = self._find_rollback_checkpoint(request_messages, matcher)
         turn_args = self.turn_args_history[checkpoint_index] if checkpoint_index >= 0 else None
-        prepared = prepare_chat_request(client_args, tito_tokenizer, config=config, turn_args=turn_args)
+        prepared = prepare_chat_request(
+            client_args,
+            tito_tokenizer,
+            config=config,
+            turn_args=turn_args,
+            evaluation=self.evaluation,
+            sampling_defaults=self.sampling_defaults,
+        )
         prepared.body["input_ids"] = self._render_token_ids(
             request_messages,
             checkpoint_index=checkpoint_index,
@@ -224,7 +233,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
-        self.turn_args_history.append(deepcopy(turn_args or {}))
+        self.turn_args_history.append(_copy_turn_args(turn_args or {}))
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -373,9 +382,11 @@ class SessionRegistry:
             message_matcher if message_matcher is not None else strict_message_matches
         )
 
-    def create_session(self) -> str:
+    def create_session(self, *, evaluation: bool = False, sampling_defaults: dict[str, Any] | None = None) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = LinearTrajectory()
+        self.sessions[session_id] = LinearTrajectory(
+            evaluation=evaluation, sampling_defaults=dict(sampling_defaults or {})
+        )
         return session_id
 
     def get_session(self, session_id: str) -> LinearTrajectory:
@@ -407,3 +418,16 @@ class SessionRegistry:
             return [m.to_dict() for m in mismatches]
         except Exception as e:
             raise TokenizationError(f"failed to compute tito_session_mismatch: {e}") from e
+
+
+def _copy_turn_args(turn_args: dict[str, Any]) -> dict[str, Any]:
+    """An isolated copy of a turn's resolved request.
+
+    ``input_ids`` holds immutable ints, so a flat copy isolates it as well as a deep
+    copy; deep-copying it walked every token in Python on every turn, which dominated
+    the per-call cost on long trajectories.
+    """
+    return {
+        key: list(value) if key == "input_ids" and isinstance(value, list) else deepcopy(value)
+        for key, value in turn_args.items()
+    }

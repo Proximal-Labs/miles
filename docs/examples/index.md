@@ -42,6 +42,8 @@ Not fully verified — for experimental and development use.
 - **[eval_multi_task](https://github.com/radixark/miles/tree/main/examples/experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](https://github.com/radixark/miles/tree/main/examples/experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
 - **[multi_agent](https://github.com/radixark/miles/tree/main/examples/experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
+- **[proximal/e2e](/examples/proximal/e2e)**: Stage A harness for Proximal platform rollouts: the real rollout, store and capture path from a Mac against Modal replicas, with training faked.
+- **[proximal/gsm8k](/examples/proximal/gsm8k)**: Qwen3-0.6B hill-climbs gsm8k on the platform-training topology (Modal training node and replicas) with a stand-in platform.
 - **[nemo-gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym)**: SWE-agent training with NVIDIA NeMo Gym as the environment ecosystem.
 - **[openenv](https://github.com/radixark/miles/tree/main/examples/experimental/openenv)**: Rollouts against OpenEnv-hosted environments.
 - **[reproducibility](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
