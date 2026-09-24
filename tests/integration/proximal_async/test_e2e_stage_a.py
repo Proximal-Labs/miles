@@ -79,7 +79,7 @@ async def run_stage_a(run, path, ports, tmp_path, **overrides):
     servers = []
     async with httpx.AsyncClient(timeout=30) as backend, httpx.AsyncClient(timeout=30) as agent_http:
         pool = FakePool(run, tokenizer=tokenizer, api_key="fleet-secret")
-        capture = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        capture = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         stub = StubPlatform(
             run, api_key="platform-secret", capture_key="capture-platform-secret", reward="mixed", client=agent_http
         )

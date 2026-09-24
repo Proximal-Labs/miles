@@ -10,6 +10,7 @@ admission, upstream SGLang time) arrives in its ``Server-Timing`` header.
 """
 
 import json
+import os
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -89,6 +90,8 @@ class CallTimingMiddleware:
         finally:
             _CURRENT.reset(token)
             record = {
+                # Which container served the call: sticky routing keeps one rollout on one.
+                "container": os.environ.get("MODAL_TASK_ID", ""),
                 "wall_start": timing.wall_start,
                 "path": timing.path,
                 "client": timing.client,

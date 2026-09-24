@@ -14,7 +14,8 @@
     "miles-qwen38-gateway",
     "miles-gsm8k-proxy",
     "miles-gsm8k-wandb",
-    "miles-platform"
+    "miles-platform",
+    "miles-qwen38-capture"
   ],
   "platform": {
     "kind": "real",

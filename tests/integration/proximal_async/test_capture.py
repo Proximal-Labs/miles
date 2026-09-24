@@ -13,7 +13,7 @@ import pytest
 
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
-from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
+from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
 from miles_plugins.proximal.contracts import AcceptedAttempt
 from miles_plugins.proximal.data_source import PlatformTaskSource
@@ -98,7 +98,7 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
             client = CaptureClient(authorization, http)
             await store.commit_policy(policy)
@@ -131,7 +131,7 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
             assert wrong.status_code == 401
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
             await client.release(handle)
-        replacement = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        replacement = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=replacement.app)) as http:
             client = CaptureClient(authorization, http)
             assert await client.collect(handle, attempt) == (receipt, payload)
@@ -163,7 +163,7 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=server.app, raise_app_exceptions=False)
         ) as http:
@@ -195,7 +195,7 @@ async def test_task_to_captured_and_graded_miles_sample(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=tool_turn)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as capture_http:
             capture = CaptureClient(authorization, capture_http)
             await store.commit_policy(policy)
@@ -315,7 +315,7 @@ async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=True)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
             client = CaptureClient(authorization, http)
             await store.commit_policy(policy)
@@ -386,3 +386,45 @@ async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
                 marks = record["marks"]
                 assert [marks[name] for name in order] == sorted(marks[name] for name in order)
                 assert record["response_id"] and record["input_tokens"] > 0 and record["output_tokens"] > 0
+
+
+async def test_capture_composed_like_a_replica(config, authorization, policy, attempt, tokenizer, tmp_path):
+    """On a replica, capture reaches its gateway through an injected endpoint and checks a
+    session's policy by admission rather than the rollout store (see serve_replica)."""
+    requests: list[dict[str, object]] = []
+    engine = scripted_engine(config, policy, tokenizer, requests)
+    admitted: list[object] = []
+
+    async def admits(candidate):
+        admitted.append(candidate)
+        return candidate == policy
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as gateway:
+        server = CaptureServer(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint(client=gateway, url="http://replica-gateway", headers={"Authorization": "Bearer g"}),
+            policy_known=admits,
+            root=tmp_path / "capture",
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            other = attempt.model_copy(
+                update={
+                    "attempt_id": "attempt-2",
+                    "policy": policy.model_copy(update={"version": policy.version + 1}),
+                }
+            )
+            with pytest.raises(httpx.HTTPStatusError) as refused:
+                await client.create(other)
+            assert refused.value.response.status_code == 409
+            handle = await client.create(attempt)
+            reply = await http.post(
+                handle.base_url + "/chat/completions",
+                headers=PLATFORM,
+                json={"model": config.base_model.name, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert reply.status_code == 200, reply.text
+            receipt, _ = await client.collect(handle, attempt)
+            assert receipt.num_calls == 1 and admitted == [other.policy, policy]
+    assert (tmp_path / "capture" / "sessions" / handle.session_id / "receipt.json").exists()

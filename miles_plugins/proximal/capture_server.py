@@ -2,7 +2,11 @@
 
 One CPU process owns live sessions. Sealed samples survive its restart on disk;
 unfinished sessions are explicitly lost. This app exposes no unrecorded proxy.
-Policy versions come from the rollout store, the single policy authority.
+
+The composing process decides where capture runs. On a serving replica (see
+``serve_replica``) it sends turns to that replica's gateway in-process and verifies a
+session's policy by admitting its adapter; next to the trainer (the local Stage A
+harness) it calls the pool over the network and checks the rollout store.
 """
 
 import asyncio
@@ -12,6 +16,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -28,10 +33,13 @@ from miles_plugins.proximal.authorization import AuthorizedRun, require_authoriz
 from miles_plugins.proximal.contracts import (
     Attempt,
     CaptureReceipt,
+    ROLLOUT_SUFFIX,
+    Policy,
     RunConfig,
     canonical_bytes,
     digest,
     pinned_dataset,
+    platform_rollout_id,
 )
 from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import RolloutStore
@@ -145,11 +153,42 @@ def session_config(config: RunConfig) -> SessionServerConfig:
 
 ENGINE_ATTEMPTS = 3
 
+# Whether a session's policy is one the trainer published; checked when the session opens.
+PolicyCheck = Callable[[Policy], Awaitable[bool]]
+
+
+def committed_in(store: RolloutStore) -> PolicyCheck:
+    """Next to the trainer: the rollout store is the policy authority."""
+
+    async def check(policy: Policy) -> bool:
+        return await store.policy(policy.version) == policy
+
+    return check
+
+
+def capture_root(config: RunConfig) -> Path:
+    """Where capture keeps its state next to the trainer (the run's artifact directory)."""
+    return config.artifact_directory / config.run_id / "capture"
+
+
+@dataclass(frozen=True)
+class EngineEndpoint:
+    """Where capture sends rendered turns: a pool gateway's chat route and its credentials."""
+
+    client: httpx.AsyncClient  # Borrowed: the composing process owns it.
+    url: str
+    headers: dict[str, str]
+
+    @classmethod
+    def pool(cls, config: RunConfig, client: httpx.AsyncClient) -> "EngineEndpoint":
+        """The serving pool over the network, with the run config's inference credentials."""
+        headers = {name: secret_env(env) for name, env in config.inference_header_env.items()}
+        return cls(client=client, url=config.inference_url, headers=headers)
+
 
 class BoundTransport:
-    def __init__(self, config: RunConfig, client: httpx.AsyncClient, sessions: dict[str, LiveSession]):
-        self.config, self.client, self.sessions = config, client, sessions
-        self.headers = {name: secret_env(env) for name, env in config.inference_header_env.items()}
+    def __init__(self, config: RunConfig, engine: EngineEndpoint, sessions: dict[str, LiveSession]):
+        self.config, self.engine, self.sessions = config, engine, sessions
 
     async def _post_engine(self, outbound: bytes, policy_sha256: str) -> httpx.Response:
         """One engine call, retried when the connection fails.
@@ -160,11 +199,11 @@ class BoundTransport:
         """
         for attempt in range(ENGINE_ATTEMPTS):
             try:
-                return await self.client.post(
-                    f"{self.config.inference_url}/v1/chat/completions",
+                return await self.engine.client.post(
+                    f"{self.engine.url}/v1/chat/completions",
                     content=outbound,
                     headers={
-                        **self.headers,
+                        **self.engine.headers,
                         "Content-Type": "application/json",
                         "X-Proximal-Policy-Sha256": policy_sha256,
                     },
@@ -257,15 +296,6 @@ class BoundTransport:
         }
 
 
-# The platform names a run's rollouts ``<run id>-rollout-<index>``; Miles runs have one.
-ROLLOUT_SUFFIX = "-rollout-0"
-
-
-def rollout_id(attempt_id: str) -> str:
-    """The platform rollout ID of an attempt's single-instance run."""
-    return f"{attempt_id}{ROLLOUT_SUFFIX}"
-
-
 def normalize_agent_request(body: dict[str, Any], *, reasoning_effort: str) -> None:
     """Map agent-px's Chat Completions request onto the training sampling contract.
 
@@ -299,20 +329,20 @@ class CaptureServer:
         authorization: AuthorizedRun,
         *,
         tokenizer: Any,
-        client: httpx.AsyncClient,
-        store: RolloutStore,
+        engine: EngineEndpoint,
+        policy_known: PolicyCheck,
+        root: Path,
     ):
         self.config = require_authorization(authorization)
-        self.client = client  # Borrowed: the process composition root owns it.
-        self.store = store  # Borrowed, likewise.
+        self.policy_known = policy_known
         self.admin_key = secret_env(self.config.capture.api_key_env)
         self.platform_key = secret_env(self.config.capture.platform_key_env)
-        self.root = self.config.artifact_directory / self.config.run_id / "capture"
+        self.root = root
         write_immutable(self.root / "run.json", canonical_bytes(self.config))
         self.sessions: dict[str, LiveSession] = {}
         self.attempts: dict[str, str] = {}
         self._create_lock = asyncio.Lock()
-        self.transport = BoundTransport(self.config, client, self.sessions)
+        self.transport = BoundTransport(self.config, engine, self.sessions)
         # Built here, never passed in: the registry's matcher is part of capture correctness.
         registry = capture_registry(self.config, tokenizer)
         self.core = SessionCore(self.transport, registry, session_config(self.config), self.config.run_id)
@@ -321,18 +351,35 @@ class CaptureServer:
         self.app.add_middleware(CallTimingMiddleware, log_path=self.root / "call-timing.jsonl")
         self._routes()
 
+    @classmethod
+    def beside_trainer(
+        cls, authorization: AuthorizedRun, *, tokenizer: Any, client: httpx.AsyncClient, store: RolloutStore
+    ) -> "CaptureServer":
+        """Capture next to the trainer (the local Stage A harness): the pool over the
+        network, the rollout store as policy authority, state in the run's artifacts."""
+        config = require_authorization(authorization)
+        return cls(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint.pool(config, client),
+            policy_known=committed_in(store),
+            root=capture_root(config),
+        )
+
     def _admin(self, request: Request) -> None:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.admin_key}"):
             raise HTTPException(401, "Invalid capture control credential")
 
-    def _rollout_session(self, request: Request, platform_rollout_id: str) -> str:
+    def _rollout_session(self, request: Request, rollout: str) -> str:
         """The platform's rollout route. One run per attempt, so the run ID is the attempt ID
         and its only rollout is ``<attempt id>-rollout-0``."""
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.platform_key}"):
             raise HTTPException(401, "Invalid platform credential")
-        attempt_id = platform_rollout_id.removesuffix(ROLLOUT_SUFFIX)
-        session_id = self.attempts.get(attempt_id) if platform_rollout_id.endswith(ROLLOUT_SUFFIX) else None
+        attempt_id = rollout.removesuffix(ROLLOUT_SUFFIX)
+        session_id = self.attempts.get(attempt_id) if rollout.endswith(ROLLOUT_SUFFIX) else None
         if session_id is None or session_id not in self.sessions:
+            # Also what a call routed to a different replica than its session gets: the
+            # rollout fails loudly rather than continuing without its token history.
             raise HTTPException(404, "No live capture session for this rollout; regenerate the attempt")
         return session_id
 
@@ -382,7 +429,7 @@ class CaptureServer:
             or attempt.sampling != self.config.research.sampling
             or attempt.dataset_sha256 != pinned_dataset(self.config.dataset).sha256
             or attempt.task not in pinned_dataset(self.config.dataset).tasks
-            or await self.store.policy(attempt.policy.version) != attempt.policy
+            or not await self.policy_known(attempt.policy)
         ):
             raise HTTPException(409, "Attempt is outside this run's dataset/harness/policy contract")
         async with self._create_lock:
@@ -407,7 +454,8 @@ class CaptureServer:
             return {
                 "session_id": session_id,
                 # What the platform's registry derives for this run; informational here.
-                "base_url": f"{self.config.capture.url}/rollouts/{rollout_id(attempt.attempt_id)}/v1",
+                "rollout_id": platform_rollout_id(attempt.attempt_id),
+                "base_url": f"{self.config.capture.url}/rollouts/{platform_rollout_id(attempt.attempt_id)}/v1",
                 "request_sha256": digest(attempt),
             }
 
@@ -495,9 +543,9 @@ class CaptureServer:
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:
             return await self._create_session(attempt, request)
 
-        @app.post("/rollouts/{platform_rollout_id}/v1/chat/completions")
-        async def chat(platform_rollout_id: str, request: Request) -> Response:
-            return await self._chat_completion(self._rollout_session(request, platform_rollout_id), request)
+        @app.post("/rollouts/{rollout}/v1/chat/completions")
+        async def chat(rollout: str, request: Request) -> Response:
+            return await self._chat_completion(self._rollout_session(request, rollout), request)
 
         @app.post("/sessions/{session_id}/seal")
         async def seal(session_id: str, request: Request) -> CaptureReceipt:

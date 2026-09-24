@@ -19,6 +19,9 @@
   "max_loaded_adapters": 4,
   "gateway_secret": "miles-gateway",
   "gateway_key_env": "MILES_GATEWAY_KEY",
+  "capture_secret": "miles-capture",
+  "cpu": 8,
+  "modal_proxy_auth": false,
   "extra_engine_args": [
     "--mem-fraction-static",
     "0.85"

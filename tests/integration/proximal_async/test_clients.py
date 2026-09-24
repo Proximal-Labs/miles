@@ -12,6 +12,7 @@ from miles_plugins.proximal.contracts import RunConfig, SessionHandle, digest
 def session(config, attempt):
     return SessionHandle(
         session_id="a" * 32,
+        rollout_id=f"{attempt.attempt_id}-rollout-0",
         base_url=f"{config.capture.url}/rollouts/{attempt.attempt_id}-rollout-0/v1",
         request_sha256=digest(attempt),
     )
@@ -114,16 +115,20 @@ def test_semantic_choices_are_explicit(config):
         RunConfig.model_validate_json(json.dumps(data))
 
 
-async def test_capture_rejects_credential_redirect(config, authorization, attempt):
+@pytest.mark.parametrize("field", ["base_url", "rollout_id"])
+async def test_capture_rejects_credential_redirect(config, authorization, attempt, field):
+    rollout = f"{attempt.attempt_id}-rollout-0"
+    binding = {
+        "session_id": "a" * 32,
+        "rollout_id": rollout,
+        "base_url": f"{config.capture.url}/rollouts/{rollout}/v1",
+        "request_sha256": digest(attempt),
+    }
+    # A redirected route, or a session pinned to another rollout's replica.
+    binding[field] = "https://untrusted.example" if field == "base_url" else "other-rollout-0"
+
     def handle(request):
-        return httpx.Response(
-            200,
-            json={
-                "session_id": "a" * 32,
-                "base_url": "https://untrusted.example",
-                "request_sha256": digest(attempt),
-            },
-        )
+        return httpx.Response(200, json=binding)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         with pytest.raises(ValueError, match="mismatched"):

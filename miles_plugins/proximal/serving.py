@@ -10,7 +10,9 @@ platform rollouts. Miles owns its setup so inference and training cannot drift:
   the *resolved* settings are checked against the derived ones, so no alias or
   extra flag can change the model, tokenizer, LoRA shape, parsers or address.
 
-The platform only records the deployment's URL in its endpoint registry.
+Capture runs in every replica (see serve_replica): the platform's endpoint registry
+records the deployment's URL as a rollout_capture endpoint, and sticky routing keeps
+each rollout on the replica that holds its session (contracts.AFFINITY_HEADER).
 This module is pure configuration; serving_app.py is the Modal deployment.
 """
 
@@ -51,6 +53,17 @@ class ServingDeployment(Contract):
     # Modal secret holding the gateway credential under ``gateway_key_env``.
     gateway_secret: Nonempty
     gateway_key_env: Nonempty
+    # Modal secret holding the capture credentials the run config names: the trainer's
+    # (capture.api_key_env) and the platform's (capture.platform_key_env). Capture runs
+    # in every replica, next to the SGLang that serves its sessions.
+    capture_secret: Nonempty
+    # CPU cores for each replica: SGLang's tokenizer, scheduler and detokenizer processes
+    # plus the front process (gateway and capture). Modal otherwise grants about one.
+    cpu: Positive
+    # Whether Modal's proxy authenticates callers before they reach a replica. The
+    # platform's agents call capture directly and hold only the capture credential, so a
+    # pool serving platform rollouts sets this false; every route checks its own key.
+    modal_proxy_auth: bool
     # Operational SGLang flags only; see OPERATIONAL_ENGINE_SETTINGS.
     extra_engine_args: tuple[str, ...] = ()
 

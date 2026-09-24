@@ -13,7 +13,8 @@
   "secrets": [
     "miles-gsm8k-gateway",
     "miles-gsm8k-proxy",
-    "miles-gsm8k-wandb"
+    "miles-gsm8k-wandb",
+    "miles-gsm8k-capture"
   ],
   "platform": {
     "kind": "gsm8k",

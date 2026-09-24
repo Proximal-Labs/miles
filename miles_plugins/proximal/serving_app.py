@@ -41,6 +41,9 @@ _SERVING_PATH = "PROXIMAL_SERVING_CONFIG"
 _ENGINE_ARGV_PATH = "PROXIMAL_ENGINE_ARGV"
 _ENGINE_KEY_ENV = "MILES_ENGINE_API_KEY"
 _CONTAINER_CONFIG_DIR = "/proximal-config"
+# The front process (gateway and capture) yields the CPU to SGLang's scheduler when the
+# two contend: SGLang's step loop sets decode latency for every rollout on the replica.
+FRONT_NICENESS = 10
 
 
 def _read(path_env: str) -> str:
@@ -113,7 +116,8 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: i
 def _exit_when_any_dies(processes: list[subprocess.Popen[bytes]]) -> None:
     while all(process.poll() is None for process in processes):
         time.sleep(5)
-    # Engine and gateway share one lifetime; a replacement replica starts clean.
+    # Engine and front (gateway, capture) share one lifetime; a replacement replica starts
+    # clean, and the rollouts whose sessions lived here fail loudly and are retried.
     os._exit(1)
 
 
@@ -124,7 +128,11 @@ def _exit_when_any_dies(processes: list[subprocess.Popen[bytes]]) -> None:
         str(DEPLOYMENT.base_mount): base_volume,
         str(DEPLOYMENT.adapter_mount): adapter_volume,
     },
-    secrets=[modal.Secret.from_name(DEPLOYMENT.gateway_secret, environment_name=RUN.volume.environment_name)],
+    secrets=[
+        modal.Secret.from_name(name, environment_name=RUN.volume.environment_name)
+        for name in (DEPLOYMENT.gateway_secret, DEPLOYMENT.capture_secret)
+    ],
+    cpu=float(DEPLOYMENT.cpu),
     min_containers=DEPLOYMENT.min_replicas,
     max_containers=DEPLOYMENT.max_replicas,
     target_concurrency=DEPLOYMENT.target_concurrency,
@@ -132,7 +140,8 @@ def _exit_when_any_dies(processes: list[subprocess.Popen[bytes]]) -> None:
     startup_timeout=DEPLOYMENT.startup_timeout_seconds,
     port=GATEWAY_PORT,
     routing_region=DEPLOYMENT.routing_region,
-    unauthenticated=False,  # Modal proxy auth, plus the gateway's own credential.
+    # Every route also checks its own credential (gateway, capture control, platform).
+    unauthenticated=not DEPLOYMENT.modal_proxy_auth,
     exit_grace_period=25,
 )
 class Replica:
@@ -160,6 +169,10 @@ class Replica:
                 "miles_plugins.proximal.serve_replica",
                 "--config",
                 str(config_path),
+                "--run-config",
+                os.environ[_RUN_PATH],
+                "--capture-root",
+                str(Path(DEPLOYMENT.local_cache) / "capture"),
                 "--volume-name",
                 RUN.volume.volume_name,
                 "--environment-name",
@@ -175,8 +188,10 @@ class Replica:
                 "--port",
                 str(GATEWAY_PORT),
                 "--yes-load",
+                "--yes-capture",
             ],
             start_new_session=True,
+            preexec_fn=lambda: os.nice(FRONT_NICENESS),
         )
         _wait_healthy(f"http://127.0.0.1:{GATEWAY_PORT}/health", self.gateway, 300)
         threading.Thread(target=_exit_when_any_dies, args=([self.engine, self.gateway],), daemon=True).start()

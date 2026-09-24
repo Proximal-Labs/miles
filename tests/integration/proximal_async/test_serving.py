@@ -29,6 +29,9 @@ def deployment(**overrides):
         "max_loaded_adapters": 4,
         "gateway_secret": "miles-gateway",
         "gateway_key_env": "MILES_GATEWAY_KEY",
+        "capture_secret": "miles-capture",
+        "cpu": 8,
+        "modal_proxy_auth": False,
     }
     return ServingDeployment.model_validate_json(json.dumps(data | overrides))
 

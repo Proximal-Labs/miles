@@ -49,7 +49,7 @@
     "endpoint_name": null
   },
   "capture": {
-    "url": "http://127.0.0.1:9011",
+    "url": "https://REPLACE_WITH_DEPLOYED_SERVING_URL",
     "api_key_env": "MILES_CAPTURE_ADMIN_KEY",
     "platform_key_env": "MILES_CAPTURE_PLATFORM_KEY"
   },

@@ -56,6 +56,17 @@ class ReplicaGateway:
         if reply.json().get("model_path") != self.config.engine_model_path:
             raise ValueError("SGLang loaded a different base model path")
 
+    async def prepare(self, body: PreparePolicy) -> PolicyEvidence:
+        """Load and verify a version on this replica; capture uses it in-process too."""
+        if body.base_model != self.config.replica.base_model:
+            raise HTTPException(409, "Requested base differs from replica")
+        async with self._admit(body.snapshot) as adapter:
+            return PolicyEvidence(
+                snapshot=adapter.snapshot,
+                base_model=self.config.replica.base_model,
+                request_model=adapter.request_model,
+            )
+
     def _authorize(self, request: Request) -> None:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self._key}"):
             raise HTTPException(401, "Invalid replica gateway credential")
@@ -132,14 +143,7 @@ class ReplicaGateway:
         @self.app.post("/policies/prepare")
         async def prepare(body: PreparePolicy, request: Request) -> PolicyEvidence:
             self._authorize(request)
-            if body.base_model != self.config.replica.base_model:
-                raise HTTPException(409, "Requested base differs from replica")
-            async with self._admit(body.snapshot) as adapter:
-                return PolicyEvidence(
-                    snapshot=adapter.snapshot,
-                    base_model=self.config.replica.base_model,
-                    request_model=adapter.request_model,
-                )
+            return await self.prepare(body)
 
         @self.app.post("/v1/chat/completions")
         async def chat(request: Request) -> Response:

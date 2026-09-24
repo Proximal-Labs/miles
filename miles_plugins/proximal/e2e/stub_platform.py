@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from miles_plugins.proximal.contracts import RunConfig, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, affinity_headers, platform_rollout_id, read_run_config
 
 RewardRule = Literal["mixed", "zero", "one"]
 
@@ -193,8 +193,9 @@ class StubPlatform:
 
     async def _agent(self, state: RunState) -> None:
         run_id = state.request.run_id
-        url = f"{self.run.capture.url}/rollouts/{run_id}-rollout-0/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {self.capture_key}"}
+        url = f"{self.run.capture.url}/rollouts/{platform_rollout_id(run_id)}/v1/chat/completions"
+        # Like the platform's rollout_capture client: sticky to the replica holding the session.
+        headers = {"Authorization": f"Bearer {self.capture_key}"} | affinity_headers(platform_rollout_id(run_id))
         messages: list[dict[str, object]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {

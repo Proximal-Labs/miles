@@ -4,12 +4,15 @@
 The platform is explicit:
 
 - ``gsm8k``: the stand-in platform (``e2e.math_platform``) runs on loopback in the
-  training container and grades gsm8k problems. Capture is loopback-only.
+  training container and grades gsm8k problems; its agent calls capture in the pool.
 - ``real``: runs are created on the Proximal platform named by the run config. Its
-  rollout workers reach capture through an HTTPS tunnel opened by the training node.
-  Each start registers that tunnel as the platform model's default ``rollout_capture``
-  endpoint (an operator runs the printed ``switch-endpoint`` command); the node creates
-  no runs until the registry points at its tunnel.
+  rollout workers call capture in the serving pool directly. The pool's URL is the
+  platform model's default ``rollout_capture`` endpoint, registered once per pool (an
+  operator runs the printed ``switch-endpoint`` command); the node creates no runs
+  until the registry points at the pool.
+
+Either way capture runs in the serving replicas, so the run config's ``capture.url`` is
+the pool's URL (``inference_url``).
 
 This module has no Modal dependency, so the registry checks are testable offline.
 """
@@ -66,6 +69,8 @@ def check_deployment(run: RunConfig, deployment: TrainingDeployment) -> None:
     count = int(deployment.gpu.rpartition(":")[2]) if ":" in deployment.gpu else 1
     if count != deployment.num_gpus:
         raise ValueError(f"gpu {deployment.gpu!r} provides {count} GPUs, but num_gpus is {deployment.num_gpus}")
+    if run.capture.url != run.inference_url:
+        raise ValueError("Capture runs in the serving replicas; capture.url must be the pool's inference_url")
     loopback_platform = run.platform.url.startswith(("http://127.0.0.1", "http://localhost"))
     if isinstance(deployment.platform, Gsm8kPlatform) and not loopback_platform:
         raise ValueError("The gsm8k platform runs on loopback; point platform.url at it")
@@ -74,8 +79,8 @@ def check_deployment(run: RunConfig, deployment: TrainingDeployment) -> None:
             raise ValueError("A real platform run needs the platform's URL, not loopback")
         if run.platform_route.endpoint_name is not None:
             raise ValueError(
-                "A real platform run registers a new endpoint each start and routes by the model's default "
-                "endpoint; leave platform_route.endpoint_name unset"
+                "A real platform run routes by the model's default endpoint, the registered pool; "
+                "leave platform_route.endpoint_name unset"
             )
 
 
@@ -128,12 +133,12 @@ def fetch_registry(platform_url: str, api_key: str, timeout_seconds: float = 30)
     return value
 
 
-def registration_command(run: RunConfig, endpoint: str, tunnel_url: str) -> str:
-    """The proximal-mono command that makes this node's tunnel the model's default endpoint."""
+def registration_command(run: RunConfig, endpoint: str, pool_url: str) -> str:
+    """The proximal-mono command that makes the pool's capture the model's default endpoint."""
     return (
         "pnpm tsx packages/backend/scripts/modal/switch-endpoint.ts "
         f"--model {run.platform_route.model} --register {endpoint} --set-default {endpoint} "
-        f"--kind rollout_capture --base-url {tunnel_url} --wire-model {run.base_model.name} "
+        f"--kind rollout_capture --base-url {pool_url} --wire-model {run.base_model.name} "
         f"--api-key-env {run.capture.platform_key_env} --apply"
     )
 
@@ -151,6 +156,7 @@ def prepare_run_config(template: Path, tasks_file: Path, inference_url: str, out
         )
     config["dataset"]["tasks"] = tasks["tasks"]
     config["inference_url"] = inference_url
+    config["capture"]["url"] = inference_url  # Capture runs in the pool's replicas.
     out.write_text(json.dumps(config, indent=2) + "\n")
     run = read_run_config(out)
     check_tito_protocol(run)

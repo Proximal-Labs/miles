@@ -3,13 +3,14 @@
 One Modal container runs the training side of a Proximal run:
 
 - the rollout store (a local Postgres under ``/state``), snapshotted every step;
-- the capture service;
-- for a ``gsm8k`` deployment, the stand-in platform on loopback; for a ``real`` one, an
-  HTTPS tunnel to capture that the platform's rollout workers call (see ``training``);
+- for a ``gsm8k`` deployment, the stand-in platform on loopback;
 - the Miles trainer, fully async, publishing each LoRA version to the adapter Volume.
 
-The serving pool (``serving_app``) must already be deployed, with its URL as the run
-config's ``inference_url``.
+Capture runs in the serving replicas, not here (see ``serve_replica``): the serving pool
+(``serving_app``) must already be deployed, with its URL as the run config's
+``inference_url`` and ``capture.url``. The trainer opens, seals and fetches each
+rollout's session there. A ``real`` deployment creates no platform runs until the
+platform's registry routes the model to the pool (a one-time registration per pool).
 
     PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \\
     PROXIMAL_TRAINING_CONFIG=training.json \\
@@ -22,10 +23,9 @@ Crash recovery: Miles checkpoints every step (a LoRA checkpoint is the adapter a
 optimizer state). After each saved step a thread copies a self-contained snapshot (see
 ``e2e.snapshots``) to the deployment's state Volume. On start, the latest snapshot is
 restored before any service runs and Miles resumes from it; Modal retries the function
-after a crash, up to the deployment's ``max_retries``. A real-platform retry opens a new tunnel and waits for its registration.
+after a crash, up to the deployment's ``max_retries``.
 """
 
-import contextlib
 import os
 import secrets
 import shlex
@@ -71,7 +71,6 @@ SNAPSHOT = SNAPSHOT_MOUNT / RUN.run_id
 FORK = Path("/fork")  # This fork's files that are not Python packages.
 CONFIG = Path("/config/run.json")
 STATE = Path("/state")
-CAPTURE_PORT = 9011
 PLATFORM_PORT = 9010
 # The recipe's Ray runtime environment, set before `ray start` so workers inherit it.
 MEGATRON_ENV = {
@@ -118,29 +117,30 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], log: Path, timeout
     raise TimeoutError(f"{url} did not become healthy")
 
 
-def _wait_for_registration(tunnel_url: str, platform: RealPlatform) -> None:
-    """Create no runs until the platform routes this model to this node's tunnel."""
-    endpoint = f"capture-{int(time.time())}"
-    command = registration_command(RUN, endpoint, tunnel_url)
+def _wait_for_registration(platform: RealPlatform) -> None:
+    """Create no runs until the platform routes this model to the pool's capture."""
+    pool_url = RUN.capture.url
+    command = registration_command(RUN, DEPLOYMENT.app_name, pool_url)
     api_key = os.environ[RUN.platform.api_key_env]
     deadline = time.monotonic() + platform.registration_timeout_seconds
     announced = 0.0
     while time.monotonic() < deadline:
         try:
             registry = fetch_registry(RUN.platform.url, api_key)
-            if registered_capture_url(registry, RUN.platform_route.model, None) == tunnel_url:
-                print(f"[training] {RUN.platform_route.model} routes to {tunnel_url}", flush=True)
+            if registered_capture_url(registry, RUN.platform_route.model, None) == pool_url:
+                print(f"[training] {RUN.platform_route.model} routes to {pool_url}", flush=True)
                 return
         except (urllib.error.URLError, OSError, ValueError) as exc:
             print(f"[training] registry read failed ({exc}); retrying", flush=True)
         if time.monotonic() - announced > 60:
             print(
-                f"[training] capture tunnel: {tunnel_url}\n[training] register it from proximal-mono:\n  {command}",
+                f"[training] the platform does not route {RUN.platform_route.model} to {pool_url} yet;"
+                f" register the pool from proximal-mono (once per pool):\n  {command}",
                 flush=True,
             )
             announced = time.monotonic()
         time.sleep(15)
-    raise TimeoutError(f"{RUN.platform_route.model} was not routed to {tunnel_url} in time")
+    raise TimeoutError(f"{RUN.platform_route.model} was not routed to {pool_url} in time")
 
 
 def training_command(resume_step: int | None) -> list[str]:
@@ -207,44 +207,24 @@ def _run_trainer(command: list[str]) -> int:
 
 
 def _set_keys() -> None:
-    # The capture admin key is only ever used inside this container.
-    os.environ[RUN.capture.api_key_env] = secrets.token_hex(16)
+    # Capture's credentials come from the serving pool's capture secret: the trainer's
+    # control key, and (for the stand-in platform's agent) the platform's rollout key.
+    required = [RUN.capture.api_key_env]
     if isinstance(TRAINING.platform, Gsm8kPlatform):
-        # Loopback-only credentials between this container's processes.
+        # The stand-in platform's own key never leaves this container.
         os.environ[RUN.platform.api_key_env] = secrets.token_hex(16)
-        os.environ[RUN.capture.platform_key_env] = secrets.token_hex(16)
+        required.append(RUN.capture.platform_key_env)
     else:
-        # The platform key, and the key its rollout workers send to capture, come from
-        # the deployment's secrets: they must match the platform's.
-        for name in (RUN.platform.api_key_env, RUN.capture.platform_key_env):
-            if not os.environ.get(name):
-                raise RuntimeError(f"{name} is not set; add the secret that provides it to the training deployment")
+        # Must match the platform's: the node creates runs with it.
+        required.append(RUN.platform.api_key_env)
+    for name in required:
+        if not os.environ.get(name):
+            raise RuntimeError(f"{name} is not set; add the secret that provides it to the training deployment")
     os.environ["MILES_GATEWAY_AUTHORIZATION"] = f"Bearer {os.environ[DEPLOYMENT.gateway_key_env]}"
 
 
 def _service_commands() -> list[tuple[str, list[str], str]]:
-    real = isinstance(TRAINING.platform, RealPlatform)
-    services = [
-        (
-            "capture",
-            [
-                sys.executable,
-                "-m",
-                "miles_plugins.proximal.runtime",
-                "capture",
-                "--config",
-                str(CONFIG),
-                "--yes-rollouts",
-                "--yes-publish",
-                # A real platform reaches capture through the tunnel.
-                "--host",
-                "0.0.0.0" if real else "127.0.0.1",
-                "--port",
-                str(CAPTURE_PORT),
-            ],
-            f"{RUN.capture.url}/health",
-        )
-    ]
+    services: list[tuple[str, list[str], str]] = []
     if isinstance(TRAINING.platform, Gsm8kPlatform):
         data = Path(DEPLOYMENT.base_mount) / TRAINING.platform.data
         if not data.exists():
@@ -273,7 +253,7 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
 @app.function(
     image=image,
     gpu=TRAINING.gpu,
-    # Capture, the rollout executor, Ray and Postgres share this container's CPUs; a GPU
+    # The rollout executor, Ray and Postgres share this container's CPUs; a GPU
     # function otherwise gets about one core and they starve.
     cpu=float(TRAINING.cpu),
     volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
@@ -296,7 +276,7 @@ def train() -> int:
     processes: list[subprocess.Popen[bytes]] = []
     pg_bin = sorted(Path("/usr/lib/postgresql").glob("*/bin"))[-1]
     stop = threading.Event()
-    with local_postgres(STATE / "postgres") as dsn, contextlib.ExitStack() as tunnels:
+    with local_postgres(STATE / "postgres") as dsn:
         os.environ[RUN.store_dsn_env] = dsn
         # Before any service connects: the store must be restored into an empty database.
         resume_step = snapshots.restore(
@@ -315,8 +295,7 @@ def train() -> int:
                 _wait_healthy(health, processes[-1], logs / f"{name}.log")
                 print(f"[training] {name} ready", flush=True)
             if isinstance(TRAINING.platform, RealPlatform):
-                tunnel = tunnels.enter_context(modal.forward(CAPTURE_PORT))
-                _wait_for_registration(tunnel.url.rstrip("/"), TRAINING.platform)
+                _wait_for_registration(TRAINING.platform)
             subprocess.run(
                 [
                     "ray",

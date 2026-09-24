@@ -22,7 +22,9 @@ TUNNEL = "https://abc123.r5.modal.host"
 
 
 def _run(**changes: object) -> RunConfig:
+    """Stage A's run with capture in the pool, as on the Modal topology."""
     raw = json.loads(STAGE_A.read_text())
+    raw["capture"]["url"] = raw["inference_url"]
     for key, value in changes.items():
         raw[key] = value
     return RunConfig.model_validate_json(json.dumps(raw))
@@ -94,6 +96,12 @@ def test_real_deployments_refuse_mismatched_configs(run, change, message):
         check_deployment(run(), deployment)
 
 
+def test_deployments_refuse_capture_outside_the_pool():
+    beside_trainer = _real_run().model_copy(update={"capture": _real_run().capture.model_copy(update={"url": TUNNEL})})
+    with pytest.raises(ValueError, match="capture.url must be the pool's inference_url"):
+        check_deployment(beside_trainer, read_training_deployment(QWEN38 / "training.json"))
+
+
 def test_gsm8k_deployment_refuses_a_remote_platform():
     with pytest.raises(ValueError, match="runs on loopback"):
         check_deployment(_real_run(), read_training_deployment(GSM8K / "training.json"))
@@ -129,6 +137,7 @@ def test_prepare_writes_a_valid_qwen38_run_config(tmp_path):
     )
     assert run.tito_model == "qwen38small" and run.model_protocol.tool_call_parser == "qwen3_coder"
     assert run.platform_route.endpoint_name is None and run.dataset.project_id == 519
+    assert run.capture.url == run.inference_url == "https://pool.modal.direct"
     assert len(run.dataset.tasks) == 41
     check_deployment(run, read_training_deployment(QWEN38 / "training.json"))
     assert isinstance(read_training_deployment(QWEN38 / "training.json"), TrainingDeployment)

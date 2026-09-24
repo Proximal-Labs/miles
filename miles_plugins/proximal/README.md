@@ -40,9 +40,15 @@ PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \
   modal deploy --env main -m miles_plugins.proximal.serving_app
 ```
 
-Each replica starts SGLang on loopback, then the gateway in front of it. If either exits, the replica exits and Modal replaces it. The deployed `*.modal.direct` URL is the run config's `inference_url`, and it is what the platform endpoint registry records. Every replica mounts the same adapter Volume and independently loads and verifies the immutable version each request names. The gateway serves `/policies/prepare` and `/v1/chat/completions`; authentication is mandatory.
+Each replica starts SGLang on loopback, then its front process (`serve_replica`): the gateway and capture, on one port. If either exits, the replica exits and Modal replaces it. The deployed `*.modal.direct` URL is the run config's `inference_url` and `capture.url`, and it is what the platform endpoint registry records as a `rollout_capture` endpoint. Every replica mounts the same adapter Volume and independently loads and verifies the immutable version each request names. The gateway serves `/policies/prepare` and `/v1/chat/completions`; capture serves `/sessions` and `/rollouts/<rollout>/v1/chat/completions` and calls the gateway in-process. Authentication is mandatory on every route.
 
-## 3. Start the CPU capture service
+Capture keeps each rollout's session in the replica that serves it, so every call about a rollout carries `Modal-Session-Id: sha256(<platform rollout id>)` (`contracts.AFFINITY_HEADER`): the trainer's session calls and the platform's chat calls. Modal routes equal session IDs to one container. The deployment's `capture_secret` provides capture's credentials, `cpu` sizes the replica for SGLang plus the front process (which runs at lower scheduling priority than SGLang), and `modal_proxy_auth` is false when the platform's agents call the pool directly.
+
+## 3. Capture
+
+On the Modal topology capture runs in the serving replicas (above); nothing else to start.
+
+The local Stage A harness runs it as its own process next to the trainer instead, calling the pool over the network and checking the rollout store for each session's policy:
 
 ```bash
 python -m miles_plugins.proximal.runtime capture \
@@ -50,7 +56,7 @@ python -m miles_plugins.proximal.runtime capture \
   --yes-rollouts --yes-publish
 ```
 
-Expose it behind HTTPS at `capture.url`, reachable by the platform's solver and Miles. Use **one process/worker** per run; active sessions are process-owned. The service stores sealed safetensors and receipts atomically and supports collection retries after restart. A lost unsealed session must be regenerated. Do not put a non-sticky autoscaling fleet in front of this CPU service.
+Either way, active sessions are process-owned: a call must reach the process that holds its session, so capture never sits behind a non-sticky balancer. It stores sealed safetensors and receipts atomically and supports collection retries after a restart. A lost unsealed session must be regenerated.
 
 ## 4. First live gate: a frozen-policy rollout without a training GPU
 

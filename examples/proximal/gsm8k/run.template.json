@@ -51,7 +51,7 @@
     "endpoint_name": "capture"
   },
   "capture": {
-    "url": "http://127.0.0.1:9011",
+    "url": "https://REPLACE_WITH_DEPLOYED_SERVING_URL",
     "api_key_env": "GSM8K_CAPTURE_KEY",
     "platform_key_env": "GSM8K_CAPTURE_PLATFORM_KEY"
   },

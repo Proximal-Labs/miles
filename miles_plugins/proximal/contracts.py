@@ -260,11 +260,34 @@ class Attempt(Contract):
         return self
 
 
+# The platform names a run's rollouts ``<run id>-rollout-<index>``; Miles runs have one.
+ROLLOUT_SUFFIX = "-rollout-0"
+
+# Modal routes requests that carry the same ``Modal-Session-Id`` to the same container.
+# Capture keeps each rollout's token history in the replica that serves it, so every
+# caller of a rollout's routes sends this header: the trainer (create, seal, fetch,
+# release) and the platform's agent (chat calls, from the registry's rollout_capture
+# client). The value is the SHA-256 of the platform rollout ID, on both sides.
+AFFINITY_HEADER = "Modal-Session-Id"
+
+
+def platform_rollout_id(attempt_id: str) -> str:
+    """The platform rollout ID of an attempt's single-instance run."""
+    return f"{attempt_id}{ROLLOUT_SUFFIX}"
+
+
+def affinity_headers(rollout_id: str) -> dict[str, str]:
+    """Pin every call for one rollout to the replica that holds its session."""
+    return {AFFINITY_HEADER: hashlib.sha256(rollout_id.encode()).hexdigest()}
+
+
 class SessionHandle(Contract):
     """A registered attempt's capture session. ``base_url`` is the rollout route the
-    platform derives for this run; no per-session credential leaves Miles."""
+    platform derives for this run; no per-session credential leaves Miles. Calls about
+    the session carry ``affinity_headers(rollout_id)``."""
 
     session_id: SafeId
+    rollout_id: Nonempty
     base_url: Endpoint
     request_sha256: Digest
 
