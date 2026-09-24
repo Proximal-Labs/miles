@@ -2,7 +2,7 @@
 
 Uses Miles/Megatron, GPU-resident dist_muon, TP4/PP2/EP4,
 full activation recomputation and no rollout inference. 262K training is an
-unvalidated memory target, not a demonstrated fit. Requires a CUDA >=13.1 image
+unvalidated memory target, not a demonstrated fit. Allows CUDA >=13.0 experimentally
 with the Miles Megatron fork. The frozen BF16 base and trainable adapters stay
 on GPU; only adapters have gradients and optimizer state.
 
@@ -62,7 +62,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_project: str = "inkling-small-rft"
     profile: str = "proximal"
     environment: str = "main"
-    image: str = "radixark/miles:inkling"
+    image: str = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d"
     timeout_hours: int = 24
 
     def __post_init__(self):
@@ -107,7 +107,7 @@ def prepare(args: ScriptArgs):
         dir_dst=args.model_dir,
         hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
-        extra_args="--tensor-model-parallel-size 1 --pipeline-model-parallel-size 8 --decoder-first-pipeline-num-layers 6 --decoder-last-pipeline-num-layers 6 --expert-model-parallel-size 1 --bf16",
+        extra_args="--tensor-model-parallel-size 1 --pipeline-model-parallel-size 8 --decoder-first-pipeline-num-layers 6 --decoder-last-pipeline-num-layers 6 --expert-model-parallel-size 1 --moe-router-dtype fp32 --bf16",
     )
 
 
@@ -141,7 +141,7 @@ def execute(args: ScriptArgs):
         f"--optimizer dist_muon --lr {args.lr} --min-lr {args.lr * 0.1} "
         "--lr-decay-style cosine --lr-warmup-fraction 0.03 --weight-decay 0.1 --clip-grad 1.0 "
     )
-    misc_args = f"--bf16 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
+    misc_args = f"--bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)
     if wandb_args:
         # The shared helper includes the API key in a printed command. Let W&B

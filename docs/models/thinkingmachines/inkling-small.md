@@ -59,8 +59,10 @@ matching the native Inkling adapter layout. Set `--lora-rank` and `--lora-alpha`
 to override them. It starts no inference engines. This is an **unvalidated fit**,
 especially at the default **262,144 total tokens per conversation**. The model's
 1M context capability does not establish training memory feasibility. TP4/PP2/EP4,
-sequence parallelism and full recomputation are enabled. Base weights, adapters,
-adapter gradients and optimizer state stay in GPU memory; CPU and NVMe optimizer
+sequence parallelism and full recomputation are enabled. Conversion and training
+explicitly request FP32 routing (`--moe-router-dtype fp32`), matching the Inkling
+model provider. Base weights, adapters, adapter gradients and optimizer state
+stay in GPU memory; CPU and NVMe optimizer
 offloading are disabled. LoRA reduces gradient/optimizer memory, but the full
 base weights and long-context activations still require GPU memory.
 An out-of-memory error fails the run without an offload fallback. No context
@@ -87,11 +89,17 @@ Defaults are workspace/profile `proximal`, environment `main`, Volume
 The local machine needs Miles' CPU-side launcher dependencies and the Modal CLI;
 authenticate the `proximal` profile before submitting. No Tinker key is needed.
 The GPU function requests 512 GiB host RAM, with a
-24-hour ceiling. The default base image is `radixark/miles:inkling`; select a
-compatible immutable image with `--image` for reproducibility. Before conversion
-or training, runtime checks require CUDA >=13.1 and eight B300s.
-The default tag has **not** been verified against
-those checks on Modal. The local checkout's training code is copied into the
+24-hour ceiling. The default base image is the pinned Linux AMD64 image
+`radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d`
+(registry metadata: CUDA 13.0.3). The former `radixark/miles:inkling` tag is ARM64-only
+and cannot run on Modal. Override with `--image` through the Miles launcher, or
+`INKLING_MODAL_IMAGE` when invoking the Modal wrapper directly.
+Before conversion or training, runtime checks require torch CUDA >=13.0 and eight B300s.
+CUDA 13.0 is allowed as an experiment: NVIDIA lists B300 support in CUDA 13.0,
+but [Modal documents CUDA 13.1+](https://modal.com/docs/guide/gpu#b300-gpus).
+The image's full training stack and memory fit have **not** been verified on B300;
+the smoke run must exercise forward/backward, optimizer updates and checkpointing.
+The local checkout's training code is copied into the
 image, so custom image and checkout versions must be compatible.
 
 ### Dataset format and reasoning
@@ -148,6 +156,7 @@ MODAL_PROFILE=proximal modal volume put --env main inkling-small-rft train.jsonl
 python -m scripts.run_inkling_small_sft modal --mode data
 
 # GPU job: convert HF weights into a Megatron distributed checkpoint.
+# If the Volume already has the release marker, skip without allocating GPUs.
 python -m scripts.run_inkling_small_sft modal --mode prepare
 
 # GPU job: two optimizer steps on the longest real prepared conversation.

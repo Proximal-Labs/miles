@@ -96,6 +96,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --weight-decay 0.1
   --clip-grad 1.0 
   --bf16
+  --moe-router-dtype fp32
   --transformer-impl transformer_engine
   --attention-dropout 0
   --hidden-dropout 0

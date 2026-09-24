@@ -4,7 +4,7 @@ import json
 import os
 import shlex
 from dataclasses import asdict, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import modal
 
@@ -12,12 +12,24 @@ _ROOT = Path(__file__).resolve().parents[1]
 _REMOTE_ROOT = "/opt/inkling-miles"
 app = modal.App("inkling-small-sft")
 volume = modal.Volume.from_name("inkling-small-rft")
-image = modal.Image.from_registry(os.environ.get("INKLING_MODAL_IMAGE", "radixark/miles:inkling"))
+# Pinned linux/amd64 Miles image; the old :inkling tag is ARM64-only.
+_DEFAULT_IMAGE = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d"
+image = modal.Image.from_registry(os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE))
 image = image.entrypoint([]).env({"PYTHONPATH": f"{_REMOTE_ROOT}:/root/Megatron-LM"})
-for _directory in ("miles", "miles_plugins", "scripts", "tools"):
-    image = image.add_local_dir(_ROOT / _directory, f"{_REMOTE_ROOT}/{_directory}", ignore=["**/__pycache__/**", "**/*.pyc"])
-image = image.add_local_file(_ROOT / "train.py", f"{_REMOTE_ROOT}/train.py")
 data_image = image.pip_install_from_requirements(str(_ROOT / "tools/requirements-inkling-sft.txt"))
+
+
+def _add_sources(container_image):
+    # Startup mounts must follow every image build step, including pip installs.
+    for directory in ("miles", "miles_plugins", "scripts", "tools"):
+        container_image = container_image.add_local_dir(
+            _ROOT / directory, f"{_REMOTE_ROOT}/{directory}", ignore=["**/__pycache__/**", "**/*.pyc"]
+        )
+    return container_image.add_local_file(_ROOT / "train.py", f"{_REMOTE_ROOT}/train.py")
+
+
+image = _add_sources(image)
+data_image = _add_sources(data_image)
 
 
 def _config(config_json):
@@ -31,8 +43,10 @@ def _gpu_preflight():
     import torch
 
     cuda = tuple(int(x) for x in (torch.version.cuda or "0.0").split(".")[:2])
+    if cuda < (13, 0):
+        raise RuntimeError(f"This experimental B300 recipe requires torch CUDA >=13.0; found {torch.version.cuda}")
     if cuda < (13, 1):
-        raise RuntimeError(f"B300 requires a CUDA >=13.1 image; found torch CUDA {torch.version.cuda}")
+        print("EXPERIMENTAL: CUDA 13.0 on B300; Modal documents 13.1+. Kernel compatibility must pass the smoke run.")
     if torch.cuda.device_count() != 8:
         raise RuntimeError("Expected exactly 8 visible B300 GPUs")
     for index in range(8):
@@ -94,6 +108,8 @@ def prepare_data(config_json: str):
     gpu="B300:8",
     cpu=32,
     memory=524288,
+    # Leave room for checkpoint writes alongside the roughly 500 GiB base model.
+    ephemeral_disk=3 * 1024 * 1024,
     volumes={"/mnt/inkling": volume},
     secrets=[modal.Secret.from_name("rft_hf_token", required_keys=["HF_TOKEN"]), modal.Secret.from_name("rft_wandb_api_key", required_keys=["WANDB_API_KEY"])],
     timeout=86400,
@@ -156,10 +172,30 @@ def train(config_json: str):
             volume.commit()
 
 
+def _prepared_checkpoint_cached(config):
+    model_dir = PurePosixPath(config.get("model_dir", "/mnt/inkling/models"))
+    if ".." in model_dir.parts:
+        raise ValueError("model_dir cannot contain '..'")
+    relative_dir = model_dir.relative_to("/mnt/inkling")
+    tracker = relative_dir / "Inkling-Small_torch_dist/latest_checkpointed_iteration.txt"
+    try:
+        marker = b"".join(volume.read_file(str(tracker)))
+    except FileNotFoundError:
+        return False
+    # Same completion criterion as command_utils.convert_checkpoint. Do not
+    # interpret authentication/network failures as cache misses and allocate GPUs.
+    return marker.strip() == b"release"
+
+
 @app.local_entrypoint()
 def main(config_json: str):
     config = json.loads(config_json)
+    # Record the actual image even when submitting directly with the Modal CLI.
+    config["image"] = os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE)
+    config_json = json.dumps(config)
     if config["mode"] == "data":
         prepare_data.remote(config_json)
+    elif config["mode"] == "prepare" and _prepared_checkpoint_cached(config):
+        print("Converted Inkling-Small checkpoint is cached on inkling-small-rft; skipping GPU allocation.")
     else:
         train.remote(config_json)

@@ -4,7 +4,9 @@ import shutil
 
 import torch
 import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 from megatron.core.enums import ModelType
+from megatron.core.dist_checkpointing.strategies import filesystem_async
 from megatron.training.arguments import parse_args, validate_args
 from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, save_checkpoint
 from megatron.training.training import get_model
@@ -16,6 +18,7 @@ from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.checkpoint_write_diagnostics import trace_checkpoint_writes
 from miles.utils.memory_utils import print_memory
 from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
@@ -104,8 +107,10 @@ def get_args():
     return args
 
 
+@record
 def main():
     configure_logger_raw()
+    trace_checkpoint_writes(filesystem_async)
 
     # Initialize distributed environment
     world_size = int(os.getenv("WORLD_SIZE") or os.getenv("SLURM_NTASKS") or 1)

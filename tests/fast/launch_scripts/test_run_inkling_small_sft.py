@@ -1,8 +1,65 @@
 from types import SimpleNamespace
+import sys
+import json
 
 import pytest
 
 from scripts.run_inkling_small_sft import ScriptArgs, execute
+
+
+@pytest.mark.parametrize("marker,expected_calls", [(b"release\n", 0), (b"", 1), (b"123", 1), (None, 1)])
+def test_prepare_checks_volume_before_gpu_submission(monkeypatch, marker, expected_calls):
+    pytest.importorskip("modal")
+    import tools.modal_inkling_sft as launcher
+
+    events = []
+
+    def read_file(path):
+        events.append(("read", path))
+        if marker is None:
+            raise FileNotFoundError(path)
+        yield marker
+
+    monkeypatch.setattr(launcher, "volume", SimpleNamespace(read_file=read_file))
+    monkeypatch.setattr(launcher, "train", SimpleNamespace(remote=lambda config: events.append(("gpu", config))))
+    launcher.main(json.dumps({"mode": "prepare", "model_dir": "/mnt/inkling/custom-models"}))
+    assert events[0] == ("read", "custom-models/Inkling-Small_torch_dist/latest_checkpointed_iteration.txt")
+    assert len(events) == 1 + expected_calls
+
+
+def test_prepare_volume_error_does_not_allocate_gpus(monkeypatch):
+    pytest.importorskip("modal")
+    import tools.modal_inkling_sft as launcher
+
+    def read_file(path):
+        raise ConnectionError("Volume unavailable")
+
+    monkeypatch.setattr(launcher, "volume", SimpleNamespace(read_file=read_file))
+    monkeypatch.setattr(launcher, "train", SimpleNamespace(remote=lambda config: pytest.fail("Unexpected GPU allocation")))
+    with pytest.raises(ConnectionError, match="Volume unavailable"):
+        launcher.main('{"mode":"prepare"}')
+
+
+@pytest.mark.parametrize("cuda_version", ["13.0", "13.1", "12.9", None])
+def test_b300_preflight_allows_cuda_13_experiment(monkeypatch, capsys, cuda_version):
+    pytest.importorskip("modal")
+    from tools.modal_inkling_sft import _gpu_preflight, _DEFAULT_IMAGE
+
+    assert ScriptArgs().image == _DEFAULT_IMAGE
+    fake_torch = SimpleNamespace(
+        version=SimpleNamespace(cuda=cuda_version),
+        cuda=SimpleNamespace(
+            device_count=lambda: 8,
+            get_device_properties=lambda index: SimpleNamespace(name="NVIDIA B300", total_memory=288 * 2**30),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    if cuda_version in (None, "12.9"):
+        with pytest.raises(RuntimeError, match="requires torch CUDA >=13.0"):
+            _gpu_preflight()
+    else:
+        _gpu_preflight()
+        assert ("EXPERIMENTAL: CUDA 13.0" in capsys.readouterr().out) == (cuda_version == "13.0")
 
 
 def test_lora_resume_keeps_base_checkpoint_and_restores_adapter_optimizer(monkeypatch):
