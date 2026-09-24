@@ -161,6 +161,9 @@ def main() -> None:
     args, remaining = parser.parse_known_args()
     config = read_run_config(args.config)
     if args.command == "validate":
+        from miles_plugins.proximal.capture_server import check_tito_protocol
+
+        check_tito_protocol(config)
         print(f"Valid run {config.run_id}: {len(config.dataset.tasks)} pinned tasks; no remote work performed")
         return
     if args.command == "train-args":
