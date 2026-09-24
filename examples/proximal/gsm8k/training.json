@@ -1,0 +1,21 @@
+{
+  "app_name": "miles-gsm8k-training",
+  "gpu": "H100",
+  "num_gpus": 1,
+  "cpu": 16,
+  "model_args": "qwen3-0.6B",
+  "train_args": "examples/proximal/gsm8k/train_args.txt",
+  "state_volume": {
+    "volume_name": "miles-gsm8k-state",
+    "environment_name": "main"
+  },
+  "secrets": [
+    "miles-gsm8k-gateway",
+    "miles-gsm8k-proxy",
+    "miles-gsm8k-wandb"
+  ],
+  "platform": {
+    "kind": "gsm8k",
+    "data": "gsm8k/train.parquet"
+  }
+}

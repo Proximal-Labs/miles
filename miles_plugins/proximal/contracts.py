@@ -132,10 +132,14 @@ class CaptureService(Service):
 class PlatformRoute(Contract):
     """How the platform sends a run's model calls to capture: the registry entry
     (``endpoint_name``) under the platform model id (``model``). The registry derives
-    ``<capture url>/rollouts/<platform rollout id>/v1`` as each rollout's base URL."""
+    ``<capture url>/rollouts/<platform rollout id>/v1`` as each rollout's base URL.
+
+    ``endpoint_name`` unset routes by the model's default endpoint: a training node that
+    registers a new capture endpoint on each start (``training.RealPlatform``). The
+    platform pins the resolved endpoint for each run's lifetime."""
 
     model: Nonempty
-    endpoint_name: Nonempty
+    endpoint_name: Nonempty | None
 
 
 class SharedDiskArtifacts(Contract):
