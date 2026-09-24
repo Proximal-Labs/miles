@@ -100,10 +100,13 @@ image = add_fork_sources(
 app = modal.App(TRAINING.app_name)
 
 
-def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: float = 300) -> None:
+def _wait_healthy(url: str, process: subprocess.Popen[bytes], log: Path, timeout_seconds: float = 300) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            # The log lives in this container; show its end before the container is gone.
+            tail = log.read_text(errors="replace")[-4000:] if log.exists() else "(no log)"
+            print(f"[training] {log.name} (end):\n{tail}", flush=True)
             raise RuntimeError(f"{process.args!r} exited with {process.returncode} before {url} was healthy")
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
@@ -309,7 +312,7 @@ def train() -> int:
             for name, command, health in _service_commands():
                 log = (logs / f"{name}.log").open("ab")
                 processes.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT))
-                _wait_healthy(health, processes[-1])
+                _wait_healthy(health, processes[-1], logs / f"{name}.log")
                 print(f"[training] {name} ready", flush=True)
             if isinstance(TRAINING.platform, RealPlatform):
                 tunnel = tunnels.enter_context(modal.forward(CAPTURE_PORT))
