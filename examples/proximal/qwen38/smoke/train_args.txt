@@ -1,0 +1,44 @@
+# Smoke: one real-platform step for Qwen3.8-27B. 1 task x 4 samples, one optimizer update, then
+# stop. 4 H200 at TP 4 (one data-parallel rank): MLP-only LoRA on a frozen 27B is about 14 GB of
+# weights per GPU. Everything else matches ../train_args.txt.
+--actor-num-nodes 1
+--actor-num-gpus-per-node 4
+--calculate-per-token-loss
+--rollout-batch-size 1
+--global-batch-size 4
+--num-rollout 1
+--tensor-model-parallel-size 4
+--sequence-parallel
+--pipeline-model-parallel-size 1
+--context-parallel-size 1
+--expert-model-parallel-size 1
+--expert-tensor-parallel-size 1
+--use-dynamic-batch-size
+--max-tokens-per-gpu 32768
+--recompute-granularity full
+--recompute-method uniform
+--recompute-num-layers 1
+--advantage-estimator grpo
+--kl-loss-coef 0.00
+--kl-loss-type low_var_kl
+--kl-coef 0.00
+--entropy-coef 0.00
+--eps-clip 0.2
+--eps-clip-high 0.28
+--optimizer adam
+--lr 1e-5
+--lr-decay-style constant
+--weight-decay 0.1
+--adam-beta1 0.9
+--adam-beta2 0.98
+--attention-dropout 0.0
+--hidden-dropout 0.0
+--accumulate-allreduce-grads-in-fp32
+--attention-softmax-in-fp32
+--attention-backend flash
+--save /state/checkpoints
+--save-interval 1
+--seed 42
+--use-wandb
+--wandb-project miles-qwen38
+--wandb-group qwen38-27b-deepswe-smoke

@@ -142,7 +142,7 @@ class HarborOptions(_Wire):
 class Agent(_Wire):
     agent_type: str
     agent_model: str
-    endpoint_name: str
+    endpoint_name: str | None = None  # Unset: the model's default registry endpoint.
     reasoning_effort: str
 
 

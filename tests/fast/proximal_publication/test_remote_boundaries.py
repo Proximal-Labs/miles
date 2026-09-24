@@ -45,7 +45,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
                 continue
             method = node.func.attr
             # Paid Modal function calls, each an explicit script run by hand.
-            if method == "remote" and name in {"e2e/stage_base.py", "e2e/stage_gsm8k.py", "e2e/training_app.py"}:
+            if method == "remote" and name in {"e2e/stage_base.py", "e2e/stage_gsm8k.py", "modal_training.py"}:
                 mutations.append((name, method))
                 continue
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
@@ -64,8 +64,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
         ("e2e/stage_gsm8k.py", "remote"),  # Paid gsm8k data staging, run by hand.
         ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.
-        ("e2e/training_app.py", "remote"),  # Paid gsm8k training node, run by hand.
         ("gateway.py", "post"),
+        ("modal_training.py", "remote"),  # Paid training node, run by hand.
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),
         ("replica.py", "post"),

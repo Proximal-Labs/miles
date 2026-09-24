@@ -201,7 +201,8 @@ class PlatformClient:
                     {
                         "agentType": attempt.harness.agent_type,
                         "agentModel": route.model,
-                        "endpointName": route.endpoint_name,
+                        # Unset: the platform routes by the model's default endpoint.
+                        **({"endpointName": route.endpoint_name} if route.endpoint_name is not None else {}),
                         "agentTimeoutSec": attempt.harness.timeout_seconds,
                         "reasoningEffort": f"AGENT_REASONING_EFFORT_{self.config.model_protocol.reasoning_effort.upper()}",
                     }

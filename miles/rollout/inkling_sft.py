@@ -37,7 +37,12 @@ def render_example(renderer, messages: list[dict], tools: list[dict], max_length
 
     if not messages or messages[-1].get("role") != "assistant":
         raise ValueError("An SFT conversation must end with an assistant target")
-    if isinstance(effort, bool) or not isinstance(effort, (int, float)) or not math.isfinite(effort) or not 0 <= effort < 1:
+    if (
+        isinstance(effort, bool)
+        or not isinstance(effort, (int, float))
+        or not math.isfinite(effort)
+        or not 0 <= effort < 1
+    ):
         raise ValueError("reasoning_effort must be a finite number in [0, 1)")
     messages = copy.deepcopy(messages)
     for message in messages:
@@ -63,7 +68,13 @@ def render_example(renderer, messages: list[dict], tools: list[dict], max_length
         if tool.get("type", "function") != "function":
             raise ValueError("Only function tools are supported")
         function = tool.get("function", tool)
-        specs.append({"name": function["name"], "description": function.get("description", ""), "parameters": function.get("parameters", {})})
+        specs.append(
+            {
+                "name": function["name"],
+                "description": function.get("description", ""),
+                "parameters": function.get("parameters", {}),
+            }
+        )
     prefix = renderer.create_conversation_prefix_with_tools(specs)
     mode = TrainOnWhat.CUSTOMIZED if any(not m["trainable"] for m in messages) else TrainOnWhat.ALL_ASSISTANT_MESSAGES
     examples = renderer.build_supervised_examples(prefix + messages, train_on_what=mode, effort=effort)

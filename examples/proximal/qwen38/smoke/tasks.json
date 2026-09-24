@@ -1,0 +1,11 @@
+{
+  "project_id": 519,
+  "source": "project 519 / DeepSWE: the first task of 2643 '3.8 good passrate' (the pilot's first task)",
+  "tasks": [
+    {
+      "environment_id": 105955,
+      "image_id": 751451,
+      "source_commit_sha": "7a3b98923a25add9e7903e6689321e93eadbf340"
+    }
+  ]
+}

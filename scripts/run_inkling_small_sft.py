@@ -134,9 +134,7 @@ def execute(args: ScriptArgs):
         "--num-epoch 1 --loss-type sft_loss --calculate-per-token-loss "
         "--disable-compute-advantages-and-returns --debug-train-only "
     )
-    perf_args = (
-        f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
-    )
+    perf_args = f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
     optimizer_args = (
         f"--optimizer dist_muon --lr {args.lr} --min-lr {args.lr * 0.1} "
         "--lr-decay-style cosine --lr-warmup-fraction 0.03 --weight-decay 0.1 --clip-grad 1.0 "
@@ -158,7 +156,11 @@ def execute(args: ScriptArgs):
         config=args,
         megatron_path=args.megatron_path,
         train_script="train.py",
-        extra_env_vars={"WANDB_ENTITY": args.wandb_entity, "MILES_INKLING_ATTN_BACKEND": "flex", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+        extra_env_vars={
+            "WANDB_ENTITY": args.wandb_entity,
+            "MILES_INKLING_ATTN_BACKEND": "flex",
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        },
     )
 
 
@@ -177,7 +179,9 @@ def launch(args: ScriptArgs):
             json.dumps(asdict(args)),
         ]
     )
-    U.exec_command_cpu(f"MODAL_PROFILE={shlex.quote(args.profile)} INKLING_MODAL_IMAGE={shlex.quote(args.image)} {command}")
+    U.exec_command_cpu(
+        f"MODAL_PROFILE={shlex.quote(args.profile)} INKLING_MODAL_IMAGE={shlex.quote(args.image)} {command}"
+    )
 
 
 if __name__ == "__main__":

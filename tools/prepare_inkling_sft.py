@@ -9,9 +9,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from transformers import AutoTokenizer
-
 from miles.rollout.inkling_sft import DEFAULT_EFFORT, load_renderer, render_example, renderer_provenance
+from miles.utils.processing_utils import load_tokenizer
 
 
 def _prepare(source: Path, output: Path, checkpoint: str, max_length: int):
@@ -19,7 +18,7 @@ def _prepare(source: Path, output: Path, checkpoint: str, max_length: int):
         raise ValueError("Input and output paths must differ")
     if json.loads((Path(checkpoint) / "config.json").read_text()).get("model_type") != "inkling_mm_model":
         raise ValueError("Expected a downloaded Inkling checkpoint")
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
+    tokenizer = load_tokenizer(checkpoint, trust_remote_code=True)
     if tokenizer is None:
         raise ValueError("Checkpoint tokenizer could not be loaded")
     renderer = load_renderer()
@@ -72,7 +71,13 @@ def _prepare(source: Path, output: Path, checkpoint: str, max_length: int):
         raise ValueError("Dataset is empty")
     temporary.replace(output)
     output.with_suffix(".smoke.jsonl").write_text(longest * 2)
-    stats = {"examples": count, "tokens": total, "target_tokens": target_total, "max_tokens": longest_length, "configured_cap": max_length}
+    stats = {
+        "examples": count,
+        "tokens": total,
+        "target_tokens": target_total,
+        "max_tokens": longest_length,
+        "configured_cap": max_length,
+    }
     output.with_suffix(".stats.json").write_text(json.dumps(stats, indent=2) + "\n")
     print(json.dumps(stats, indent=2))
 

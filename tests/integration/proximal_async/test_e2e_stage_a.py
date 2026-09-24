@@ -15,10 +15,9 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
-from transformers import AutoTokenizer
 
 from miles_plugins.proximal.authorization import authorize_run
-from miles_plugins.proximal.capture_server import CaptureServer
+from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
 from miles_plugins.proximal.contracts import CaptureService, Service
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.e2e import fake_trainer
@@ -74,7 +73,7 @@ def stage_a(config, tmp_path):
 
 
 async def run_stage_a(run, path, ports, tmp_path, **overrides):
-    tokenizer = AutoTokenizer.from_pretrained(str(run.tokenizer_path), local_files_only=True)
+    tokenizer = capture_tokenizer(run.tokenizer_path, run.tito_model)
     authorization = authorize_run(run, yes_rollouts=True, yes_publish=True)
     store = await open_store(run)
     servers = []

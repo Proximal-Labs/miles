@@ -57,14 +57,10 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
     # Runtime-only dependencies: local snapshot/publication CLI stays lightweight.
     import httpx
     import uvicorn
-    from transformers import AutoTokenizer
-
-    from miles_plugins.proximal.capture_server import CaptureServer
+    from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
     from miles_plugins.proximal.store import open_store
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(config.tokenizer_path), local_files_only=True, trust_remote_code=False
-    )
+    tokenizer = capture_tokenizer(config.tokenizer_path, config.tito_model)
     store = await open_store(config)
     try:
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
@@ -161,6 +157,9 @@ def main() -> None:
     args, remaining = parser.parse_known_args()
     config = read_run_config(args.config)
     if args.command == "validate":
+        from miles_plugins.proximal.capture_server import check_tito_protocol
+
+        check_tito_protocol(config)
         print(f"Valid run {config.run_id}: {len(config.dataset.tasks)} pinned tasks; no remote work performed")
         return
     if args.command == "train-args":

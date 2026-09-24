@@ -9,7 +9,7 @@ modules, lr 1e-5, 32 prompts × 8 samples), on the same topology as platform tra
 
 | Part | Here |
 | --- | --- |
-| Training node | Modal 1× H100 (`training_app`): Megatron LoRA trainer, capture service, rollout store, gsm8k platform |
+| Training node | Modal 1× H100 (`modal_training` with `training.json`): Megatron LoRA trainer, capture service, rollout store, gsm8k platform |
 | Serving | Modal 2× L4 (`serving_app`), loading each published version from the adapter Volume |
 | Platform | `math_platform`: the platform's run API; each run is one gsm8k problem, one Chat Completions call through capture, graded with Miles's `math` reward |
 
@@ -67,7 +67,8 @@ test image so SGLang and this fork are importable.
 6. **Start training** (runs until stopped; restarts from the latest snapshot on a crash).
    ```bash
    PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=examples/proximal/gsm8k/serving.json \
-     modal run --detach --env main -m miles_plugins.proximal.e2e.training_app
+   PROXIMAL_TRAINING_CONFIG=examples/proximal/gsm8k/training.json \
+     modal run --detach --env main -m miles_plugins.proximal.modal_training
    ```
 7. **Tear down**: `modal app stop miles-gsm8k-training --env main` and
    `modal app stop miles-gsm8k-serving --env main`.
