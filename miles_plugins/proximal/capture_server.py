@@ -24,6 +24,7 @@ from miles.rollout.session.core import ProxyRequest, SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
+from miles_plugins.proximal.call_timing import CallTimingMiddleware, mark, note
 from miles_plugins.proximal.contracts import (
     Attempt,
     CaptureReceipt,
@@ -66,15 +67,47 @@ def check_tito_protocol(config: RunConfig) -> None:
             )
 
 
+def fixed_chat_template(tito_model: str) -> tuple[str | None, dict[str, Any]]:
+    """The family's fixed chat template and the kwargs it requires, as Miles's own
+    argument resolution applies them for a named ``--tito-model``.
+
+    Capture renders every turn incrementally (the new messages after a stand-in
+    prefix). Native templates are not built for that: Qwen3.8's refuses to render a
+    conversation without a user message, so every turn after the first fails.
+    """
+    from miles.utils.chat_template_utils import resolve_fixed_chat_template
+
+    return resolve_fixed_chat_template(tito_model)
+
+
+def capture_tokenizer(tokenizer_path: str | Path, tito_model: str) -> Any:
+    """The one way to load capture's tokenizer: the base model's, with its family's fixed template."""
+    from miles.utils.processing_utils import load_tokenizer
+
+    template_path, _ = fixed_chat_template(tito_model)
+    return load_tokenizer(
+        str(tokenizer_path), chat_template_path=template_path, local_files_only=True, trust_remote_code=False
+    )
+
+
+def _template_kwargs(config: RunConfig) -> dict[str, Any]:
+    _, fixed_kwargs = fixed_chat_template(config.tito_model)
+    return {"enable_thinking": config.enable_thinking, **fixed_kwargs}
+
+
 def capture_registry(config: RunConfig, tokenizer: Any) -> SessionRegistry:
     """The one way to build the capture session registry: TITO renderer + matcher."""
     from miles.utils.chat_template_utils import get_tito_tokenizer
     from miles.utils.chat_template_utils.message_matcher_hub import resolve_session_message_matcher
 
     check_tito_protocol(config)
-    tito = get_tito_tokenizer(
-        tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
-    )
+    template_path, _ = fixed_chat_template(config.tito_model)
+    if template_path is not None and tokenizer.chat_template != Path(template_path).read_text():
+        raise ValueError(
+            f"Capture needs the {config.tito_model} family's fixed chat template; load the tokenizer "
+            "with capture_tokenizer"
+        )
+    tito = get_tito_tokenizer(tokenizer, config.tito_model, chat_template_kwargs=_template_kwargs(config))
     return SessionRegistry(
         tokenizer, tito_tokenizer=tito, message_matcher=resolve_session_message_matcher(MESSAGE_MATCHER)
     )
@@ -88,9 +121,9 @@ def session_config(config: RunConfig) -> SessionServerConfig:
         backend_url=config.inference_url,
         timeout=config.request_timeout_seconds,
         hf_checkpoint=str(config.tokenizer_path),
-        chat_template_path=None,
+        chat_template_path=fixed_chat_template(config.tito_model)[0],
         tito_model=config.tito_model,
-        apply_chat_template_kwargs={"enable_thinking": config.enable_thinking},
+        apply_chat_template_kwargs=_template_kwargs(config),
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         sglang_speculative_algorithm=None,
@@ -138,6 +171,7 @@ class BoundTransport:
                     follow_redirects=False,
                 )
             except httpx.TransportError:
+                note(engine_retries=attempt + 1)
                 if attempt == ENGINE_ATTEMPTS - 1:
                     raise
                 await asyncio.sleep(0.2 * 2**attempt)
@@ -148,6 +182,7 @@ class BoundTransport:
     ) -> dict[str, object]:
         if request.session_id is None or path != "v1/chat/completions" or request.method != "POST" or request.query:
             raise ValueError("Only bound recorded chat requests may reach inference")
+        mark("proxy_start")  # SessionCore has rendered the turn's token IDs.
         attempt = self.sessions[request.session_id].attempt
         payload = orjson.loads(body)  # SDK boundary; SessionCore already rendered and validated input_ids.
         remaining = attempt.sampling.max_sequence_tokens - len(payload["input_ids"])
@@ -159,7 +194,19 @@ class BoundTransport:
         payload["stream"] = False
         payload.pop("stream_options", None)
         outbound = orjson.dumps(payload)
+        note(
+            input_tokens=len(payload["input_ids"]),
+            max_tokens=payload["max_tokens"],
+            engine_request_bytes=len(outbound),
+        )
+        mark("engine_sent")
         response = await self._post_engine(outbound, attempt.policy.snapshot.sha256)
+        mark("engine_done")
+        note(
+            engine_status=response.status_code,
+            engine_response_bytes=len(response.content),
+            gateway_timing=response.headers.get("server-timing"),
+        )
         if response.status_code == 200:
             if response.headers.get("x-proximal-policy-sha256") != attempt.policy.snapshot.sha256:
                 raise ValueError("Inference response lacks verified immutable adapter identity")
@@ -169,6 +216,15 @@ class BoundTransport:
             if result.get("model") != payload["model"] or len(result.get("choices", [])) != 1:
                 raise ValueError("Inference response model/choice count differs")
             meta = result["choices"][0]["meta_info"]
+            note(
+                response_id=result.get("id"),
+                output_tokens=len(meta.get("output_token_logprobs") or []),
+                engine_meta={
+                    k: meta[k]
+                    for k in ("prompt_tokens", "cached_tokens", "e2e_latency", "completion_tokens")
+                    if k in meta
+                },
+            )
             # Convert verified immutable identity into Miles's publication ordinal.
             # Never trust the engine's global base-weight counter for a named LoRA.
             token_logprobs = meta.get("output_token_logprobs")
@@ -192,6 +248,7 @@ class BoundTransport:
             content = orjson.dumps(result)
         else:
             content = response.content
+        mark("proxy_end")
         return {
             "request_body": outbound,
             "response_body": content,
@@ -260,6 +317,8 @@ class CaptureServer:
         registry = capture_registry(self.config, tokenizer)
         self.core = SessionCore(self.transport, registry, session_config(self.config), self.config.run_id)
         self.app = FastAPI()
+        # One JSON line per chat call: where each call's time goes (see call_timing).
+        self.app.add_middleware(CallTimingMiddleware, log_path=self.root / "call-timing.jsonl")
         self._routes()
 
     def _admin(self, request: Request) -> None:
@@ -353,13 +412,17 @@ class CaptureServer:
             }
 
     async def _chat_completion(self, session_id: str, request: Request) -> Response:
+        mark("handler_start")
         entry = self.sessions[session_id]
         if request.url.query:
             raise HTTPException(422, "Query parameters are not supported")
         async with entry.lock:
+            mark("session_locked")
             if entry.sealed:
                 raise HTTPException(409, "Session is sealed")
-            body = orjson.loads(await request.body())  # OpenAI SDK boundary, not a domain contract.
+            raw = await request.body()
+            note(agent_request_bytes=len(raw), session_id=session_id)
+            body = orjson.loads(raw)  # OpenAI SDK boundary, not a domain contract.
             if not isinstance(body, dict) or body.get("model") != self.config.base_model.name:
                 raise HTTPException(422, "Wrong model for this session")
             allowed = {
@@ -409,9 +472,13 @@ class CaptureServer:
             if type(budget) is not int or budget <= 0:
                 raise HTTPException(422, "Invalid per-turn token budget")
             body["max_tokens"] = min(budget, sampling.max_tokens)
-            return await self.core.chat_completions(
+            note(messages=len(body.get("messages", [])))
+            mark("validated")
+            response = await self.core.chat_completions(
                 session_id, method="POST", query="", headers={}, body=orjson.dumps(body)
             )
+            mark("core_done")  # SessionCore has recorded the turn and built the reply.
+            return response
 
     def _routes(self) -> None:
         app = self.app

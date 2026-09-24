@@ -33,6 +33,7 @@ from pathlib import Path
 import modal
 
 from miles_plugins.proximal.contracts import RunConfig
+from miles_plugins.proximal.modal_sources import add_fork_sources
 from miles_plugins.proximal.serving import ENGINE_PORT, GATEWAY_PORT, ServingDeployment, engine_argv, gateway_config
 
 _RUN_PATH = "PROXIMAL_RUN_CONFIG"
@@ -89,11 +90,7 @@ adapter_volume = modal.Volume.from_name(
     RUN.volume.volume_name, environment_name=RUN.volume.environment_name, create_if_missing=False
 )
 
-image = (
-    with_configs(modal.Image.from_registry(DEPLOYMENT.image).entrypoint([]))
-    # This fork's plugin and Miles sources, over the Miles image's installed copy.
-    .add_local_python_source("miles", "miles_plugins")
-)
+image = add_fork_sources(with_configs(modal.Image.from_registry(DEPLOYMENT.image).entrypoint([])))
 
 app = modal.App(DEPLOYMENT.app_name)
 

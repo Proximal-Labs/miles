@@ -1,28 +1,31 @@
-"""The training node for the gsm8k topology test. PAID: one GPU container, runs until stopped.
+"""The training node on Modal. PAID: GPU containers, runs until stopped.
 
-One Modal container runs everything on the training side:
+One Modal container runs the training side of a Proximal run:
 
-- the rollout store (a local Postgres under ``/state``);
-- the capture service and the gsm8k platform, both on loopback;
-- the Miles trainer: Megatron LoRA on one actor GPU, fully async, publishing each
-  version to the adapter Volume.
+- the rollout store (a local Postgres under ``/state``), snapshotted every step;
+- the capture service;
+- for a ``gsm8k`` deployment, the stand-in platform on loopback; for a ``real`` one, an
+  HTTPS tunnel to capture that the platform's rollout workers call (see ``training``);
+- the Miles trainer, fully async, publishing each LoRA version to the adapter Volume.
 
 The serving pool (``serving_app``) must already be deployed, with its URL as the run
-config's ``inference_url``. The replicas load each published version from the Volume.
+config's ``inference_url``.
 
     PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \\
-        modal run --detach --env main -m miles_plugins.proximal.e2e.training_app
+    PROXIMAL_TRAINING_CONFIG=training.json \\
+        modal run --detach --env main -m miles_plugins.proximal.modal_training
 
 ``--detach`` keeps it running after the local client exits; stop it with
-``modal app stop miles-gsm8k-training --env main``.
+``modal app stop <app_name> --env main``.
 
-Crash recovery: Miles checkpoints every step (``--save-interval 1``; a LoRA checkpoint
-is the adapter and its optimizer state, not the base). After each saved step a thread
-copies a consistent snapshot (see ``snapshots``) to the ``miles-gsm8k-state`` Volume. On
-start, the latest snapshot is restored before any service runs and Miles resumes from
-it; Modal retries the function after a crash.
+Crash recovery: Miles checkpoints every step (a LoRA checkpoint is the adapter and its
+optimizer state). After each saved step a thread copies a self-contained snapshot (see
+``e2e.snapshots``) to the deployment's state Volume. On start, the latest snapshot is
+restored before any service runs and Miles resumes from it; Modal retries the function
+after a crash, up to the deployment's ``max_retries``. A real-platform retry opens a new tunnel and waits for its registration.
 """
 
+import contextlib
 import os
 import secrets
 import shlex
@@ -36,21 +39,40 @@ from pathlib import Path
 
 import modal
 
+from miles_plugins.proximal.modal_sources import add_fork_sources
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, RUN_JSON, base_volume, with_configs
+from miles_plugins.proximal.training import (
+    Gsm8kPlatform,
+    RealPlatform,
+    check_deployment,
+    check_train_args,
+    fetch_registry,
+    read_training_deployment,
+    registered_capture_url,
+    registration_command,
+)
 
-REPO = Path(__file__).resolve().parents[3]
+_TRAINING_PATH = "PROXIMAL_TRAINING_CONFIG"
+_CONTAINER_TRAINING_CONFIG = "/proximal-config/training.json"
+REPO = Path(__file__).resolve().parents[2]
+TRAINING = read_training_deployment(os.environ[_TRAINING_PATH])
+check_deployment(RUN, TRAINING)
+if modal.is_local():
+    check_train_args(TRAINING, (REPO / TRAINING.train_args).read_text())
+
 SNAPSHOT_MOUNT = Path("/snapshot")
 state_volume = modal.Volume.from_name(
-    "miles-gsm8k-state", environment_name=RUN.volume.environment_name, create_if_missing=False
+    TRAINING.state_volume.volume_name,
+    environment_name=TRAINING.state_volume.environment_name,
+    create_if_missing=False,
 )
 # One snapshot namespace per run: a new run must never resume another run's state.
 SNAPSHOT = SNAPSHOT_MOUNT / RUN.run_id
-TRAIN_ARGS = REPO / "examples/proximal/gsm8k/train_args.txt"
 FORK = Path("/fork")  # This fork's files that are not Python packages.
 CONFIG = Path("/config/run.json")
 STATE = Path("/state")
-DATA = Path(DEPLOYMENT.base_mount) / "gsm8k" / "train.parquet"
-GPU = os.environ.get("PROXIMAL_TRAINING_GPU", "H100")
+CAPTURE_PORT = 9011
+PLATFORM_PORT = 9010
 # The recipe's Ray runtime environment, set before `ray start` so workers inherit it.
 MEGATRON_ENV = {
     "PYTHONPATH": f"/root/Megatron-LM:{FORK}",
@@ -61,27 +83,30 @@ MEGATRON_ENV = {
     "PYTHONUNBUFFERED": "1",
 }
 
-image = (
+image = add_fork_sources(
     with_configs(
         modal.Image.from_registry(DEPLOYMENT.image)
         .entrypoint([])
         .apt_install("postgresql")
         .pip_install("psycopg[binary]")
-        .env(MEGATRON_ENV)
+        .env({**MEGATRON_ENV, _TRAINING_PATH: _CONTAINER_TRAINING_CONFIG})
     )
+    .add_local_file(os.environ[_TRAINING_PATH], _CONTAINER_TRAINING_CONFIG)
     .add_local_file(REPO / "train_async.py", str(FORK / "train_async.py"))
-    .add_local_file(REPO / "scripts/models/qwen3-0.6B.py", str(FORK / "scripts/models/qwen3-0.6B.py"))
-    .add_local_file(TRAIN_ARGS, str(FORK / "train_args.txt"))
-    .add_local_python_source("miles", "miles_plugins")
+    .add_local_dir(REPO / "scripts/models", str(FORK / "scripts/models"))
+    .add_local_file(REPO / TRAINING.train_args, str(FORK / "train_args.txt"))
 )
 
-app = modal.App("miles-gsm8k-training")
+app = modal.App(TRAINING.app_name)
 
 
-def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: float = 300) -> None:
+def _wait_healthy(url: str, process: subprocess.Popen[bytes], log: Path, timeout_seconds: float = 300) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            # The log lives in this container; show its end before the container is gone.
+            tail = log.read_text(errors="replace")[-4000:] if log.exists() else "(no log)"
+            print(f"[training] {log.name} (end):\n{tail}", flush=True)
             raise RuntimeError(f"{process.args!r} exited with {process.returncode} before {url} was healthy")
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
@@ -93,6 +118,31 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], timeout_seconds: f
     raise TimeoutError(f"{url} did not become healthy")
 
 
+def _wait_for_registration(tunnel_url: str, platform: RealPlatform) -> None:
+    """Create no runs until the platform routes this model to this node's tunnel."""
+    endpoint = f"capture-{int(time.time())}"
+    command = registration_command(RUN, endpoint, tunnel_url)
+    api_key = os.environ[RUN.platform.api_key_env]
+    deadline = time.monotonic() + platform.registration_timeout_seconds
+    announced = 0.0
+    while time.monotonic() < deadline:
+        try:
+            registry = fetch_registry(RUN.platform.url, api_key)
+            if registered_capture_url(registry, RUN.platform_route.model, None) == tunnel_url:
+                print(f"[training] {RUN.platform_route.model} routes to {tunnel_url}", flush=True)
+                return
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            print(f"[training] registry read failed ({exc}); retrying", flush=True)
+        if time.monotonic() - announced > 60:
+            print(
+                f"[training] capture tunnel: {tunnel_url}\n[training] register it from proximal-mono:\n  {command}",
+                flush=True,
+            )
+            announced = time.monotonic()
+        time.sleep(15)
+    raise TimeoutError(f"{RUN.platform_route.model} was not routed to {tunnel_url} in time")
+
+
 def training_command(resume_step: int | None) -> list[str]:
     from miles.utils.external_utils.model_args_utils import load_model_args
     from miles_plugins.proximal.e2e.snapshots import iter_dir
@@ -101,8 +151,7 @@ def training_command(resume_step: int | None) -> list[str]:
     args = [
         token for line in lines if line.strip() and not line.lstrip().startswith("#") for token in shlex.split(line)
     ]
-    model_args = shlex.split(load_model_args("qwen3-0.6B", model_script_dir=FORK / "scripts/models"))
-    # One W&B run per training run: a restart after a crash keeps logging to the same curve.
+    model_args = shlex.split(load_model_args(TRAINING.model_args, model_script_dir=FORK / "scripts/models"))
     args += ["--wandb-run-id", RUN.run_id]
     if resume_step is not None:
         # LoRA resume: the base from the HF checkpoint, the adapter (with optimizer and
@@ -157,19 +206,79 @@ def _run_trainer(command: list[str]) -> int:
     return process.wait()
 
 
+def _set_keys() -> None:
+    # The capture admin key is only ever used inside this container.
+    os.environ[RUN.capture.api_key_env] = secrets.token_hex(16)
+    if isinstance(TRAINING.platform, Gsm8kPlatform):
+        # Loopback-only credentials between this container's processes.
+        os.environ[RUN.platform.api_key_env] = secrets.token_hex(16)
+        os.environ[RUN.capture.platform_key_env] = secrets.token_hex(16)
+    else:
+        # The platform key, and the key its rollout workers send to capture, come from
+        # the deployment's secrets: they must match the platform's.
+        for name in (RUN.platform.api_key_env, RUN.capture.platform_key_env):
+            if not os.environ.get(name):
+                raise RuntimeError(f"{name} is not set; add the secret that provides it to the training deployment")
+    os.environ["MILES_GATEWAY_AUTHORIZATION"] = f"Bearer {os.environ[DEPLOYMENT.gateway_key_env]}"
+
+
+def _service_commands() -> list[tuple[str, list[str], str]]:
+    real = isinstance(TRAINING.platform, RealPlatform)
+    services = [
+        (
+            "capture",
+            [
+                sys.executable,
+                "-m",
+                "miles_plugins.proximal.runtime",
+                "capture",
+                "--config",
+                str(CONFIG),
+                "--yes-rollouts",
+                "--yes-publish",
+                # A real platform reaches capture through the tunnel.
+                "--host",
+                "0.0.0.0" if real else "127.0.0.1",
+                "--port",
+                str(CAPTURE_PORT),
+            ],
+            f"{RUN.capture.url}/health",
+        )
+    ]
+    if isinstance(TRAINING.platform, Gsm8kPlatform):
+        data = Path(DEPLOYMENT.base_mount) / TRAINING.platform.data
+        if not data.exists():
+            raise FileNotFoundError(f"{data} is missing; stage it with e2e.stage_gsm8k first")
+        services.append(
+            (
+                "gsm8k-platform",
+                [
+                    sys.executable,
+                    "-m",
+                    "miles_plugins.proximal.e2e.math_platform",
+                    "serve",
+                    "--config",
+                    str(CONFIG),
+                    "--data",
+                    str(data),
+                    "--port",
+                    str(PLATFORM_PORT),
+                ],
+                f"{RUN.platform.url}/health",
+            )
+        )
+    return services
+
+
 @app.function(
     image=image,
-    gpu=GPU,
-    # Capture, the rollout executor, the gsm8k platform, Ray and Postgres share this
-    # container's CPUs; a GPU function otherwise gets about one core and they starve.
-    cpu=16.0,
+    gpu=TRAINING.gpu,
+    # Capture, the rollout executor, Ray and Postgres share this container's CPUs; a GPU
+    # function otherwise gets about one core and they starve.
+    cpu=float(TRAINING.cpu),
     volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
-    retries=modal.Retries(max_retries=3, initial_delay=30.0),
-    secrets=[
-        modal.Secret.from_name(DEPLOYMENT.gateway_secret, environment_name=RUN.volume.environment_name),
-        modal.Secret.from_name("miles-gsm8k-proxy", environment_name=RUN.volume.environment_name),
-        modal.Secret.from_name("miles-gsm8k-wandb", environment_name=RUN.volume.environment_name),
-    ],
+    retries=modal.Retries(max_retries=TRAINING.max_retries, initial_delay=30.0) if TRAINING.max_retries else None,
+    secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
     timeout=24 * 3600,
 )
 def train() -> int:
@@ -178,13 +287,7 @@ def train() -> int:
 
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(RUN_JSON)
-    if not DATA.exists():
-        raise FileNotFoundError(f"{DATA} is missing; stage it with stage_gsm8k first")
-    # Loopback-only credentials between processes in this container.
-    os.environ[RUN.platform.api_key_env] = secrets.token_hex(16)
-    os.environ[RUN.capture.api_key_env] = secrets.token_hex(16)
-    os.environ[RUN.capture.platform_key_env] = secrets.token_hex(16)
-    os.environ["MILES_GATEWAY_AUTHORIZATION"] = f"Bearer {os.environ[DEPLOYMENT.gateway_key_env]}"
+    _set_keys()
     # A retry may land in the container of the failed attempt: clear its Ray and state.
     subprocess.run(["ray", "stop", "--force"], check=False, capture_output=True)
     snapshots.reset_local_state(STATE)
@@ -193,7 +296,7 @@ def train() -> int:
     processes: list[subprocess.Popen[bytes]] = []
     pg_bin = sorted(Path("/usr/lib/postgresql").glob("*/bin"))[-1]
     stop = threading.Event()
-    with local_postgres(STATE / "postgres") as dsn:
+    with local_postgres(STATE / "postgres") as dsn, contextlib.ExitStack() as tunnels:
         os.environ[RUN.store_dsn_env] = dsn
         # Before any service connects: the store must be restored into an empty database.
         resume_step = snapshots.restore(
@@ -206,45 +309,14 @@ def train() -> int:
         print(f"[training] {'resuming from step ' + str(resume_step) if resume_step is not None else 'fresh start'}")
         snapshotter = threading.Thread(target=_snapshot_loop, args=(dsn, pg_bin, stop, resume_step))
         try:
-            services = [
-                (
-                    "capture",
-                    [
-                        sys.executable,
-                        "-m",
-                        "miles_plugins.proximal.runtime",
-                        "capture",
-                        "--config",
-                        str(CONFIG),
-                        "--yes-rollouts",
-                        "--yes-publish",
-                        "--port",
-                        "9011",
-                    ],
-                    f"{RUN.capture.url}/health",
-                ),
-                (
-                    "gsm8k-platform",
-                    [
-                        sys.executable,
-                        "-m",
-                        "miles_plugins.proximal.e2e.math_platform",
-                        "serve",
-                        "--config",
-                        str(CONFIG),
-                        "--data",
-                        str(DATA),
-                        "--port",
-                        "9010",
-                    ],
-                    f"{RUN.platform.url}/health",
-                ),
-            ]
-            for name, command, health in services:
+            for name, command, health in _service_commands():
                 log = (logs / f"{name}.log").open("ab")
                 processes.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT))
-                _wait_healthy(health, processes[-1])
+                _wait_healthy(health, processes[-1], logs / f"{name}.log")
                 print(f"[training] {name} ready", flush=True)
+            if isinstance(TRAINING.platform, RealPlatform):
+                tunnel = tunnels.enter_context(modal.forward(CAPTURE_PORT))
+                _wait_for_registration(tunnel.url.rstrip("/"), TRAINING.platform)
             subprocess.run(
                 [
                     "ray",
@@ -253,7 +325,7 @@ def train() -> int:
                     "--node-ip-address",
                     "127.0.0.1",
                     "--num-gpus",
-                    "1",
+                    str(TRAINING.num_gpus),
                     "--disable-usage-stats",
                 ],
                 check=True,
