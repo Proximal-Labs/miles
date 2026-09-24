@@ -72,7 +72,9 @@ def _resume_adapter(args):
         required.append(candidate.parents[1] / f"rollout/global_dataset_state_dict_{iteration}.pt")
         if all(path.is_file() and path.stat().st_size > 0 for path in required):
             return str(candidate)
-    raise FileNotFoundError("No complete native LoRA checkpoint found with all 8 ranks and the matching dataset cursor")
+    raise FileNotFoundError(
+        "No complete native LoRA checkpoint found with all 8 ranks and the matching dataset cursor"
+    )
 
 
 @app.function(
@@ -111,14 +113,18 @@ def prepare_data(config_json: str):
     # Leave room for checkpoint writes alongside the roughly 500 GiB base model.
     ephemeral_disk=3 * 1024 * 1024,
     volumes={"/mnt/inkling": volume},
-    secrets=[modal.Secret.from_name("rft_hf_token", required_keys=["HF_TOKEN"]), modal.Secret.from_name("rft_wandb_api_key", required_keys=["WANDB_API_KEY"])],
+    secrets=[
+        modal.Secret.from_name("rft_hf_token", required_keys=["HF_TOKEN"]),
+        modal.Secret.from_name("rft_wandb_api_key", required_keys=["WANDB_API_KEY"]),
+    ],
     timeout=86400,
     retries=0,
     max_containers=1,
 )
 def train(config_json: str):
-    import miles.utils.external_utils.command_utils as U
     from scripts.run_inkling_small_sft import prepare
+
+    import miles.utils.external_utils.command_utils as U
 
     args = _config(config_json)
     _gpu_preflight()
@@ -145,7 +151,9 @@ def train(config_json: str):
         raise FileExistsError("Run directory already exists; use --resume or a new --run-id")
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "launch.json").write_text(json.dumps(asdict(args), indent=2) + "\n")
-    print(f"EXPERIMENTAL: LoRA rank {args.lora_rank} / 8 B300 / TP4 PP2 EP4 / cap {args.max_length}; fit is unvalidated")
+    print(
+        f"EXPERIMENTAL: LoRA rank {args.lora_rank} / 8 B300 / TP4 PP2 EP4 / cap {args.max_length}; fit is unvalidated"
+    )
     try:
         # Bound subprocess time independently of Modal's outer 24-hour timeout,
         # leaving time to commit completed checkpoints after a failure.
