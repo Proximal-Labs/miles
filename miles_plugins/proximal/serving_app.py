@@ -133,6 +133,7 @@ def _exit_when_any_dies(processes: list[subprocess.Popen[bytes]]) -> None:
         for name in (DEPLOYMENT.gateway_secret, DEPLOYMENT.capture_secret)
     ],
     cpu=float(DEPLOYMENT.cpu),
+    memory=DEPLOYMENT.memory_mib,
     min_containers=DEPLOYMENT.min_replicas,
     max_containers=DEPLOYMENT.max_replicas,
     target_concurrency=DEPLOYMENT.target_concurrency,

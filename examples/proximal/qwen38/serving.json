@@ -21,6 +21,7 @@
   "gateway_key_env": "MILES_GATEWAY_KEY",
   "capture_secret": "miles-qwen38-capture",
   "cpu": 16,
+  "memory_mib": 65536,
   "modal_proxy_auth": false,
   "extra_engine_args": [
     "--mem-fraction-static",

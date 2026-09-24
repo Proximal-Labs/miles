@@ -17,7 +17,7 @@ def deployment(**overrides):
         "gpu": "H100:2",
         "tensor_parallel": 2,
         "routing_region": "us-west",
-        "min_replicas": 1,
+        "min_replicas": 4,
         "max_replicas": 4,
         "target_concurrency": 8,
         "scaledown_window_seconds": 1200,
@@ -31,6 +31,7 @@ def deployment(**overrides):
         "gateway_key_env": "MILES_GATEWAY_KEY",
         "capture_secret": "miles-capture",
         "cpu": 8,
+        "memory_mib": 32768,
         "modal_proxy_auth": False,
     }
     return ServingDeployment.model_validate_json(json.dumps(data | overrides))
@@ -119,3 +120,8 @@ def test_stage_a_example_configs_are_valid():
     # The offline config differs only in where inference goes and its identity.
     differing = {key for key in modal_run.model_fields if getattr(modal_run, key) != getattr(offline, key)}
     assert differing == {"run_id", "inference_url", "inference_header_env"}
+
+
+def test_a_pool_holding_capture_sessions_has_a_fixed_size():
+    with pytest.raises(ValueError, match="set min_replicas equal to max_replicas"):
+        deployment(min_replicas=1)

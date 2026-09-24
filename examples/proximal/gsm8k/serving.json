@@ -21,6 +21,7 @@
   "gateway_key_env": "MILES_GATEWAY_KEY",
   "capture_secret": "miles-gsm8k-capture",
   "cpu": 8,
+  "memory_mib": 16384,
   "modal_proxy_auth": false,
   "extra_engine_args": [
     "--mem-fraction-static",

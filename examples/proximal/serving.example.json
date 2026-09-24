@@ -4,7 +4,7 @@
   "gpu": "H100:2",
   "tensor_parallel": 2,
   "routing_region": "us-west",
-  "min_replicas": 1,
+  "min_replicas": 8,
   "max_replicas": 8,
   "target_concurrency": 16,
   "scaledown_window_seconds": 1200,
@@ -21,6 +21,7 @@
   "gateway_key_env": "MILES_GATEWAY_KEY",
   "capture_secret": "miles-capture",
   "cpu": 8,
+  "memory_mib": 65536,
   "modal_proxy_auth": false,
   "extra_engine_args": [
     "--mem-fraction-static",

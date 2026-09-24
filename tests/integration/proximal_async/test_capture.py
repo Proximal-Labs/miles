@@ -428,3 +428,23 @@ async def test_capture_composed_like_a_replica(config, authorization, policy, at
             receipt, _ = await client.collect(handle, attempt)
             assert receipt.num_calls == 1 and admitted == [other.policy, policy]
     assert (tmp_path / "capture" / "sessions" / handle.session_id / "receipt.json").exists()
+
+
+async def test_sessions_abandoned_by_their_trainer_expire(config, authorization, policy, attempt, tokenizer, store):
+    """Capture outlives the trainer that opened its sessions; one older than any rollout can
+    run is released when a new session opens, and its trainer finds it lost."""
+    requests: list[dict[str, object]] = []
+    engine = scripted_engine(config, policy, tokenizer, requests)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            await store.commit_policy(policy)
+            abandoned = await client.create(attempt)
+            recent = await client.create(attempt.model_copy(update={"attempt_id": "attempt-2"}))
+            server.sessions[abandoned.session_id].opened -= server.session_lifetime + 1
+            await client.create(attempt.model_copy(update={"attempt_id": "attempt-3"}))
+            assert abandoned.session_id not in server.sessions and recent.session_id in server.sessions
+            with pytest.raises(httpx.HTTPStatusError) as lost:
+                await client.collect(abandoned, attempt)
+            assert lost.value.response.status_code == 404

@@ -60,6 +60,9 @@ class ServingDeployment(Contract):
     # CPU cores for each replica: SGLang's tokenizer, scheduler and detokenizer processes
     # plus the front process (gateway and capture). Modal otherwise grants about one.
     cpu: Positive
+    # Memory reserved for each replica: SGLang's host memory plus capture's live sessions,
+    # which hold every in-flight rollout's token history.
+    memory_mib: Positive
     # Whether Modal's proxy authenticates callers before they reach a replica. The
     # platform's agents call capture directly and hold only the capture credential, so a
     # pool serving platform rollouts sets this false; every route checks its own key.
@@ -69,8 +72,10 @@ class ServingDeployment(Contract):
 
     @model_validator(mode="after")
     def _shape(self) -> "ServingDeployment":
-        if self.min_replicas > self.max_replicas:
-            raise ValueError("min_replicas exceeds max_replicas")
+        if self.min_replicas != self.max_replicas:
+            # Capture's sessions live in the replicas: scaling one down would drop the
+            # rollouts it holds. A fixed size until scale-down drains sessions first.
+            raise ValueError("Capture sessions live in the replicas; set min_replicas equal to max_replicas")
         for path in (self.base_mount, self.adapter_mount, self.local_cache):
             if not path.is_absolute():
                 raise ValueError("Container paths must be absolute")

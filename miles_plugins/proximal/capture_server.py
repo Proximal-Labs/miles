@@ -13,7 +13,9 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import math
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,11 +47,20 @@ from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import RolloutStore
 
 
+logger = logging.getLogger(__name__)
+
+# How long past the platform's rollout timeout and one last model request a session
+# may wait for the trainer to seal, fetch and release it (the trainer polls every few
+# seconds). Past that its trainer is gone: see CaptureServer._expire_stale.
+SESSION_GRACE_SECONDS = 600
+
+
 @dataclass
 class LiveSession:
     attempt: Attempt
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sealed: bool = False
+    opened: float = field(default_factory=time.monotonic)
 
 
 # agent-px rebuilds replayed assistant messages and re-serializes tool arguments
@@ -342,6 +353,10 @@ class CaptureServer:
         self.sessions: dict[str, LiveSession] = {}
         self.attempts: dict[str, str] = {}
         self._create_lock = asyncio.Lock()
+        # No rollout outlives this; a session that does was abandoned by its trainer.
+        self.session_lifetime = (
+            self.config.harness.timeout_seconds + self.config.request_timeout_seconds + SESSION_GRACE_SECONDS
+        )
         self.transport = BoundTransport(self.config, engine, self.sessions)
         # Built here, never passed in: the registry's matcher is part of capture correctness.
         registry = capture_registry(self.config, tokenizer)
@@ -382,6 +397,29 @@ class CaptureServer:
             # rollout fails loudly rather than continuing without its token history.
             raise HTTPException(404, "No live capture session for this rollout; regenerate the attempt")
         return session_id
+
+    async def _release(self, session_id: str) -> None:
+        entry = self.sessions.get(session_id)
+        if entry is not None:
+            async with entry.lock:
+                await self.core.delete_session(session_id)
+                self.sessions.pop(session_id)
+                self.attempts.pop(entry.attempt.attempt_id, None)
+
+    async def _expire_stale(self) -> None:
+        """Release sessions older than any rollout can run.
+
+        Capture lives in the serving replicas and outlives the trainer that opened its
+        sessions: a trainer that crashed or restarted never releases them. Checked when
+        a session opens, so abandoned sessions never hold capacity new ones need. The
+        trainer then finds an expired session lost and regenerates the attempt.
+        """
+        deadline = time.monotonic() - self.session_lifetime
+        stale = [sid for sid, entry in self.sessions.items() if entry.opened < deadline and not entry.lock.locked()]
+        for session_id in stale:
+            await self._release(session_id)
+        if stale:
+            logger.warning("Released %d capture sessions older than %ds", len(stale), self.session_lifetime)
 
     def _directory(self, session_id: str) -> Path:
         # Session IDs are generated here, never caller-controlled filesystem paths.
@@ -433,6 +471,7 @@ class CaptureServer:
         ):
             raise HTTPException(409, "Attempt is outside this run's dataset/harness/policy contract")
         async with self._create_lock:
+            await self._expire_stale()
             index = self.root / "attempts" / f"{attempt.attempt_id}.json"
             session_id = self.attempts.get(attempt.attempt_id)
             if session_id is None:
@@ -564,10 +603,5 @@ class CaptureServer:
         async def release(session_id: str, request: Request) -> Response:
             self._admin(request)
             self._directory(session_id)
-            entry = self.sessions.get(session_id)
-            if entry is not None:
-                async with entry.lock:
-                    await self.core.delete_session(session_id)
-                    self.sessions.pop(session_id)
-                    self.attempts.pop(entry.attempt.attempt_id, None)
+            await self._release(session_id)
             return Response(status_code=204)

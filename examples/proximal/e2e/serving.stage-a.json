@@ -21,6 +21,7 @@
   "gateway_key_env": "MILES_GATEWAY_KEY",
   "capture_secret": "miles-stage-a-capture",
   "cpu": 4,
+  "memory_mib": 16384,
   "modal_proxy_auth": true,
   "extra_engine_args": [
     "--mem-fraction-static",
