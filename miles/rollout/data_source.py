@@ -46,7 +46,7 @@ class DataSource(abc.ABC):
 
 # TODO may further refactor data-loading part later
 class RolloutDataSource(DataSource):
-    def __init__(self, args):
+    def __init__(self, args, *, load_multimodal_processor=True):
         self.args = args
 
         self.epoch_id = 0
@@ -60,7 +60,9 @@ class RolloutDataSource(DataSource):
             tokenizer = load_tokenizer(
                 args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
             )
-            processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+            processor = (
+                load_processor(args.hf_checkpoint, trust_remote_code=True) if load_multimodal_processor else None
+            )
 
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:
@@ -162,8 +164,8 @@ class RolloutDataSource(DataSource):
 
 
 class RolloutDataSourceWithBuffer(RolloutDataSource):
-    def __init__(self, args):
-        super().__init__(args)
+    def __init__(self, args, *, load_multimodal_processor=True):
+        super().__init__(args, load_multimodal_processor=load_multimodal_processor)
         self.buffer = []
         if self.args.buffer_filter_path is None:
             self.buffer_filter = pop_first

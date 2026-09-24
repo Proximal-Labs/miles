@@ -10,7 +10,9 @@ class InklingSFTDataSource(RolloutDataSourceWithBuffer):
     def __init__(self, args):
         source_args = copy.copy(args)
         source_args.load = str(Path(args.lora_adapter_path).parents[1]) if args.lora_adapter_path else None
-        super().__init__(source_args)
+        # Prepared text-only SFT records already contain tokens and loss masks.
+        # Inkling's multimodal processor expects message lists, not their text placeholder.
+        super().__init__(source_args, load_multimodal_processor=False)
 
     def load(self, rollout_id=None):
         if self.args.load is not None:

@@ -1,7 +1,11 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from miles.rollout.data_source import RolloutDataSource
+from miles.rollout.inkling_sft import generate_rollout
+from miles.rollout.inkling_sft_data_source import InklingSFTDataSource
 
 
 def _make_args(**overrides) -> SimpleNamespace:
@@ -26,3 +30,48 @@ def test_load_reads_nothing_without_a_global_dataset(tmp_path: Path) -> None:
 
     assert source.sample_offset == 0
     assert source.epoch_id == 0
+
+
+def test_prepared_inkling_sft_bypasses_multimodal_processor(tmp_path, monkeypatch):
+    metadata = {"format": "inkling-sft-v2", "tokens": [10, 20, 30], "loss_mask": [0, 1, 1]}
+    dataset = tmp_path / "train.prepared.jsonl"
+    dataset.write_text(json.dumps({"text": "", "metadata": metadata}) + "\n")
+    processor_loader = Mock(return_value=object())
+    monkeypatch.setattr("miles.rollout.data_source.load_processor", processor_loader)
+    monkeypatch.setattr("miles.rollout.data_source.load_tokenizer", lambda *a, **kw: object())
+    args = _make_args(
+        rollout_global_dataset=True,
+        hf_checkpoint="inkling",
+        chat_template_path=None,
+        dump_details=None,
+        prompt_data=str(dataset),
+        rollout_max_prompt_len=None,
+        input_key="text",
+        multimodal_keys=None,
+        label_key=None,
+        metadata_key="metadata",
+        tool_key=None,
+        apply_chat_template=False,
+        apply_chat_template_kwargs={},
+        rollout_seed=42,
+        buffer_filter_path=None,
+        lora_adapter_path=None,
+        n_samples_per_prompt=1,
+        rollout_batch_size=1,
+        seq_length=100,
+    )
+    source = InklingSFTDataSource(args)
+    samples = generate_rollout(args, 0, source)
+    processor_loader.assert_not_called()
+    assert len(samples) == 1
+    assert samples[0].tokens == metadata["tokens"]
+    assert samples[0].loss_mask == [1, 1]
+    assert samples[0].multimodal_inputs is None
+    assert source.sample_offset == 1
+
+    # Ordinary rollout sources still load their multimodal processor.
+    dataset.write_text(json.dumps({"text": [], "metadata": {}}) + "\n")
+    monkeypatch.setattr("miles.utils.processing_utils.process_vision_info", lambda *a: {"images": []})
+    regular_source = RolloutDataSource(args)
+    processor_loader.assert_called_once_with("inkling", trust_remote_code=True)
+    assert regular_source.dataset[0].multimodal_inputs == {"images": []}
