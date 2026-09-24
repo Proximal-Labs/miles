@@ -271,6 +271,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _init_training_state(self) -> None:
         args = self.args
+        # Offline training has no inference engines to receive model weights.
+        self.weight_updater = None
+        if args.debug_train_only:
+            return
         is_lora = lora_rollout_enabled(args)
         uses_colocate_protocol = self.args.colocate
         if is_lora and not uses_colocate_protocol:
@@ -665,7 +669,8 @@ class MegatronTrainRayActor(TrainRayActor):
                         logger.info(f"Updating ref model at rollout_id {rollout_id}")
                     self.weights_backuper.backup("ref")
 
-        log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
+        sync_metrics = self.weight_updater.pop_metrics() if self.weight_updater is not None else {}
+        log_perf_data(rollout_id, self.args, extra_metrics=sync_metrics)
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
@@ -868,4 +873,5 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
-        self.weight_updater.conn_status.mark_trainer_stale()
+        if self.weight_updater is not None:
+            self.weight_updater.conn_status.mark_trainer_stale()
