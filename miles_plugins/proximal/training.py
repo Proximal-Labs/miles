@@ -45,6 +45,9 @@ class TrainingDeployment(Contract):
     gpu: Nonempty  # Modal GPU spec, e.g. "H200:8".
     num_gpus: Positive  # GPUs Ray may schedule; must match the spec's count.
     cpu: Positive
+    # Modal retries after a crash; each resumes from the latest snapshot. A real-platform
+    # retry opens a new tunnel and waits, holding its GPUs, for a new registration.
+    max_retries: Annotated[int, Field(ge=0)]
     # Model args script under scripts/models (without ``.py``), e.g. "qwen3.8-27B".
     model_args: Nonempty
     # Miles training arguments file, relative to the repository root.
@@ -74,6 +77,26 @@ def check_deployment(run: RunConfig, deployment: TrainingDeployment) -> None:
                 "A real platform run registers a new endpoint each start and routes by the model's default "
                 "endpoint; leave platform_route.endpoint_name unset"
             )
+
+
+def train_args_gpus(text: str) -> int:
+    """GPUs the Miles training arguments ask for: nodes x GPUs per node."""
+    tokens = [token for line in text.splitlines() if not line.lstrip().startswith("#") for token in line.split()]
+    values = {}
+    for flag in ("--actor-num-nodes", "--actor-num-gpus-per-node"):
+        if flag not in tokens:
+            raise ValueError(f"Training arguments are missing {flag}")
+        values[flag] = int(tokens[tokens.index(flag) + 1])
+    return values["--actor-num-nodes"] * values["--actor-num-gpus-per-node"]
+
+
+def check_train_args(deployment: TrainingDeployment, text: str) -> None:
+    """The training arguments must ask for exactly the GPUs the deployment provides."""
+    gpus = train_args_gpus(text)
+    if gpus != deployment.num_gpus:
+        raise ValueError(
+            f"{deployment.train_args} asks for {gpus} GPUs, but the deployment provides {deployment.num_gpus}"
+        )
 
 
 def registered_capture_url(registry_json: str, model: str, endpoint_name: str | None) -> str | None:
@@ -156,7 +179,9 @@ def main() -> None:
 
     if args.config is None or args.training is None:
         parser.error("check needs --config and --training")
-    check_deployment(read_run_config(args.config), read_training_deployment(args.training))
+    deployment = read_training_deployment(args.training)
+    check_deployment(read_run_config(args.config), deployment)
+    check_train_args(deployment, Path(deployment.train_args).read_text())
     print("Run config and training deployment agree")
 
 

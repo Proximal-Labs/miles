@@ -28,6 +28,24 @@ Checked only on GPUs:
 - exporting the MLP LoRA and the replicas loading it;
 - memory at 32k tokens.
 
+## Smoke first: one step on one task (`smoke/`)
+
+Before the pilot, `smoke/` runs one training step with 1 task × 4 samples:
+- **Trainer:** 4 H200 at TP 4, which is one data-parallel rank; the frozen 27B is about 14 GB of weights per GPU.
+- **Serving:** 1 replica.
+- **Task:** the first task of "3.8 good passrate".
+
+The step checks, in order:
+1. The replica loads the step-0 adapter (Miles publishes it before any rollout).
+2. Qwen3.8's tool calls parse in mini-swe.
+3. Platform rollout workers reach the tunnel.
+4. The platform grades the 4 rollouts and they land in the store.
+5. Megatron loads the 27B and trains one LoRA step, then publishes version 1 and exits.
+
+The smoke deployment has `max_retries` 0, so a failure stops the run rather than holding GPUs while it waits for a new registration. Its registration timeout is 20 minutes. It uses its own run id (and so its own snapshots) and W&B group.
+
+Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.template.json` with `smoke/tasks.json`, and `smoke/training.json`. Volumes, secrets and the staged base are shared with the pilot.
+
 ## Paid steps, in order (workspace `proximal`, environment `main`)
 
 1. **Volumes and secrets.**

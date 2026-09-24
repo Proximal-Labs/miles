@@ -1,11 +1,11 @@
 {
   "app_name": "miles-qwen38-training",
-  "gpu": "H200:8",
-  "num_gpus": 8,
-  "cpu": 32,
-  "max_retries": 3,
+  "gpu": "H200:4",
+  "num_gpus": 4,
+  "cpu": 16,
+  "max_retries": 0,
   "model_args": "qwen3.8-27B",
-  "train_args": "examples/proximal/qwen38/train_args.txt",
+  "train_args": "examples/proximal/qwen38/smoke/train_args.txt",
   "state_volume": {
     "volume_name": "miles-qwen38-state",
     "environment_name": "main"
@@ -18,6 +18,6 @@
   ],
   "platform": {
     "kind": "real",
-    "registration_timeout_seconds": 3600
+    "registration_timeout_seconds": 1200
   }
 }

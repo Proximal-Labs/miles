@@ -22,7 +22,7 @@ Crash recovery: Miles checkpoints every step (a LoRA checkpoint is the adapter a
 optimizer state). After each saved step a thread copies a self-contained snapshot (see
 ``e2e.snapshots``) to the deployment's state Volume. On start, the latest snapshot is
 restored before any service runs and Miles resumes from it; Modal retries the function
-after a crash. A real-platform retry opens a new tunnel and waits for its registration.
+after a crash, up to the deployment's ``max_retries``. A real-platform retry opens a new tunnel and waits for its registration.
 """
 
 import contextlib
@@ -44,6 +44,7 @@ from miles_plugins.proximal.training import (
     Gsm8kPlatform,
     RealPlatform,
     check_deployment,
+    check_train_args,
     fetch_registry,
     read_training_deployment,
     registered_capture_url,
@@ -55,6 +56,8 @@ _CONTAINER_TRAINING_CONFIG = "/proximal-config/training.json"
 REPO = Path(__file__).resolve().parents[2]
 TRAINING = read_training_deployment(os.environ[_TRAINING_PATH])
 check_deployment(RUN, TRAINING)
+if modal.is_local():
+    check_train_args(TRAINING, (REPO / TRAINING.train_args).read_text())
 
 SNAPSHOT_MOUNT = Path("/snapshot")
 state_volume = modal.Volume.from_name(
@@ -271,7 +274,7 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     # function otherwise gets about one core and they starve.
     cpu=float(TRAINING.cpu),
     volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
-    retries=modal.Retries(max_retries=3, initial_delay=30.0),
+    retries=modal.Retries(max_retries=TRAINING.max_retries, initial_delay=30.0) if TRAINING.max_retries else None,
     secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
     timeout=24 * 3600,
 )

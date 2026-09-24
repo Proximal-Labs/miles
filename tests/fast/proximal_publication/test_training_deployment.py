@@ -7,6 +7,7 @@ from miles_plugins.proximal.contracts import RunConfig
 from miles_plugins.proximal.training import (
     TrainingDeployment,
     check_deployment,
+    check_train_args,
     prepare_run_config,
     read_training_deployment,
     registered_capture_url,
@@ -96,6 +97,29 @@ def test_real_deployments_refuse_mismatched_configs(run, change, message):
 def test_gsm8k_deployment_refuses_a_remote_platform():
     with pytest.raises(ValueError, match="runs on loopback"):
         check_deployment(_real_run(), read_training_deployment(GSM8K / "training.json"))
+
+
+@pytest.mark.parametrize("directory", [GSM8K, QWEN38, QWEN38 / "smoke"])
+def test_example_train_args_ask_for_the_deployments_gpus(directory):
+    deployment = read_training_deployment(directory / "training.json")
+    check_train_args(deployment, (REPO / deployment.train_args).read_text())
+
+
+def test_train_args_for_the_wrong_gpu_count_are_refused():
+    smoke = read_training_deployment(QWEN38 / "smoke" / "training.json")
+    with pytest.raises(ValueError, match="asks for 8 GPUs, but the deployment provides 4"):
+        check_train_args(smoke, (QWEN38 / "train_args.txt").read_text())
+
+
+def test_prepare_writes_a_valid_qwen38_smoke_config(tmp_path):
+    smoke = QWEN38 / "smoke"
+    run = prepare_run_config(
+        smoke / "run.template.json", smoke / "tasks.json", "https://pool.modal.direct", tmp_path / "run.json"
+    )
+    assert len(run.dataset.tasks) == 1 and run.research.group_size == 4 and run.max_in_flight_samples == 4
+    deployment = read_training_deployment(smoke / "training.json")
+    assert deployment.max_retries == 0
+    check_deployment(run, deployment)
 
 
 def test_prepare_writes_a_valid_qwen38_run_config(tmp_path):
