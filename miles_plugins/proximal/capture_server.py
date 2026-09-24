@@ -50,11 +50,28 @@ class LiveSession:
 MESSAGE_MATCHER = "loose_tool_call"
 
 
+def check_tito_protocol(config: RunConfig) -> None:
+    """The replicas parse served text with ``model_protocol``'s parsers; they must be the
+    ones the chat-template family binds, or the tool calls the agent sees and the tokens
+    capture renders for them disagree."""
+    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+
+    family = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(config.tito_model))
+    for name in ("reasoning_parser", "tool_call_parser"):
+        bound = getattr(family, name)
+        configured = getattr(config.model_protocol, name)
+        if bound is not None and configured != bound:
+            raise ValueError(
+                f"model_protocol.{name} is {configured!r}, but the {config.tito_model} template family binds {bound!r}"
+            )
+
+
 def capture_registry(config: RunConfig, tokenizer: Any) -> SessionRegistry:
     """The one way to build the capture session registry: TITO renderer + matcher."""
     from miles.utils.chat_template_utils import get_tito_tokenizer
     from miles.utils.chat_template_utils.message_matcher_hub import resolve_session_message_matcher
 
+    check_tito_protocol(config)
     tito = get_tito_tokenizer(
         tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
     )

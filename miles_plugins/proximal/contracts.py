@@ -99,6 +99,11 @@ class Research(Contract):
 
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+# Chat-template families capture can render with (Miles's --tito-model). Each binds the
+# SGLang reasoning and tool-call parsers the replicas must use (check_tito_protocol).
+# Inkling is not listed: its template also takes reasoning_effort, which capture does
+# not yet pass.
+TitoModel = Literal["qwen3", "qwen35", "qwen36", "qwen38small", "qwennext"]
 
 
 class ModelProtocol(Contract):
@@ -170,7 +175,7 @@ class RunConfig(Contract):
     # Environment variable holding the Postgres DSN for the rollout store index.
     store_dsn_env: Nonempty
     tokenizer_path: Path
-    tito_model: Literal["qwen3"]
+    tito_model: TitoModel
     enable_thinking: bool
     model_protocol: ModelProtocol
     max_in_flight_samples: Positive
@@ -204,7 +209,7 @@ class TrainingContract(Contract):
     sampling: Sampling
     group_size: int
     tokenizer: Nonempty
-    tito_model: Literal["qwen3"]
+    tito_model: TitoModel
     enable_thinking: bool
     model_protocol: ModelProtocol
 
