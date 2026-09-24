@@ -66,15 +66,47 @@ def check_tito_protocol(config: RunConfig) -> None:
             )
 
 
+def fixed_chat_template(tito_model: str) -> tuple[str | None, dict[str, Any]]:
+    """The family's fixed chat template and the kwargs it requires, as Miles's own
+    argument resolution applies them for a named ``--tito-model``.
+
+    Capture renders every turn incrementally (the new messages after a stand-in
+    prefix). Native templates are not built for that: Qwen3.8's refuses to render a
+    conversation without a user message, so every turn after the first fails.
+    """
+    from miles.utils.chat_template_utils import resolve_fixed_chat_template
+
+    return resolve_fixed_chat_template(tito_model)
+
+
+def capture_tokenizer(tokenizer_path: str | Path, tito_model: str) -> Any:
+    """The one way to load capture's tokenizer: the base model's, with its family's fixed template."""
+    from miles.utils.processing_utils import load_tokenizer
+
+    template_path, _ = fixed_chat_template(tito_model)
+    return load_tokenizer(
+        str(tokenizer_path), chat_template_path=template_path, local_files_only=True, trust_remote_code=False
+    )
+
+
+def _template_kwargs(config: RunConfig) -> dict[str, Any]:
+    _, fixed_kwargs = fixed_chat_template(config.tito_model)
+    return {"enable_thinking": config.enable_thinking, **fixed_kwargs}
+
+
 def capture_registry(config: RunConfig, tokenizer: Any) -> SessionRegistry:
     """The one way to build the capture session registry: TITO renderer + matcher."""
     from miles.utils.chat_template_utils import get_tito_tokenizer
     from miles.utils.chat_template_utils.message_matcher_hub import resolve_session_message_matcher
 
     check_tito_protocol(config)
-    tito = get_tito_tokenizer(
-        tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
-    )
+    template_path, _ = fixed_chat_template(config.tito_model)
+    if template_path is not None and tokenizer.chat_template != Path(template_path).read_text():
+        raise ValueError(
+            f"Capture needs the {config.tito_model} family's fixed chat template; load the tokenizer "
+            "with capture_tokenizer"
+        )
+    tito = get_tito_tokenizer(tokenizer, config.tito_model, chat_template_kwargs=_template_kwargs(config))
     return SessionRegistry(
         tokenizer, tito_tokenizer=tito, message_matcher=resolve_session_message_matcher(MESSAGE_MATCHER)
     )
@@ -88,9 +120,9 @@ def session_config(config: RunConfig) -> SessionServerConfig:
         backend_url=config.inference_url,
         timeout=config.request_timeout_seconds,
         hf_checkpoint=str(config.tokenizer_path),
-        chat_template_path=None,
+        chat_template_path=fixed_chat_template(config.tito_model)[0],
         tito_model=config.tito_model,
-        apply_chat_template_kwargs={"enable_thinking": config.enable_thinking},
+        apply_chat_template_kwargs=_template_kwargs(config),
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         sglang_speculative_algorithm=None,

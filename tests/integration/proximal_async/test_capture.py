@@ -10,11 +10,10 @@ from argparse import Namespace
 
 import httpx
 import pytest
-from transformers import AutoTokenizer
 
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
-from miles_plugins.proximal.capture_server import CaptureServer
+from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
 from miles_plugins.proximal.contracts import AcceptedAttempt
 from miles_plugins.proximal.data_source import PlatformTaskSource
@@ -22,8 +21,8 @@ from miles_plugins.proximal.rollout import execute_attempt
 
 
 @pytest.fixture
-def tokenizer():
-    return AutoTokenizer.from_pretrained(os.environ["PROXIMAL_TEST_TOKENIZER"], local_files_only=True)
+def tokenizer(config):
+    return capture_tokenizer(os.environ["PROXIMAL_TEST_TOKENIZER"], config.tito_model)
 
 
 PLATFORM = {"Authorization": "Bearer capture-platform-secret"}  # The registry's credential.
