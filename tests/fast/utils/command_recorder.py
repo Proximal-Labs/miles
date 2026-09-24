@@ -11,7 +11,9 @@ def record_commands(monkeypatch) -> list[str]:
         commands.append(cmd)
         return "0" if capture_output else None
 
-    def fake_exec_command_multi_node(cmd: str, capture_output: bool = False, num_nodes: int | None = None) -> list[str | None]:
+    def fake_exec_command_multi_node(
+        cmd: str, capture_output: bool = False, num_nodes: int | None = None
+    ) -> list[str | None]:
         commands.append(f"[multi_node num_nodes={num_nodes}] {cmd}")
         return ["0"]
 
