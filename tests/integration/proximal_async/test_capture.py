@@ -366,3 +366,23 @@ async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
             assert requests[0]["max_tokens"] == 48
             assert requests[1]["max_tokens"] == config.research.sampling.max_tokens
+            # One timing record per chat call, rejected ones included, joined to the agent by response id.
+            timing_log = config.artifact_directory / config.run_id / "capture" / "call-timing.jsonl"
+            records = [json.loads(line) for line in timing_log.read_text().splitlines()]
+            assert [record["status"] for record in records] == [422, 422, 200, 200]
+            order = [
+                "handler_start",
+                "session_locked",
+                "validated",
+                "proxy_start",
+                "engine_sent",
+                "engine_done",
+                "proxy_end",
+                "core_done",
+                "response_start",
+                "response_sent",
+            ]
+            for record in records[2:]:
+                marks = record["marks"]
+                assert [marks[name] for name in order] == sorted(marks[name] for name in order)
+                assert record["response_id"] and record["input_tokens"] > 0 and record["output_tokens"] > 0
