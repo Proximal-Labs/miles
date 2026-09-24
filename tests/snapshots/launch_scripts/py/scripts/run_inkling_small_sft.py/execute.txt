@@ -88,7 +88,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-method uniform
   --recompute-num-layers 1
   --seq-length 262144 
-  --optimizer muon
+  --optimizer adam
   --lr 1e-05
   --min-lr 1.0000000000000002e-06
   --lr-decay-style cosine

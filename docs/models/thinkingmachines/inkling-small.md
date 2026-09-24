@@ -53,8 +53,8 @@ Batch shape is configurable from the launcher (`--rollout-batch-size`, `--global
 
 [`scripts/run_inkling_small_sft.py`](https://github.com/radixark/miles/blob/main/scripts/run_inkling_small_sft.py)
 targets **one node of 8 B300s**, text LoRA SFT, one epoch, with
-`muon`. This avoids the pinned image's unsupported expert-parallel fallback groups
-in the `dist_muon` layer-wise optimizer path. The BF16 base is frozen; only adapters are trained. Defaults are
+Miles' standard `adam` distributed optimizer. The BF16 base is frozen;
+only adapters are trained. Defaults are
 rank **32**, alpha **32**, `all-linear` targets and shared-outer expert adapters,
 matching the native Inkling adapter layout. Set `--lora-rank` and `--lora-alpha`
 to override them. It starts no inference engines. This is an **unvalidated fit**,
@@ -72,7 +72,7 @@ single-node; scaling to additional nodes requires a clustered launcher and an
 updated parallelism layout.
 
 The provisional LR is `1e-5`, with 3% warmup and cosine decay to `1e-6`; this is
-configurable and is not a validated Inkling/Muon LoRA SFT optimum. Global and microbatch
+configurable and is not a validated Inkling/Adam LoRA SFT optimum. Global and microbatch
 size are both one conversation, so one epoch visits every prepared record without
 dropping a partial batch. This favors memory feasibility over throughput.
 
