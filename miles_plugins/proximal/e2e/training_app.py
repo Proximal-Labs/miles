@@ -185,6 +185,9 @@ def train() -> int:
     os.environ[RUN.capture.api_key_env] = secrets.token_hex(16)
     os.environ[RUN.capture.platform_key_env] = secrets.token_hex(16)
     os.environ["MILES_GATEWAY_AUTHORIZATION"] = f"Bearer {os.environ[DEPLOYMENT.gateway_key_env]}"
+    # A retry may land in the container of the failed attempt: clear its Ray and state.
+    subprocess.run(["ray", "stop", "--force"], check=False, capture_output=True)
+    snapshots.reset_local_state(STATE)
     logs = STATE / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     processes: list[subprocess.Popen[bytes]] = []
@@ -201,7 +204,7 @@ def train() -> int:
             pg_bin=pg_bin,
         )
         print(f"[training] {'resuming from step ' + str(resume_step) if resume_step is not None else 'fresh start'}")
-        snapshotter = threading.Thread(target=_snapshot_loop, args=(dsn, pg_bin, stop, resume_step), daemon=True)
+        snapshotter = threading.Thread(target=_snapshot_loop, args=(dsn, pg_bin, stop, resume_step))
         try:
             services = [
                 (
@@ -264,8 +267,12 @@ def train() -> int:
                 raise RuntimeError(f"Trainer exited with {code}")
             return code
         finally:
-            stop.set()
+            # Stop everything that can still write a checkpoint, then the snapshot thread,
+            # before re-raising: a retry must never overlap this attempt's writes.
             subprocess.run(["ray", "stop", "--force"], check=False)
+            stop.set()
+            if snapshotter.is_alive():
+                snapshotter.join()
             for process in reversed(processes):
                 process.terminate()
             for process in processes:

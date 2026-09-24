@@ -59,46 +59,65 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def step_dir(snapshot_root: Path, step: int) -> Path:
+    return snapshot_root / "steps" / f"{step:07d}"
+
+
 def take(step: int, *, checkpoints: Path, artifacts: Path, dsn: str, snapshot_root: Path, pg_bin: Path) -> None:
-    """Snapshot one completed step, then drop older steps from both sides."""
-    snap_checkpoints = snapshot_root / "checkpoints"
-    snap_checkpoints.mkdir(parents=True, exist_ok=True)
-    dump = snapshot_root / f"store-{step:07d}.dump"
-    subprocess.run([str(pg_bin / "pg_dump"), "--format=custom", f"--file={dump}", dsn], check=True)
-    _copy_new(artifacts, snapshot_root / "artifacts")
-    shutil.copytree(iter_dir(checkpoints, step), iter_dir(snap_checkpoints, step), dirs_exist_ok=True)
-    cursor = checkpoints / "rollout" / f"proximal_{step}.json"
-    (snap_checkpoints / "rollout").mkdir(exist_ok=True)
-    shutil.copy2(cursor, snap_checkpoints / "rollout" / cursor.name)
+    """Snapshot one completed step as a self-contained directory, then prune.
+
+    ``steps/<step>`` holds the store dump, the LoRA checkpoint and the task cursor; it is
+    assembled under a temporary name and renamed into place before ``LATEST`` points at
+    it. The two newest step directories are kept, so a reader that has just read
+    ``LATEST`` still finds its files while the next snapshot is written. Payload files
+    are write-once and shared across steps.
+    """
+    final = step_dir(snapshot_root, step)
+    staging = final.with_name(f".{final.name}.tmp")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    subprocess.run([str(pg_bin / "pg_dump"), "--format=custom", f"--file={staging / 'store.dump'}", dsn], check=True)
+    _copy_new(artifacts, snapshot_root / "artifacts")  # After the dump: every dumped row has its file.
+    shutil.copytree(iter_dir(checkpoints, step), staging / "checkpoint")
+    shutil.copy2(checkpoints / "rollout" / f"proximal_{step}.json", staging / "cursor.json")
+    shutil.rmtree(final, ignore_errors=True)
+    os.replace(staging, final)
     _write_atomic(snapshot_root / LATEST, str(step))
-    for old in snapshot_root.glob("store-*.dump"):
-        if old != dump:
-            old.unlink()
-    for root in (snap_checkpoints, checkpoints):
-        for old in root.glob("iter_*"):
-            if int(old.name.removeprefix("iter_")) < step:
-                shutil.rmtree(old, ignore_errors=True)
+    kept = sorted(int(path.name) for path in (snapshot_root / "steps").iterdir() if path.name.isdigit())[-2:]
+    for path in (snapshot_root / "steps").iterdir():
+        if path.name.isdigit() and int(path.name) not in kept:
+            shutil.rmtree(path, ignore_errors=True)
+    for old in checkpoints.glob("iter_*"):
+        if int(old.name.removeprefix("iter_")) < step:
+            shutil.rmtree(old, ignore_errors=True)
+
+
+def reset_local_state(state: Path) -> None:
+    """Start an attempt from empty local state.
+
+    Modal may retry a failed input in the same container, where the previous attempt's
+    Postgres data and checkpoints still exist; restoring into them fails.
+    """
+    state.mkdir(parents=True, exist_ok=True)
+    for child in state.iterdir():  # Contents, not the directory: it may be a mount point.
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def restore(*, snapshot_root: Path, checkpoints: Path, artifacts: Path, dsn: str, pg_bin: Path) -> int | None:
-    """Put the latest snapshot back on local disk and into the empty store; returns its step."""
+    """Put the latest snapshot back on empty local disk and into the empty store; returns its step."""
     step = latest_snapshot(snapshot_root)
     if step is None:
         return None
-    snap_checkpoints = snapshot_root / "checkpoints"
-    shutil.copytree(iter_dir(snap_checkpoints, step), iter_dir(checkpoints, step), dirs_exist_ok=True)
+    source = step_dir(snapshot_root, step)
+    shutil.copytree(source / "checkpoint", iter_dir(checkpoints, step))
     (checkpoints / "rollout").mkdir(parents=True, exist_ok=True)
-    cursor = f"proximal_{step}.json"
-    shutil.copy2(snap_checkpoints / "rollout" / cursor, checkpoints / "rollout" / cursor)
+    shutil.copy2(source / "cursor.json", checkpoints / "rollout" / f"proximal_{step}.json")
     _copy_new(snapshot_root / "artifacts", artifacts)
     subprocess.run(
-        [
-            str(pg_bin / "pg_restore"),
-            "--no-owner",
-            "--exit-on-error",
-            f"--dbname={dsn}",
-            str(snapshot_root / f"store-{step:07d}.dump"),
-        ],
+        [str(pg_bin / "pg_restore"), "--no-owner", "--exit-on-error", f"--dbname={dsn}", str(source / "store.dump")],
         check=True,
     )
     return step
