@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS proximal_rollout_groups (
 );
 CREATE INDEX IF NOT EXISTS proximal_rollout_groups_fresh
     ON proximal_rollout_groups (training_run_id, policy_version, created_at);
+CREATE TABLE IF NOT EXISTS proximal_rollout_rejections (
+    training_run_id text NOT NULL,
+    group_id text NOT NULL,
+    filter_path text NOT NULL,
+    reason text,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (training_run_id, group_id, filter_path),
+    FOREIGN KEY (training_run_id, group_id)
+        REFERENCES proximal_rollout_groups (training_run_id, group_id)
+);
 """
 
 _SELECT = """
@@ -70,6 +80,11 @@ WHERE g.training_run_id = %s
   AND g.contract_sha256 = %s
   AND g.policy_version BETWEEN %s AND %s
   AND NOT (g.group_id = ANY(%s))
+  AND NOT EXISTS (
+      SELECT 1 FROM proximal_rollout_rejections r
+      WHERE r.training_run_id = g.training_run_id AND r.group_id = g.group_id
+        AND r.filter_path = %s
+  )
 ORDER BY g.created_at, g.group_id
 """
 
@@ -260,23 +275,35 @@ class RolloutStore:
                 if row is None or row[0] != digest:
                     raise ValueError(f"Group {group_id} was already stored with different contents")
 
+    async def reject_group(self, group_id: str, *, filter_path: str, reason: str | None) -> bool:
+        """Record a fixed verdict; return whether this is its first insertion."""
+        async with self._lock:
+            cursor = await self.connection.execute(
+                "INSERT INTO proximal_rollout_rejections (training_run_id, group_id, filter_path, reason)"
+                " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (self.run_id, group_id, filter_path, reason),
+            )
+            return cursor.rowcount == 1
+
     async def select(
-        self, *, min_version: int, max_version: int, exclude: Iterable[str], limit: int
+        self, *, min_version: int, max_version: int, exclude: Iterable[str], limit: int, filter_path: str | None
     ) -> list[GroupRow]:
         """The batch query: fresh, live-lineage, unconsumed groups, oldest first."""
         async with self._lock:
             cursor = await self.connection.execute(
                 _SELECT + " LIMIT %s",
-                (self.run_id, self.contract_sha256, min_version, max_version, list(exclude), limit),
+                (self.run_id, self.contract_sha256, min_version, max_version, list(exclude), filter_path, limit),
             )
             rows = await cursor.fetchall()
         return [GroupRow(str(r[0]), int(str(r[1])), str(r[2]), str(r[3])) for r in rows]
 
-    async def count(self, *, min_version: int, max_version: int, exclude: Iterable[str]) -> int:
+    async def count(
+        self, *, min_version: int, max_version: int, exclude: Iterable[str], filter_path: str | None
+    ) -> int:
         async with self._lock:
             cursor = await self.connection.execute(
                 "SELECT count(*) FROM (" + _SELECT + ") eligible",
-                (self.run_id, self.contract_sha256, min_version, max_version, list(exclude)),
+                (self.run_id, self.contract_sha256, min_version, max_version, list(exclude), filter_path),
             )
             row = await cursor.fetchone()
         return 0 if row is None else int(str(row[0]))

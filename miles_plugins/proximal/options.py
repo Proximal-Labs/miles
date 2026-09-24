@@ -1,14 +1,32 @@
 """Translate one typed run contract into Miles's existing configuration seams."""
 
 from argparse import ArgumentParser, Namespace
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
+from miles.utils.function_registry import load_function
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.contracts import read_run_config
+
+if TYPE_CHECKING:
+    from miles.utils.types import Sample
 
 ROLLOUT = "miles_plugins.proximal.rollout.PlatformRolloutFn"
 TRANSFER = "miles_plugins.proximal.weight_update.ModalVolumeTransfer"
 SOURCE = "miles_plugins.proximal.data_source.PlatformTaskSource"
 BUFFER = "miles_plugins.proximal.buffer.PlatformDataBuffer"
+
+
+def load_dynamic_filter(args: Namespace) -> Callable[[Namespace, list["Sample"]], object] | None:
+    """Validate the upstream hook at the free configuration boundary, before rollouts."""
+    if args.dynamic_sampling_filter_path is None:
+        return None
+    if args.reward_key:
+        raise ValueError("Platform verifier rewards are scalar; dynamic sampling requires --reward-key unset")
+    return cast(
+        Callable[[Namespace, list["Sample"]], object],
+        load_function(args.dynamic_sampling_filter_path, sync_required=True),  # type: ignore[no-untyped-call]
+    )
 
 
 def add_arguments(parser: ArgumentParser) -> None:
@@ -71,7 +89,6 @@ def validate_args(args: Namespace) -> None:
         "debug_skip_weight_update",
         "partial_rollout",
         "rollout_sample_filter_path",
-        "dynamic_sampling_filter_path",
         "eval_interval",
         "eval_num_gpus",
         "rollout_external_engine_addrs",
@@ -88,3 +105,4 @@ def validate_args(args: Namespace) -> None:
         raise ValueError("Stage the pinned base/tokenizer checkpoint locally before starting")
     if args.rollout_batch_size > config.completed_group_capacity:
         raise ValueError("Completed-group capacity must fit a training batch")
+    load_dynamic_filter(args)

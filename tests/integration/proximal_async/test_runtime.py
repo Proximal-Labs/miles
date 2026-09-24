@@ -49,6 +49,8 @@ async def test_existing_async_worker_overlaps_consumption_and_cancels_children(
         n_samples_per_prompt=2,
         async_unused_samples_handler="drop",
         rollout_sample_filter_path=None,
+        dynamic_sampling_filter_path=None,
+        reward_key=None,
         rollout_batch_size=1,
         rollout_global_dataset=True,
         async_max_concurrent_samples=4,
