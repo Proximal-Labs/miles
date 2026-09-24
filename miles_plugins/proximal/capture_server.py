@@ -14,9 +14,9 @@ import hashlib
 import hmac
 import json
 import math
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -31,9 +31,9 @@ from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
 from miles_plugins.proximal.call_timing import CallTimingMiddleware, mark, note
 from miles_plugins.proximal.contracts import (
+    ROLLOUT_SUFFIX,
     Attempt,
     CaptureReceipt,
-    ROLLOUT_SUFFIX,
     Policy,
     RunConfig,
     canonical_bytes,
