@@ -1,6 +1,6 @@
 """Experimental Inkling-Small LoRA SFT on one node of 8 B300s.
 
-Uses Miles/Megatron, GPU-resident dist_muon, TP4/PP2/EP4,
+Uses Miles/Megatron, GPU-resident Muon, TP4/PP2/EP4,
 full activation recomputation and no rollout inference. 262K training is an
 unvalidated memory target, not a demonstrated fit. Allows CUDA >=13.0 experimentally
 with the Miles Megatron fork. The frozen BF16 base and trainable adapters stay
@@ -135,8 +135,10 @@ def execute(args: ScriptArgs):
         "--disable-compute-advantages-and-returns --debug-train-only "
     )
     perf_args = f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
+    # The pinned Megatron image's dist_muon path rejects expert-parallel fallback
+    # groups. Plain Muon retains expert-DP grouping without layer-wise sharding.
     optimizer_args = (
-        f"--optimizer dist_muon --lr {args.lr} --min-lr {args.lr * 0.1} "
+        f"--optimizer muon --lr {args.lr} --min-lr {args.lr * 0.1} "
         "--lr-decay-style cosine --lr-warmup-fraction 0.03 --weight-decay 0.1 --clip-grad 1.0 "
     )
     misc_args = f"--bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
