@@ -44,8 +44,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             method = node.func.attr
-            # The one paid Modal function call: the explicit base-weight staging script.
-            if method == "remote" and name == "e2e/stage_base.py":
+            # Paid Modal function calls, each an explicit script run by hand.
+            if method == "remote" and name in {"e2e/stage_base.py", "e2e/stage_gsm8k.py", "e2e/training_app.py"}:
                 mutations.append((name, method))
                 continue
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
@@ -60,8 +60,11 @@ def test_remote_mutations_stay_in_authorized_adapters():
     assert sorted(mutations) == [
         ("capture_server.py", "post"),  # Recorded inference only; policy warm-up moved to the pool client.
         ("clients.py", "request"),  # The shared retrying request helper every client uses.
+        ("e2e/math_platform.py", "post"),  # The gsm8k platform's agent calling its capture session.
         ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
+        ("e2e/stage_gsm8k.py", "remote"),  # Paid gsm8k data staging, run by hand.
         ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.
+        ("e2e/training_app.py", "remote"),  # Paid gsm8k training node, run by hand.
         ("gateway.py", "post"),
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),

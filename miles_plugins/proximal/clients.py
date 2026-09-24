@@ -21,6 +21,7 @@ from miles_plugins.proximal.contracts import (
     PolicyEvidence,
     SessionHandle,
     digest,
+    pinned_dataset,
 )
 
 
@@ -217,9 +218,9 @@ class PlatformClient:
         if (
             attempt.run_id != self.config.run_id
             or attempt.harness != self.config.harness
-            or attempt.task not in self.config.dataset.tasks
+            or attempt.task not in pinned_dataset(self.config.dataset).tasks
             or attempt.sampling != self.config.research.sampling
-            or attempt.dataset_sha256 != digest(self.config.dataset)
+            or attempt.dataset_sha256 != pinned_dataset(self.config.dataset).sha256
             or attempt.policy.base_model != self.config.base_model
             or session.request_sha256 != digest(attempt)
         ):

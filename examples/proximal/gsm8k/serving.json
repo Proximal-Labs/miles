@@ -1,0 +1,26 @@
+{
+  "app_name": "miles-gsm8k-serving",
+  "image": "radixark/miles@sha256:e4fcc8c4d40ddd2fe3cbd46cfc414287d879b55cf9915250f6e5474f7c7462b9",
+  "gpu": "L4",
+  "tensor_parallel": 1,
+  "routing_region": "us-west",
+  "min_replicas": 4,
+  "max_replicas": 4,
+  "target_concurrency": 128,
+  "scaledown_window_seconds": 600,
+  "startup_timeout_seconds": 3600,
+  "base_volume": {
+    "volume_name": "miles-gsm8k-base",
+    "environment_name": "main"
+  },
+  "base_mount": "/models",
+  "adapter_mount": "/adapters",
+  "local_cache": "/cache",
+  "max_loaded_adapters": 4,
+  "gateway_secret": "miles-gsm8k-gateway",
+  "gateway_key_env": "MILES_GATEWAY_KEY",
+  "extra_engine_args": [
+    "--mem-fraction-static",
+    "0.8"
+  ]
+}

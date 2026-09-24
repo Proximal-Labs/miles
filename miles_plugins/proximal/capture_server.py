@@ -24,7 +24,14 @@ from miles.rollout.session.core import ProxyRequest, SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
-from miles_plugins.proximal.contracts import Attempt, CaptureReceipt, RunConfig, canonical_bytes, digest
+from miles_plugins.proximal.contracts import (
+    Attempt,
+    CaptureReceipt,
+    RunConfig,
+    canonical_bytes,
+    digest,
+    pinned_dataset,
+)
 from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import RolloutStore
 
@@ -297,8 +304,8 @@ class CaptureServer:
             attempt.run_id != self.config.run_id
             or attempt.harness != self.config.harness
             or attempt.sampling != self.config.research.sampling
-            or attempt.dataset_sha256 != digest(self.config.dataset)
-            or attempt.task not in self.config.dataset.tasks
+            or attempt.dataset_sha256 != pinned_dataset(self.config.dataset).sha256
+            or attempt.task not in pinned_dataset(self.config.dataset).tasks
             or await self.store.policy(attempt.policy.version) != attempt.policy
         ):
             raise HTTPException(409, "Attempt is outside this run's dataset/harness/policy contract")

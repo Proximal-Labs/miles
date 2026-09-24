@@ -1,0 +1,85 @@
+{
+  "run_id": "gsm8k-qwen3-0p6b-005",
+  "base_model": {
+    "name": "Qwen/Qwen3-0.6B",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca"
+  },
+  "dataset": {
+    "schema_version": 1,
+    "project_id": 1,
+    "tasks": "GENERATED: math_platform tasks --data <train.parquet>"
+  },
+  "harness": {
+    "agent_type": "gsm8k-single-turn",
+    "revision": "0000000000000000000000000000000000000001",
+    "max_turns": 1,
+    "timeout_seconds": 600,
+    "p2p_enforce": false
+  },
+  "research": {
+    "behavior_correction": "rollout_logprobs",
+    "lora": {
+      "rank": 32,
+      "alpha": 32,
+      "target_modules": [
+        "linear_qkv",
+        "linear_proj",
+        "linear_fc1",
+        "linear_fc2"
+      ]
+    },
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "top_k": -1,
+      "max_tokens": 1024,
+      "max_sequence_tokens": 2048,
+      "logprob_semantics": "untransformed",
+      "budget_policy": "cap_to_remaining_context"
+    },
+    "group_size": 8,
+    "max_policy_lag": 1,
+    "unused_groups": "retry",
+    "max_consecutive_failed_groups": 3
+  },
+  "platform": {
+    "url": "http://127.0.0.1:9010",
+    "api_key_env": "GSM8K_PLATFORM_KEY"
+  },
+  "platform_route": {
+    "model": "miles/gsm8k",
+    "endpoint_name": "capture"
+  },
+  "capture": {
+    "url": "http://127.0.0.1:9011",
+    "api_key_env": "GSM8K_CAPTURE_KEY",
+    "platform_key_env": "GSM8K_CAPTURE_PLATFORM_KEY"
+  },
+  "inference_url": "https://REPLACE_WITH_DEPLOYED_SERVING_URL",
+  "inference_header_env": {
+    "Authorization": "MILES_GATEWAY_AUTHORIZATION",
+    "Modal-Key": "MODAL_PROXY_KEY",
+    "Modal-Secret": "MODAL_PROXY_SECRET"
+  },
+  "volume": {
+    "volume_name": "miles-gsm8k-adapters",
+    "environment_name": "main"
+  },
+  "artifact_directory": "/state/artifacts",
+  "artifact_storage": {
+    "kind": "shared_disk"
+  },
+  "store_dsn_env": "PROXIMAL_ROLLOUT_STORE_DSN",
+  "tokenizer_path": "/models/Qwen3-0.6B-c1899de289a04d12100db370d81485cdf75e47ca",
+  "tito_model": "qwen3",
+  "enable_thinking": false,
+  "model_protocol": {
+    "reasoning_parser": "qwen3",
+    "tool_call_parser": "qwen25",
+    "reasoning_effort": "high"
+  },
+  "max_in_flight_samples": 1024,
+  "completed_group_capacity": 128,
+  "request_timeout_seconds": 600,
+  "poll_interval_seconds": 3.0
+}
