@@ -4,6 +4,7 @@ import asyncio
 import math
 from typing import cast
 
+from miles.rollout.filter_hub.base_types import FilterOutput, MetricGatherer, call_dynamic_filter
 from miles.rollout.fully_async_data_buffer import DataBuffer, DataBufferConstructorInput, DataBufferInput
 from miles.utils.types import Sample
 from miles_plugins.proximal.contracts import (
@@ -15,6 +16,7 @@ from miles_plugins.proximal.contracts import (
     read_run_config,
 )
 from miles_plugins.proximal.data_source import ConsumptionLedger
+from miles_plugins.proximal.options import load_dynamic_filter
 from miles_plugins.proximal.store import RolloutStore
 
 
@@ -101,6 +103,11 @@ class PlatformDataBuffer(DataBuffer):
 
     def __init__(self, input: DataBufferConstructorInput) -> None:
         self.config = read_run_config(input.args.proximal_config)
+        self._args = input.args
+        self._filter_path: str | None = input.args.dynamic_sampling_filter_path
+        self._dynamic_filter = load_dynamic_filter(input.args)
+        self._filter_metrics = MetricGatherer()  # type: ignore[no-untyped-call]
+        self._filtered = 0
         self._unused = input.unused_handler_fn
         self._store: RolloutStore | None = None
         self._ledger: ConsumptionLedger | None = None
@@ -138,6 +145,8 @@ class PlatformDataBuffer(DataBuffer):
         self._failures = 0
         await store.add_group(group_id, policy, samples)
         self._persisted += 1
+        if not await self._keep_group(group_id, samples):
+            return
         self._stored.set()
         # Backpressure: stop the producer while enough fresh work is already waiting.
         while True:
@@ -149,6 +158,7 @@ class PlatformDataBuffer(DataBuffer):
                 min_version=version - self.config.research.max_policy_lag,
                 max_version=version,
                 exclude=ledger.ids(),
+                filter_path=self._filter_path,
             )
             if waiting <= self.config.completed_group_capacity:
                 return
@@ -167,13 +177,20 @@ class PlatformDataBuffer(DataBuffer):
         ledger.prune(below_version=min_version)
         while True:
             rows = await store.select(
-                min_version=min_version, max_version=current_version, exclude=ledger.ids(), limit=1
+                min_version=min_version,
+                max_version=current_version,
+                exclude=ledger.ids(),
+                limit=1,
+                filter_path=self._filter_path,
             )
             if rows:
                 row = rows[0]
                 header, samples = await store.load(row)
                 if validate_group(self.config, samples) != header.policy:
                     raise ValueError(f"Stored group {row.group_id} evidence names a different policy than its index")
+                # Old rows and interrupted puts may not have a persisted verdict yet.
+                if not await self._keep_group(row.group_id, samples):
+                    continue
                 ledger.add(row.group_id, row.policy_version)
                 self._consumed += 1
                 self._consumed_event.set()
@@ -185,11 +202,32 @@ class PlatformDataBuffer(DataBuffer):
             except TimeoutError:
                 pass
 
+    async def _keep_group(self, group_id: str, samples: list[Sample]) -> bool:
+        if self._dynamic_filter is None:
+            return True
+        # Upstream accepts FilterOutput and legacy bools; its built-in std filter
+        # returns a scalar CPU tensor in `keep`. Normalize at this framework boundary.
+        output: FilterOutput = call_dynamic_filter(self._dynamic_filter, self._args, list(samples))
+        if bool(output.keep):
+            return True
+        store, _ = self._parts()
+        assert self._filter_path is not None
+        if await store.reject_group(group_id, filter_path=self._filter_path, reason=output.reason):
+            # A consumer can inspect the row between put's insert and filter verdict.
+            # The unique database record prevents counting that rejection twice.
+            self._filtered += 1
+            self._filter_metrics.on_dynamic_filter_drop(reason=output.reason)
+        self._consumed_event.set()
+        return False
+
     def get_metrics(self) -> dict[str, float]:
         metrics = {
             "rollout/platform/persisted_groups": float(self._persisted),
             "rollout/platform/consumed_groups": float(self._consumed),
             "rollout/platform/consecutive_failed_groups": float(self._failures),
+            "rollout/platform/dynamic_filtered_groups": float(self._filtered),
+            **self._filter_metrics.collect(),  # type: ignore[no-untyped-call]
         }
-        self._persisted = self._consumed = 0
+        self._persisted = self._consumed = self._filtered = 0
+        self._filter_metrics = MetricGatherer()  # type: ignore[no-untyped-call]
         return metrics

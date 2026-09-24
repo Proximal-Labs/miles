@@ -100,6 +100,16 @@ Supply the normal model/parallelism/optimizer arguments required by your Miles M
 
 At startup and after each iteration, the existing weight updater exports/publishes a fresh immutable adapter. The producer keeps generating during training/publication. All members of a group share a policy. Q discards over-stale groups when the trainer drains its next batch. A valid zero score remains trainable. Consecutive execution failures trip the configured circuit breaker.
 
+To fill training batches with groups whose verifier rewards have nonzero variance, append the existing Miles option to the training arguments (after `--`):
+
+```bash
+--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter
+```
+
+This drops whole all-zero/all-one groups from training, while retaining scored-zero samples in mixed-reward groups. The default without the flag retains every valid complete group. Completed rollout payloads are still stored; Postgres records the filter path and rejection reason, and rejected groups take no training-buffer capacity. The async producer continues generating replacement groups until the batch is full. Drops appear in `rollout/platform/dynamic_filtered_groups` and Miles's existing `rollout/dynamic_filter/drop_<reason>` metrics. A filter rejection does not count as an execution failure or immediately retry the same prompt.
+
+Custom hooks use Miles's synchronous `(args, samples)` interface, returning `FilterOutput` or a legacy boolean. They must be deterministic and must not mutate samples; keep their implementation and arguments fixed for a run. Use a new run ID when those change. Filtering also runs before consuming previously stored groups, so pre-existing groups and interrupted writes cannot bypass it. All-rejected data leaves the trainer waiting for an eligible batch; it never silently trains on rejected data. The training-node recipe keeps the Postgres index/rejections and separate payload files locally and snapshots both to its existing Modal state Volume with completed checkpoints.
+
 For resume, restore the latest matching native checkpoint; the task source restores its cursor and consumption ledger from the same checkpoint. Completed groups persist in the rollout store and are selectable after restart if still fresh; only in-flight work is regenerated. The first publication after resume abandons versions newer than the checkpoint, and their groups are never trained on. Artifact retention is explicit operator maintenance; this integration never deletes shared policy history.
 
 ## CPU verification
