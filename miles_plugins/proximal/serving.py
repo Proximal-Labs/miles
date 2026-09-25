@@ -51,6 +51,12 @@ class Speculation(Contract):
     sample from the served (LoRA) model, and the returned logprobs are that model's, which
     rollout_logprobs behavior correction relies on. The draft head runs without the LoRA
     adapter, which lowers acceptance but not correctness.
+
+    Not safe to serve for training on the pinned Miles image: measured 2026-09-25 on
+    Qwen3.8-27B with a LoRA adapter, 3- and 4-step chains emitted tokens the target model
+    gives logprob -24 to -34 (random multilingual tokens mid-sentence) in about 2% of
+    speculated positions (0 in 7,200 without speculation; 0 in 3,600 at 2 steps). The
+    returned logprobs are the target's, so the samples, not the logprobs, are wrong.
     """
 
     algorithm: Literal["NEXTN"]

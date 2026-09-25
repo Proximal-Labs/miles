@@ -27,11 +27,7 @@
     "backend": "trtllm_mha",
     "page_size": 64
   },
-  "speculative": {
-    "algorithm": "NEXTN",
-    "num_steps": 3,
-    "num_draft_tokens": 4
-  },
+  "speculative": null,
   "extra_engine_args": [
     "--mem-fraction-static",
     "0.85"
