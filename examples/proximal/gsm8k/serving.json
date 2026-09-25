@@ -25,6 +25,7 @@
   "modal_proxy_auth": false,
   "attention": null,
   "speculative": null,
+  "kv_cache_dtype": "auto",
   "extra_engine_args": [
     "--mem-fraction-static",
     "0.8"

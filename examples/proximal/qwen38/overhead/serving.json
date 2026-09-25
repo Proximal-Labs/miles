@@ -6,7 +6,7 @@
   "routing_region": "us-west",
   "min_replicas": 8,
   "max_replicas": 8,
-  "target_concurrency": 32,
+  "target_concurrency": 8,
   "scaledown_window_seconds": 600,
   "startup_timeout_seconds": 3600,
   "base_volume": {
@@ -27,9 +27,16 @@
     "backend": "trtllm_mha",
     "page_size": 64
   },
-  "speculative": null,
+  "speculative": {
+    "algorithm": "NEXTN",
+    "num_steps": 3,
+    "num_draft_tokens": 4
+  },
+  "kv_cache_dtype": "fp8_e4m3",
   "extra_engine_args": [
     "--mem-fraction-static",
-    "0.85"
+    "0.85",
+    "--chunked-prefill-size",
+    "2048"
   ]
 }

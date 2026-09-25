@@ -47,16 +47,14 @@ class Attention(Contract):
 class Speculation(Contract):
     """Speculative decoding with the checkpoint's own MTP head (SGLang's NEXTN), one chain.
 
-    Rejection sampling is always on, not a setting: it keeps every accepted token an exact
-    sample from the served (LoRA) model, and the returned logprobs are that model's, which
-    rollout_logprobs behavior correction relies on. The draft head runs without the LoRA
-    adapter, which lowers acceptance but not correctness.
-
-    Not safe to serve for training on the pinned Miles image: measured 2026-09-25 on
-    Qwen3.8-27B with a LoRA adapter, 3- and 4-step chains emitted tokens the target model
-    gives logprob -24 to -34 (random multilingual tokens mid-sentence) in about 2% of
-    speculated positions (0 in 7,200 without speculation; 0 in 3,600 at 2 steps). The
-    returned logprobs are the target's, so the samples, not the logprobs, are wrong.
+    Verification is SGLang's default (target sampling), not a setting. Measured 2026-09-25
+    on the pinned Miles image with Qwen3.8-27B and a LoRA adapter (600 five-token samples
+    per prompt, compared against serving without speculation): default verification kept
+    the sampled distribution (no near-impossible tokens, sampled-token logprobs within
+    noise), while --speculative-use-rejection-sampling emitted tokens the model gives
+    logprob -24 to -34 in ~2% of speculated positions. Returned logprobs are the served
+    (LoRA) model's either way. The draft head runs without the adapter, which lowers
+    acceptance but not correctness.
     """
 
     algorithm: Literal["NEXTN"]
@@ -110,6 +108,10 @@ class ServingDeployment(Contract):
     modal_proxy_auth: bool
     # SGLang's full-attention kernel; null leaves the choice to SGLang.
     attention: Attention | None
+    # KV cache precision: "auto" keeps the checkpoint's dtype (BF16 for Qwen3.8); fp8_e4m3
+    # halves KV per token, so twice the context fits, and changes attention numerics against
+    # the BF16 trainer (rollout_logprobs behavior correction absorbs the gap).
+    kv_cache_dtype: Literal["auto", "fp8_e4m3"]
     # Speculative decoding; null serves without it.
     speculative: Speculation | None
     # Operational SGLang flags only; see OPERATIONAL_ENGINE_SETTINGS.
@@ -166,6 +168,7 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
         "tool_call_parser": run.model_protocol.tool_call_parser,
         "skip_server_warmup": True,
         "enable_metrics": True,
+        "kv_cache_dtype": deployment.kv_cache_dtype,
         **_attention_args(deployment.attention),
         **_speculative_args(deployment.speculative),
     }
@@ -185,7 +188,6 @@ def _speculative_args(speculative: Speculation | None) -> dict[str, object]:
         "speculative_num_steps": speculative.num_steps,
         "speculative_eagle_topk": 1,
         "speculative_num_draft_tokens": speculative.num_draft_tokens,
-        "speculative_use_rejection_sampling": True,
     }
 
 

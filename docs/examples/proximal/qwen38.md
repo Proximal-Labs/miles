@@ -63,16 +63,18 @@ Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.te
 ## Overhead run (`overhead/`)
 
 Measures what capture adds to each model call on real platform traffic, on the topology closest to the final one. The same four "3.5 flash hard" environments (`overhead/tasks.json`) run 8 rollouts each on every step, for 10 steps, with mini-swe allowed 200 turns:
-- **Serving:** 8 replicas, each on 1 × B300 (288 GB: the 27B plus about 1.5M tokens of KV cache), one inference GPU per training GPU. Capture runs in each, and the platform's rollout_capture client pins every rollout's calls to one replica (`Modal-Session-Id`, proximal-mono #4726). The 64 rollouts in flight grow about 2k tokens a turn toward 228k, so near their end they need about 12M tokens of KV: 8 per replica keeps each rollout's context cached. With 2 replicas (32 each) the cache filled by turn 25 and requests queued behind re-computed prefixes.
-- **Serving settings** (`serving.json`, `attention` and `speculative`): trtllm_mha attention with 64-token KV pages, and no speculative decoding (`speculative: null`). MTP speculative decoding (Qwen3.8's own MTP head, NEXTN with rejection sampling) is 4 to 5x faster but corrupts sampling on this image: with 3 or 4 draft steps about 2% of speculated tokens are ones the model gives logprob -24 to -34, random multilingual tokens mid-sentence ("These tests aren 则表示 about"); 0 in 7,200 without it. The logprobs it returns are right, the samples are not, so it stays off for training. Left to itself SGLang serves this hybrid model on Blackwell with Triton attention and one-token pages. Measured on one B300 with real rollout histories and a non-zero LoRA adapter (2026-09-25), decode per request at 100k-token contexts:
+- **Serving:** 8 replicas, each on 1 × B300 with an FP8 KV cache (the 27B plus about 3.2M tokens of KV), one inference GPU per training GPU. Capture runs in each, and the platform's rollout_capture client pins every rollout's calls to one replica (`Modal-Session-Id`, proximal-mono #4726). The 64 rollouts in flight grow about 2k tokens a turn toward 228k, so near their end they need about 12M tokens of KV: 8 per replica keeps each rollout's context cached with room for uneven routing. With 2 replicas (32 each) the cache filled by turn 25 and requests queued behind re-computed prefixes.
+- **Serving settings** (`serving.json`, `attention` and `speculative`): trtllm_mha attention with 64-token KV pages, and speculative decoding with Qwen3.8's own MTP head (NEXTN, 3 draft steps) under SGLang's default verification, and an FP8 KV cache (`kv_cache_dtype`) with 2k prefill chunks: the per-GPU recipe of proximal-mono's `infra/modal/qwen3-8-27b` (PR #4841, BF16 weights and fp32 Gated DeltaNet state). FP8 KV is the one setting that changes numerics against the BF16 trainer; watch the rollout/train logprob gap. Left to itself SGLang serves this hybrid model on Blackwell with Triton attention and one-token pages. Measured 2026-09-25 by replaying 150 real agent turns (recorded prefills and output lengths, 1 s tool gaps, prompts ~55k tokens, a non-zero LoRA adapter), ten rollouts per GPU:
 
-  | Concurrent | SGLang's choice | trtllm_mha | trtllm_mha + MTP |
-  | --- | --- | --- | --- |
-  | 1 | 24 tok/s | 56 | 147 |
-  | 8 | 22 | 45 | 113 |
-  | 12 | 22 | 43 | 107 |
+  | Serving | Model call p50 / p90 | Output tok/s per GPU |
+  | --- | --- | --- |
+  | SGLang's choice (run 003) | 9.4 / 46 s | ~91 |
+  | trtllm_mha, one GPU | 4.7 / 24 s | 188 |
+  | trtllm_mha, TP2 | 4.2 / 22 s | 259 |
+  | trtllm_mha + MTP, one GPU | 2.4 / 12 s | 362 |
+  | trtllm_mha + MTP, TP2 | 2.1 / 11 s | 526 |
 
-  With MTP about 3.0 to 3.5 tokens are accepted per step and returned logprobs match teacher-forced ones (mean absolute difference 0.0084, as without it); the defect shows only in the sampled distribution (300 to 600 five-token samples per prompt, compared across engines).
+  Sampling is checked, not assumed: 600 five-token samples per prompt against serving without speculation. With default verification no token fell outside what exact sampling produced and sampled-token logprobs stayed within noise. With `--speculative-use-rejection-sampling` about 2% of speculated tokens were ones the model gives logprob -24 to -34, random multilingual tokens mid-sentence ("These tests aren 则表示 about"), so that path is not used. Returned logprobs match teacher-forced ones either way.
 - **Trainer:** 8 × B300 at TP 4 with two data-parallel ranks, with sequences up to 256k tokens. A 262k-token micro-batch needs about 155 GB on one GPU, which ran out of memory on H200. Log-probs are chunked and the loss is recomputed, so the 256k × vocabulary logits never exist at once. There is no context parallelism yet: Megatron-Bridge's Qwen3-VL model, which Qwen3.8 uses, needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's text-only path does not provide them.
 - **Credentials:** replicas take capture's platform key from `miles-platform`. Capture's control credential is the gateway key, which only the trainer and the replicas hold.
 - **Failure budget:** 16 consecutive failed groups.

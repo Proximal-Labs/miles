@@ -35,6 +35,7 @@ def deployment(**overrides):
         "modal_proxy_auth": False,
         "attention": None,
         "speculative": None,
+        "kv_cache_dtype": "auto",
     }
     return ServingDeployment.model_validate_json(json.dumps(data | overrides))
 
@@ -142,15 +143,15 @@ def test_attention_and_speculation_are_rendered_from_the_serving_config(config):
     assert (args.attention_backend, args.page_size) == ("trtllm_mha", 64)
     assert args.speculative_algorithm in ("NEXTN", "EAGLE")  # SGLang resolves NEXTN to EAGLE.
     assert (args.speculative_num_steps, args.speculative_eagle_topk, args.speculative_num_draft_tokens) == (3, 1, 4)
-    # Always on with speculation: accepted tokens are exact samples from the served model.
-    assert args.speculative_use_rejection_sampling is True
+    # Default verification: the rejection-sampling path corrupted samples on this image.
+    assert args.speculative_use_rejection_sampling is False
     plain = parse_server_args_argv(engine_argv(config, deployment()))
     assert plain.speculative_algorithm is None and plain.attention_backend is None
 
 
 def test_attention_and_speculation_must_be_stated_explicitly():
     stated = deployment().model_dump(mode="json")  # null is a choice; leaving the key out is not.
-    for key in ("attention", "speculative"):
+    for key in ("attention", "speculative", "kv_cache_dtype"):
         with pytest.raises(ValueError, match=f"{key}\\n  Field required"):
             ServingDeployment.model_validate_json(json.dumps({k: v for k, v in stated.items() if k != key}))
 
@@ -175,3 +176,11 @@ def test_extras_cannot_turn_on_speculation_or_change_attention(config):
     for extra in (["--speculative-algorithm", "NEXTN"], ["--attention-backend", "trtllm_mha"]):
         with pytest.raises(ValueError, match="non-operational settings"):
             engine_argv(config, deployment(extra_engine_args=extra))
+
+
+def test_kv_cache_precision_is_rendered_from_the_serving_config(config):
+    assert parse_server_args_argv(engine_argv(config, deployment())).kv_cache_dtype == "auto"
+    fp8 = parse_server_args_argv(engine_argv(config, deployment(**BLACKWELL_MTP, kv_cache_dtype="fp8_e4m3")))
+    assert fp8.kv_cache_dtype == "fp8_e4m3"
+    with pytest.raises(ValueError, match="non-operational settings"):
+        engine_argv(config, deployment(extra_engine_args=["--kv-cache-dtype", "fp8_e4m3"]))
