@@ -17,7 +17,7 @@ from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint,
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
 from miles_plugins.proximal.contracts import AcceptedAttempt
 from miles_plugins.proximal.data_source import PlatformTaskSource
-from miles_plugins.proximal.rollout import execute_attempt
+from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
 
 
 @pytest.fixture
@@ -130,11 +130,16 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
             wrong = await http.post(url, headers={"Authorization": "Bearer capture-secret"}, json={})
             assert wrong.status_code == 401
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
-            await client.release(handle)
+        # Sealed samples survive a capture restart until the trainer releases them.
         replacement = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=replacement.app)) as http:
             client = CaptureClient(authorization, http)
             assert await client.collect(handle, attempt) == (receipt, payload)
+            await client.release(handle)
+            assert not (replacement.root / "sessions" / handle.session_id).exists()
+            with pytest.raises(httpx.HTTPStatusError) as released:
+                await client.collect(handle, attempt)
+            assert released.value.response.status_code == 404
             with pytest.raises(httpx.HTTPStatusError) as caught:
                 await client.create(attempt)
             assert caught.value.response.status_code == 410
@@ -301,7 +306,8 @@ async def test_task_to_captured_and_graded_miles_sample(
                         suffix = result.tokens[-result.response_length :]
                         context_ids = [token for token, mask in zip(suffix, result.loss_mask, strict=True) if not mask]
                         assert "UNIQUE_TOOL_RESULT_42" in tokenizer.decode(context_ids)
-                # Both paths release the session; a lost attempt is never reopened.
+                # Both paths release the session (in the background); a lost attempt is never reopened.
+                await wait_for_releases()
                 with pytest.raises(httpx.HTTPStatusError) as caught:
                     await capture.create(attempt)
                 assert caught.value.response.status_code == 410

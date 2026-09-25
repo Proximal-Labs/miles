@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,7 @@ from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, Pla
 from miles_plugins.proximal.contracts import (
     AcceptedAttempt,
     Attempt,
+    SessionHandle,
     Task,
     canonical_bytes,
     pinned_dataset,
@@ -30,6 +32,28 @@ from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import RolloutStore, open_store
 
 logger = logging.getLogger(__name__)
+
+# Releasing a capture session only frees the replica's memory: it runs in the
+# background, so a rollout's sample reaches training without waiting for it.
+RELEASE_TIMEOUT_SECONDS = 60
+_releases: set["asyncio.Task[None]"] = set()
+
+
+async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: str) -> None:
+    started = time.monotonic()
+    try:
+        await asyncio.wait_for(capture.release(handle), timeout=RELEASE_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.error("Capture release failed for attempt %s (%s)", attempt_id, type(exc).__name__)
+        return
+    if (elapsed := time.monotonic() - started) > 5:
+        logger.warning("Capture release for attempt %s took %.1fs", attempt_id, elapsed)
+
+
+async def wait_for_releases() -> None:
+    """Finish the background session releases (at shutdown, and in tests)."""
+    while _releases:
+        await asyncio.gather(*list(_releases), return_exceptions=True)
 
 
 async def execute_attempt(
@@ -61,10 +85,9 @@ async def execute_attempt(
                 await asyncio.wait_for(platform.cancel(attempt), timeout=30)
             except Exception as exc:
                 logger.error("Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(exc).__name__)
-        try:
-            await asyncio.wait_for(capture.release(handle), timeout=30)
-        except Exception as exc:
-            logger.error("Capture release failed for attempt %s (%s)", attempt.attempt_id, type(exc).__name__)
+        task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
+        _releases.add(task)
+        task.add_done_callback(_releases.discard)
 
 
 def _sample_index(sample: Sample) -> int:
@@ -167,6 +190,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
 
     async def close(self) -> None:
         await super().close()
+        await wait_for_releases()
         if self._client is not None:
             await self._client.aclose()
             self._client = None

@@ -15,6 +15,7 @@ import hmac
 import json
 import logging
 import math
+import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -405,6 +406,9 @@ class CaptureServer:
                 await self.core.delete_session(session_id)
                 self.sessions.pop(session_id)
                 self.attempts.pop(entry.attempt.attempt_id, None)
+        # Released means the trainer has what it needs; the attempt index stays, so the
+        # attempt is never reopened, but its sealed samples need not.
+        shutil.rmtree(self._directory(session_id), ignore_errors=True)
 
     async def _expire_stale(self) -> None:
         """Release sessions older than any rollout can run.
