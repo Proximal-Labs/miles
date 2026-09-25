@@ -74,7 +74,7 @@
   "model_protocol": {
     "reasoning_parser": "qwen3",
     "tool_call_parser": "qwen3_coder",
-    "reasoning_effort": "high"
+    "reasoning_effort": "xhigh"
   },
   "max_in_flight_samples": 64,
   "completed_group_capacity": 32,

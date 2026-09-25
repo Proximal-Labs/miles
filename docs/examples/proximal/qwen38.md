@@ -14,7 +14,7 @@ The first run against the real Proximal platform. Miles trains `Qwen/Qwen3.8-27B
 
 ## Settings and why
 
-- **Chat template and parsers:** the template family is `qwen38small`, which Miles's own tests use with the 27B. The replicas use the `qwen3_coder` tool-call parser and the `qwen3` reasoning parser. Thinking is on, with reasoning effort `high`.
+- **Chat template and parsers:** the template family is `qwen38small`, which Miles's own tests use with the 27B. The replicas use the `qwen3_coder` tool-call parser and the `qwen3` reasoning parser. Thinking is on, with reasoning effort `xhigh`. Capture renders the run's effort through the template, and a run config naming an effort the template can't render (it takes `xhigh`, `medium` or `low`) is rejected.
 - **MLP-only LoRA (rank 32).** In this Miles version, Qwen3.5 and Qwen3.8 train their attention and Gated DeltaNet projections as separate Hugging Face-style layers, while SGLang serves them fused (`in_proj_qkvz`, `in_proj_ba`, fused QKV). Adapters on those layers are not yet verified to load on the replicas. The MLP layers use the same mapping proven on Qwen3-0.6B.
 - **Batch:** 8 tasks × 4 samples = 32 rollouts per step, one optimizer update per step. The Miles recipe uses 1 node × 8 GPUs at TP 4.
 - **Limits:** mini-swe with `max_turns` 30, 8k tokens per turn, 32k per sequence, and 64 samples in flight. At that concurrency, per-attempt polling is cheap.

@@ -101,9 +101,14 @@ class Research(Contract):
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 # Chat-template families capture can render with (Miles's --tito-model). Each binds the
 # SGLang reasoning and tool-call parsers the replicas must use (check_tito_protocol).
-# Inkling is not listed: its template also takes reasoning_effort, which capture does
-# not yet pass.
+# Inkling is not listed: its template takes a numeric reasoning_effort, which has no
+# platform equivalent.
 TitoModel = Literal["qwen3", "qwen35", "qwen36", "qwen38small", "qwennext"]
+# The efforts a family's fixed template renders. Capture passes the run's effort to
+# these templates; a family not listed renders none.
+TEMPLATE_REASONING_EFFORTS: dict[str, frozenset[str]] = {
+    "qwen38small": frozenset({"xhigh", "medium", "low"}),
+}
 
 
 class ModelProtocol(Contract):
@@ -113,7 +118,8 @@ class ModelProtocol(Contract):
 
     reasoning_parser: Nonempty
     tool_call_parser: Nonempty
-    # Sent to the platform for every run; capture rejects a model call asking otherwise.
+    # Sent to the platform for every run; capture rejects a model call asking otherwise
+    # and renders it through the template (TEMPLATE_REASONING_EFFORTS).
     reasoning_effort: ReasoningEffort
 
 
@@ -194,6 +200,12 @@ class RunConfig(Contract):
         forbidden = {"host", "content-length", "transfer-encoding", "x-proximal-policy-sha256"}
         if any(name.lower() in forbidden for name in self.inference_header_env):
             raise ValueError("Invalid inference authentication header")
+        rendered = TEMPLATE_REASONING_EFFORTS.get(self.tito_model)
+        if rendered is not None and self.model_protocol.reasoning_effort not in rendered:
+            raise ValueError(
+                f"The {self.tito_model} template renders reasoning effort {', '.join(sorted(rendered))}, "
+                f"not {self.model_protocol.reasoning_effort!r}"
+            )
         return self
 
 

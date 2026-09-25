@@ -1,5 +1,5 @@
 {
-  "run_id": "qwen38-27b-overhead-001",
+  "run_id": "qwen38-27b-overhead-002",
   "base_model": {
     "name": "Qwen/Qwen3.8-27B",
     "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
@@ -13,7 +13,7 @@
     "agent_type": "mini-swe",
     "revision": "695e097df0805d697e906bb5ad0fd8580813c11b",
     "max_turns": 200,
-    "timeout_seconds": 3600,
+    "timeout_seconds": 10800,
     "p2p_enforce": false
   },
   "research": {
@@ -74,7 +74,7 @@
   "model_protocol": {
     "reasoning_parser": "qwen3",
     "tool_call_parser": "qwen3_coder",
-    "reasoning_effort": "high"
+    "reasoning_effort": "xhigh"
   },
   "max_in_flight_samples": 64,
   "completed_group_capacity": 8,

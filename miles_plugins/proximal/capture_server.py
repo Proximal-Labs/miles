@@ -35,6 +35,7 @@ from miles_plugins.proximal.authorization import AuthorizedRun, require_authoriz
 from miles_plugins.proximal.call_timing import CallTimingMiddleware, mark, note
 from miles_plugins.proximal.contracts import (
     ROLLOUT_SUFFIX,
+    TEMPLATE_REASONING_EFFORTS,
     Attempt,
     CaptureReceipt,
     Policy,
@@ -112,7 +113,12 @@ def capture_tokenizer(tokenizer_path: str | Path, tito_model: str) -> Any:
 
 def _template_kwargs(config: RunConfig) -> dict[str, Any]:
     _, fixed_kwargs = fixed_chat_template(config.tito_model)
-    return {"enable_thinking": config.enable_thinking, **fixed_kwargs}
+    effort = (
+        {"reasoning_effort": config.model_protocol.reasoning_effort}
+        if config.tito_model in TEMPLATE_REASONING_EFFORTS
+        else {}
+    )
+    return {"enable_thinking": config.enable_thinking, **effort, **fixed_kwargs}
 
 
 def capture_registry(config: RunConfig, tokenizer: Any) -> SessionRegistry:
@@ -312,8 +318,8 @@ def normalize_agent_request(body: dict[str, Any], *, reasoning_effort: str) -> N
     """Map agent-px's Chat Completions request onto the training sampling contract.
 
     - Cache hints do not affect sampling: dropped.
-    - ``reasoning_effort`` must be the contract's value; the TITO renderer owns how
-      thinking is rendered, so it is not forwarded.
+    - ``reasoning_effort`` must be the contract's value; the TITO renderer already
+      renders the contract's effort, so it is not forwarded.
     - ``max_completion_tokens`` is the per-turn budget, like ``max_tokens``.
     - ``strict`` tools make SGLang constrain decoding to the schema, so behavior
       logprobs would come from a different distribution than training computes.
