@@ -51,6 +51,18 @@ Batch shape is configurable from the launcher (`--rollout-batch-size`, `--global
 
 ## 5. Experimental text LoRA SFT on Modal
 
+The GPU communication timeout defaults to 30 minutes (`distributed_timeout_minutes`
+in the Modal config JSON). First-step FlexAttention compilation and autotuning can
+leave later pipeline stages waiting; a cold compile can still exceed this timeout.
+
+Modal persists TorchInductor (including FX graph, AOTAutograd and local autotuning)
+and Triton caches under `/mnt/inkling/compile-cache/<image-hash>/` on the
+`inkling-small-rft` volume. Ray workers inherit the cache settings from the image.
+The existing final volume commit preserves completed cache entries even when
+training fails. The first run still compiles; later runs can reuse compatible
+entries. New shapes or changed code may compile again, and changing the image
+reference selects a separate cache directory. This does not add a kernel warmup.
+
 [`scripts/run_inkling_small_sft.py`](https://github.com/radixark/miles/blob/main/scripts/run_inkling_small_sft.py)
 targets **one node of 8 B300s**, text LoRA SFT, one epoch, with
 Miles' standard `adam` distributed optimizer. The BF16 base is frozen;

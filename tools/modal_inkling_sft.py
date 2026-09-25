@@ -1,5 +1,6 @@
 """Modal transport for scripts/run_inkling_small_sft.py; no work runs on import."""
 
+import hashlib
 import json
 import os
 import shlex
@@ -14,8 +15,20 @@ app = modal.App("inkling-small-sft")
 volume = modal.Volume.from_name("inkling-small-rft")
 # Pinned linux/amd64 Miles image; the old :inkling tag is ARM64-only.
 _DEFAULT_IMAGE = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d"
-image = modal.Image.from_registry(os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE))
-image = image.entrypoint([]).env({"PYTHONPATH": f"{_REMOTE_ROOT}:/root/Megatron-LM"})
+_IMAGE_REF = os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE)
+_CACHE_ROOT = f"/mnt/inkling/compile-cache/{hashlib.sha256(_IMAGE_REF.encode()).hexdigest()[:16]}"
+image = modal.Image.from_registry(_IMAGE_REF)
+# Set these before importing torch or starting Ray so every worker inherits them.
+# The existing final volume.commit() also preserves caches after failed jobs.
+image = image.entrypoint([]).env(
+    {
+        "PYTHONPATH": f"{_REMOTE_ROOT}:/root/Megatron-LM",
+        "TORCHINDUCTOR_CACHE_DIR": f"{_CACHE_ROOT}/inductor",
+        "TRITON_CACHE_DIR": f"{_CACHE_ROOT}/triton",
+        "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
+        "TORCHINDUCTOR_AUTOGRAD_CACHE": "1",
+    }
+)
 data_image = image.pip_install_from_requirements(str(_ROOT / "tools/requirements-inkling-sft.txt"))
 
 

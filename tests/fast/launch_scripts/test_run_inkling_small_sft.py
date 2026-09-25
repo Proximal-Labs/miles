@@ -94,6 +94,9 @@ def test_fresh_sft_starts_at_first_rollout(monkeypatch):
     monkeypatch.setattr(U, "get_default_wandb_args", lambda *args, **kwargs: "")
     execute(run_id="fresh")
     assert "--start-rollout-id 0 " in calls[0]["train_args"]
+    assert "--distributed-timeout-minutes 30 " in calls[0]["train_args"]
+    execute(run_id="longer-warmup", distributed_timeout_minutes=40)
+    assert "--distributed-timeout-minutes 40 " in calls[1]["train_args"]
 
 
 def test_lora_rank_cannot_silently_disable_adapters():

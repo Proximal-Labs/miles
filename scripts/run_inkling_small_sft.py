@@ -10,7 +10,9 @@ Args:
   --mode: data (CPU download/render), prepare (GPU conversion), smoke, train.
   --source-data: Raw JSONL with messages and optional tools/reasoning_effort.
   --max-length: Total token cap, including reasoning and tool results.
-  --lr: Initial experimental Muon learning rate; no validated Inkling SFT LR.
+  --lr: Initial experimental Adam learning rate; no validated Inkling SFT LR.
+  --distributed-timeout-minutes: GPU communication timeout (default 30), including
+    waits while another pipeline stage compiles its first-step kernels.
   --lora-rank / --lora-alpha: Adapter rank and scaling numerator (both default 32).
   --lora-adapter-path: Explicit native adapter checkpoint for resume; Modal can
     select the latest complete adapter checkpoint in the run directory.
@@ -64,6 +66,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     environment: str = "main"
     image: str = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d"
     timeout_hours: int = 24
+    distributed_timeout_minutes: int = 30
 
     def __post_init__(self):
         if (self.num_nodes, self.num_gpus_per_node) != (1, 8):
@@ -78,6 +81,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("LoRA rank and alpha must be positive")
         if self.lora_adapter_path and not self.resume:
             raise ValueError("Use --resume with --lora-adapter-path")
+        if self.distributed_timeout_minutes < 1:
+            raise ValueError("distributed_timeout_minutes must be positive")
 
     @property
     def hf_checkpoint(self):
@@ -140,7 +145,7 @@ def execute(args: ScriptArgs):
         f"--optimizer adam --lr {args.lr} --min-lr {args.lr * 0.1} "
         "--lr-decay-style cosine --lr-warmup-fraction 0.03 --weight-decay 0.1 --clip-grad 1.0 "
     )
-    misc_args = f"--bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
+    misc_args = f"--distributed-timeout-minutes {args.distributed_timeout_minutes} --bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)
     if wandb_args:
         # The shared helper includes the API key in a printed command. Let W&B
