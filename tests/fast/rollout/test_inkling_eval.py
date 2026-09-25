@@ -61,6 +61,7 @@ def platform_server(monkeypatch):
             state["registry"] = json.loads(body["valueJson"])
             return httpx.Response(200, json={})
         if method == "CreateEnvironmentRun":
+            assert body.get("autoTriggerPostQa") is False, "Evaluation must override environment QA defaults"
             state["runs"].setdefault(body["runId"], body)
             return httpx.Response(200, json={"runId": body["runId"], "instancesStarted": 1})
         if method == "GetEnvironmentRunContainers":

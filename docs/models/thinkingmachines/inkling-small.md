@@ -296,6 +296,9 @@ per-environment metrics. Verified zero rewards count as scores; failed execution
 do not. `evaluation/step_XXXXXXXX/point.json` records every platform run ID and
 result incrementally. Deterministic run IDs make submission retries idempotent.
 Resume reattaches unfinished evaluations and reuses completed results.
+Every evaluation submission explicitly sets `autoTriggerPostQa=false`, overriding
+environment defaults. Post-rollout QA is disabled for the baseline and all later
+evaluations across every named set; environment reward verification still runs.
 W&B also receives a rollout-results table for each set. Set `platform_ui_url` to
 your Proximal frontend URL to include clickable platform run URLs in those tables.
 
