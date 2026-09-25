@@ -18,6 +18,9 @@ _DEFAULT_IMAGE = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502
 _IMAGE_REF = os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE)
 _CACHE_ROOT = f"/mnt/inkling/compile-cache/{hashlib.sha256(_IMAGE_REF.encode()).hexdigest()[:16]}"
 image = modal.Image.from_registry(_IMAGE_REF)
+_EVAL_SECRET = os.environ.get("INKLING_EVAL_SECRET")
+if _EVAL_SECRET:
+    image = image.pip_install("modal==1.5.5", "httpx==0.28.1").env({"INKLING_EVAL_SECRET": _EVAL_SECRET})
 # Set these before importing torch or starting Ray so every worker inherits them.
 # The existing final volume.commit() also preserves caches after failed jobs.
 image = image.entrypoint([]).env(
@@ -35,9 +38,7 @@ data_image = image.pip_install_from_requirements(str(_ROOT / "tools/requirements
 def _add_sources(container_image):
     # Startup mounts must follow every image build step, including pip installs.
     for directory in ("miles", "miles_plugins", "scripts", "tools"):
-        container_image = container_image.add_local_dir(
-            _ROOT / directory, f"{_REMOTE_ROOT}/{directory}", ignore=["**/__pycache__/**", "**/*.pyc"]
-        )
+        container_image = container_image.add_local_dir(_ROOT / directory, f"{_REMOTE_ROOT}/{directory}", ignore=["**/__pycache__/**", "**/*.pyc"])
     return container_image.add_local_file(_ROOT / "train.py", f"{_REMOTE_ROOT}/train.py")
 
 
@@ -49,7 +50,9 @@ def _config(config_json):
     # Miles and its GPU dependencies are supplied by the remote image, not the Modal CLI environment.
     from scripts.run_inkling_small_sft import ScriptArgs
 
-    return ScriptArgs(**json.loads(config_json))
+    config = json.loads(config_json)
+    config.pop("_eval_config", None)
+    return ScriptArgs(**config)
 
 
 def _gpu_preflight():
@@ -70,24 +73,14 @@ def _gpu_preflight():
 
 
 def _resume_adapter(args):
-    candidates = (
-        [Path(args.lora_adapter_path)]
-        if args.lora_adapter_path
-        else sorted(Path(args.save_dir).glob("iter_[0-9]*/adapter"), reverse=True)
-    )
+    candidates = [Path(args.lora_adapter_path)] if args.lora_adapter_path else sorted(Path(args.save_dir).glob("iter_[0-9]*/adapter"), reverse=True)
     for candidate in candidates:
-        required = [
-            candidate / f"{prefix}{rank}.pt"
-            for rank in range(args.num_gpus_per_node)
-            for prefix in ("adapter_megatron_rank", "training_state_rank")
-        ]
+        required = [candidate / f"{prefix}{rank}.pt" for rank in range(args.num_gpus_per_node) for prefix in ("adapter_megatron_rank", "training_state_rank")]
         iteration = int(candidate.parent.name.removeprefix("iter_"))
         required.append(candidate.parents[1] / f"rollout/global_dataset_state_dict_{iteration}.pt")
         if all(path.is_file() and path.stat().st_size > 0 for path in required):
             return str(candidate)
-    raise FileNotFoundError(
-        "No complete native LoRA checkpoint found with all 8 ranks and the matching dataset cursor"
-    )
+    raise FileNotFoundError("No complete native LoRA checkpoint found with all 8 ranks and the matching dataset cursor")
 
 
 @app.function(
@@ -129,6 +122,7 @@ def prepare_data(config_json: str):
     secrets=[
         modal.Secret.from_name("rft_hf_token", required_keys=["HF_TOKEN"]),
         modal.Secret.from_name("rft_wandb_api_key", required_keys=["WANDB_API_KEY"]),
+        *([modal.Secret.from_name(_EVAL_SECRET)] if _EVAL_SECRET else []),
     ],
     timeout=86400,
     retries=0,
@@ -163,10 +157,18 @@ def train(config_json: str):
     if not args.resume and destination.exists():
         raise FileExistsError("Run directory already exists; use --resume or a new --run-id")
     destination.mkdir(parents=True, exist_ok=True)
+    if args.eval_enabled:
+        evaluation = json.loads(config_json).get("_eval_config")
+        if evaluation is None or not _EVAL_SECRET:
+            raise ValueError("Launch evaluations through scripts.run_inkling_small_sft modal with --eval-config")
+        config_path = destination / "evaluation-config.json"
+        encoded = json.dumps(evaluation, indent=2) + "\n"
+        if config_path.exists() and config_path.read_text() != encoded:
+            raise ValueError("Evaluation configuration changed on resume")
+        config_path.write_text(encoded)
+        args = replace(args, eval_config=str(config_path))
     (destination / "launch.json").write_text(json.dumps(asdict(args), indent=2) + "\n")
-    print(
-        f"EXPERIMENTAL: LoRA rank {args.lora_rank} / 8 B300 / TP4 PP2 EP4 / cap {args.max_length}; fit is unvalidated"
-    )
+    print(f"EXPERIMENTAL: LoRA rank {args.lora_rank} / 8 B300 / TP4 PP2 EP4 / cap {args.max_length}; fit is unvalidated")
     try:
         # Bound subprocess time independently of Modal's outer 24-hour timeout,
         # leaving time to commit completed checkpoints after a failure.

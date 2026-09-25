@@ -179,7 +179,7 @@ class TrainRayActor(NodeProbeMixin):
     def save_model(self, rollout_id, force_sync=False):
         raise NotImplementedError
 
-    def export_hf(self, rollout_id: int, path: str) -> None:
+    def export_hf(self, rollout_id: int, path: str, adapter_only: bool = False) -> None:
         """Export current weights as an HF checkpoint to ``path`` (eval snapshots)."""
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 

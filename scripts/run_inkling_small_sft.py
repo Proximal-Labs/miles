@@ -23,6 +23,10 @@ Args:
   --run-id: Stable identifier; reuse with --resume to restore training state.
   --image: Modal container image; runtime preflight checks CUDA and GPUs.
   --model-dir / --data-dir / --output-dir: Paths inside the Modal Volume.
+  --eval-config: JSON named environment sets and Proximal/Modal evaluation settings.
+  --eval-every-n-epochs: Evaluate before training and every N epochs (default 1).
+    Zero disables all evaluation. Smoke mode never runs environment evaluations.
+  --eval-rollouts-per-env: Override the config's rollout count for every environment.
 
 Examples (local host, Modal credentials for proximal already configured):
   python -m scripts.run_inkling_small_sft modal --mode data
@@ -75,6 +79,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     image: str = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d"
     timeout_hours: int = 24
     distributed_timeout_minutes: int = 30
+    eval_config: str | None = None
+    eval_every_n_epochs: int = 1
+    eval_rollouts_per_env: int | None = None
 
     def __post_init__(self):
         if (self.num_nodes, self.num_gpus_per_node) != (1, 8):
@@ -93,6 +100,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("distributed_timeout_minutes must be positive")
         if self.num_epoch < 1:
             raise ValueError("num_epoch must be positive")
+        if self.eval_every_n_epochs < 0:
+            raise ValueError("eval_every_n_epochs must be nonnegative")
+        if self.eval_rollouts_per_env is not None and self.eval_rollouts_per_env < 1:
+            raise ValueError("eval_rollouts_per_env must be positive")
         if self.global_batch_size < 1:
             raise ValueError("global_batch_size must be positive")
         if not 0 <= self.min_lr <= self.lr:
@@ -116,6 +127,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     @property
     def save_dir(self):
         return f"{self.output_dir}/{self.run_id}"
+
+    @property
+    def eval_enabled(self):
+        return self.mode == "train" and self.eval_every_n_epochs > 0 and self.eval_config is not None
 
 
 @app.command()
@@ -144,10 +159,7 @@ def execute(args: ScriptArgs):
     if not args.resume:
         # The release base reports iteration 0, but contains no completed SFT rollout.
         checkpoint_args += "--no-load-optim --no-load-rng --start-rollout-id 0 --finetune "
-    lora_args = (
-        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} "
-        "--target-modules all-linear --experts-shared-outer-loras "
-    )
+    lora_args = f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --target-modules all-linear --experts-shared-outer-loras "
     sft_args = (
         "--rollout-function-path miles.rollout.inkling_sft.generate_rollout "
         "--data-source-path miles.rollout.inkling_sft_data_source.InklingSFTDataSource "
@@ -156,7 +168,9 @@ def execute(args: ScriptArgs):
         f"--num-epoch {args.num_epoch} --loss-type sft_loss --calculate-per-token-loss "
         "--disable-compute-advantages-and-returns --debug-train-only "
     )
-    perf_args = f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
+    perf_args = (
+        f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
+    )
     optimizer_args = (
         f"--optimizer adam --lr {args.lr} --min-lr {args.min_lr} "
         # Megatron expresses warmup relative to the entire multi-epoch run.
@@ -165,6 +179,11 @@ def execute(args: ScriptArgs):
     )
     misc_args = f"--distributed-timeout-minutes {args.distributed_timeout_minutes} --bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)
+    eval_args = ""
+    if args.eval_enabled:
+        eval_args = f"--inkling-eval-config {q(args.eval_config)} --inkling-eval-every-n-epochs {args.eval_every_n_epochs} --inkling-eval-image {q(args.image)} --inkling-eval-environment {q(args.environment)} "
+        if args.eval_rollouts_per_env is not None:
+            eval_args += f"--inkling-eval-rollouts-per-env {args.eval_rollouts_per_env} "
     if wandb_args:
         # The shared helper includes the API key in a printed command. Let W&B
         # read the inherited secret instead, and override its generated project.
@@ -174,7 +193,7 @@ def execute(args: ScriptArgs):
         parts[parts.index("--wandb-project") + 1] = args.wandb_project
         wandb_args = shlex.join(parts)
     U.execute_train(
-        train_args=f"{checkpoint_args} {lora_args} {sft_args} {perf_args} {optimizer_args} {misc_args} {wandb_args}",
+        train_args=f"{checkpoint_args} {lora_args} {sft_args} {perf_args} {optimizer_args} {misc_args} {eval_args}{wandb_args}",
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="inkling-small",
         config=args,
@@ -191,6 +210,14 @@ def execute(args: ScriptArgs):
 @app.command("modal")
 @U.dataclass_cli
 def launch(args: ScriptArgs):
+    config = asdict(args)
+    eval_env = ""
+    if args.eval_enabled:
+        from miles_plugins.inkling_eval.config import EvalConfig
+
+        evaluation = EvalConfig.read(args.eval_config)
+        config["_eval_config"] = evaluation.to_dict()
+        eval_env = f"INKLING_EVAL_SECRET={shlex.quote(evaluation.modal_secret)} "
     command = shlex.join(
         [
             "modal",
@@ -200,12 +227,10 @@ def launch(args: ScriptArgs):
             args.environment,
             str(U.repo_base_dir / "tools/modal_inkling_sft.py"),
             "--config-json",
-            json.dumps(asdict(args)),
+            json.dumps(config),
         ]
     )
-    U.exec_command_cpu(
-        f"MODAL_PROFILE={shlex.quote(args.profile)} INKLING_MODAL_IMAGE={shlex.quote(args.image)} {command}"
-    )
+    U.exec_command_cpu(f"{eval_env}MODAL_PROFILE={shlex.quote(args.profile)} INKLING_MODAL_IMAGE={shlex.quote(args.image)} {command}")
 
 
 if __name__ == "__main__":

@@ -1241,6 +1241,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_eval_arguments(parser):
+            parser.add_argument("--inkling-eval-config", type=str, default=None)
+            parser.add_argument("--inkling-eval-every-n-epochs", type=int, default=1)
+            parser.add_argument("--inkling-eval-rollouts-per-env", type=int, default=None)
+            parser.add_argument("--inkling-eval-image", type=str, default=None)
+            parser.add_argument("--inkling-eval-environment", type=str, default="main")
             parser.add_argument(
                 "--eval-function-path",
                 type=str,

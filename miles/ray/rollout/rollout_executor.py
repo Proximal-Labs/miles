@@ -272,6 +272,9 @@ class RolloutExecutor:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
+    def get_dataset_size(self):
+        return len(self.data_source.dataset)
+
     def set_weight_version(self, weight_version: int):
         # warning instead of assert when use indep_dp ft
         if self.weight_version is not None and weight_version < self.weight_version:

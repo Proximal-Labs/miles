@@ -31,9 +31,7 @@ async def train(args):
     init_tracking(args)
 
     if args.colocate_memory_peak_device == "gpu":
-        assert (
-            args.offload_train and args.offload_rollout
-        ), "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
+        assert args.offload_train and args.offload_rollout, "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
         assert not args.use_critic, "--colocate-memory-peak-device gpu is not wired for the critic path"
 
     # create the rollout manager, with sglang engines inside.
@@ -107,77 +105,91 @@ async def train(args):
         else:
             await eval_dispatcher.dispatch(args.start_rollout_id - 1)
 
-    # train loop.
-    # note that for async training, one can change the position of the sync operation(ray.get).
-    for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        await inference_controller.prepare_rollout(rollout_id)
-        rollout_data_pack = await rollout_executor.get.remote(rollout_id)
+    inkling_eval = None
+    if getattr(args, "inkling_eval_config", None) and args.inkling_eval_every_n_epochs > 0:
+        from miles_plugins.inkling_eval.runner import EvaluationRunner
 
-        if args.offload_rollout:
-            if args.colocate_memory_peak_device == "gpu":
-                await inference_controller.offload_kv()
-                await actor_model.onload()
-                await inference_controller.offload_weights()
-            else:
-                offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
-                if "kv_cache" in args.offload_rollout_level:
-                    offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-                if "weight" in args.offload_rollout_level:
-                    offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
-                await inference_controller.offload(tags=offload_tags)
+        samples_per_epoch = await rollout_executor.get_dataset_size.remote()
+        if not samples_per_epoch:
+            raise ValueError("Inkling evaluation requires a nonempty epoch")
+        inkling_eval = EvaluationRunner(args, actor_model, samples_per_epoch)
 
-        if args.use_critic:
-            values = await critic_model.train(rollout_id, rollout_data_pack)
-            if args.offload_train:
-                await critic_model.offload()
-            if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
-                if args.offload_train:
-                    await actor_model.offload()
-        else:
-            await actor_model.train(rollout_id, rollout_data_pack)
-        remove_rollout_data_refs(args, rollout_data_pack)
+    try:
+        if inkling_eval is not None:
+            await inkling_eval.start()
+        # train loop.
+        # note that for async training, one can change the position of the sync operation(ray.get).
+        for rollout_id in range(args.start_rollout_id, args.num_rollout):
+            await inference_controller.prepare_rollout(rollout_id)
+            rollout_data_pack = await rollout_executor.get.remote(rollout_id)
 
-        external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
-        if external_save or should_run_periodic_action(
-            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
-        ):
-            await save(rollout_id, force_sync=external_save)
-            if external_save:
-                os.remove(args.save_trigger_sentinel)
-
-        # One predicate for both blocks: the handoff below exists to feed this eval on the last rollout.
-        eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)
-        if rollout_id + 1 < args.num_rollout or eval_due:
-            if args.colocate_memory_peak_device == "gpu":
-                await actor_model.clear_memory()
-                if lora_rollout_enabled(args):
-                    await actor_model.offload_grad_buffer()
-                await inference_controller.onload_weights()
-                await offload_train()
-            else:
-                await offload_train()
-                if args.offload_rollout:
-                    await inference_controller.onload_weights()
-            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
             if args.offload_rollout:
-                await inference_controller.onload_kv()
+                if args.colocate_memory_peak_device == "gpu":
+                    await inference_controller.offload_kv()
+                    await actor_model.onload()
+                    await inference_controller.offload_weights()
+                else:
+                    offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+                    if "kv_cache" in args.offload_rollout_level:
+                        offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+                    if "weight" in args.offload_rollout_level:
+                        offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+                    await inference_controller.offload(tags=offload_tags)
 
-        if eval_due:
-            await inference_controller.prepare_eval()
-            await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
+            if args.use_critic:
+                values = await critic_model.train(rollout_id, rollout_data_pack)
+                if args.offload_train:
+                    await critic_model.offload()
+                if rollout_id >= args.num_critic_only_steps:
+                    await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
+                    if args.offload_train:
+                        await actor_model.offload()
+            else:
+                await actor_model.train(rollout_id, rollout_data_pack)
+            remove_rollout_data_refs(args, rollout_data_pack)
 
-        if (
-            args.debug_exit_after_rollout is not None
-            and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout
-        ):
-            logger.info(
-                "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
-                args.debug_exit_after_rollout,
-                rollout_id,
-            )
-            break
+            external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
+            inkling_eval_due = inkling_eval is not None and inkling_eval.due(rollout_id + 1)
+            if external_save or inkling_eval_due or should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
+                await save(rollout_id, force_sync=external_save or inkling_eval_due)
+                if external_save:
+                    os.remove(args.save_trigger_sentinel)
 
+            if inkling_eval is not None:
+                await inkling_eval.after_step(rollout_id + 1)
+
+            # One predicate for both blocks: the handoff below exists to feed this eval on the last rollout.
+            eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)
+            if rollout_id + 1 < args.num_rollout or eval_due:
+                if args.colocate_memory_peak_device == "gpu":
+                    await actor_model.clear_memory()
+                    if lora_rollout_enabled(args):
+                        await actor_model.offload_grad_buffer()
+                    await inference_controller.onload_weights()
+                    await offload_train()
+                else:
+                    await offload_train()
+                    if args.offload_rollout:
+                        await inference_controller.onload_weights()
+                await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
+                if args.offload_rollout:
+                    await inference_controller.onload_kv()
+
+            if eval_due:
+                await inference_controller.prepare_eval()
+                await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
+
+            if args.debug_exit_after_rollout is not None and (rollout_id - args.start_rollout_id + 1) >= args.debug_exit_after_rollout:
+                logger.info(
+                    "debug_exit_after_rollout=%d reached at rollout_id=%d, exiting",
+                    args.debug_exit_after_rollout,
+                    rollout_id,
+                )
+                break
+
+    finally:
+        if inkling_eval is not None:
+            await inkling_eval.finish()
     await eval_dispatcher.drain()
     await rollout_executor.dispose.remote()
     await inference_controller.dispose()

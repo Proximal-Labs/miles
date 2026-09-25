@@ -715,7 +715,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def export_hf(self, rollout_id: int, path: str) -> None:
+    def export_hf(self, rollout_id: int, path: str, adapter_only: bool = False) -> None:
         """Export current weights as an HF checkpoint to ``path`` (collective).
 
         Uses the direct megatron->HF converters (the weight updater's machinery), so
@@ -726,7 +726,12 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
-        save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+        if adapter_only:
+            from miles_plugins.inkling_eval.export import export_adapter
+
+            export_adapter(self.args, self.model, path)
+        else:
+            save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
         return named_params_and_buffers(

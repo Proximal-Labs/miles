@@ -35,9 +35,7 @@ def test_prepare_volume_error_does_not_allocate_gpus(monkeypatch):
         raise ConnectionError("Volume unavailable")
 
     monkeypatch.setattr(launcher, "volume", SimpleNamespace(read_file=read_file))
-    monkeypatch.setattr(
-        launcher, "train", SimpleNamespace(remote=lambda config: pytest.fail("Unexpected GPU allocation"))
-    )
+    monkeypatch.setattr(launcher, "train", SimpleNamespace(remote=lambda config: pytest.fail("Unexpected GPU allocation")))
     with pytest.raises(ConnectionError, match="Volume unavailable"):
         launcher.main('{"mode":"prepare"}')
 
@@ -112,6 +110,49 @@ def test_fresh_sft_starts_at_first_rollout(monkeypatch):
 def test_lora_rank_cannot_silently_disable_adapters():
     with pytest.raises(ValueError, match="LoRA rank"):
         ScriptArgs(lora_rank=0)
+
+
+@pytest.mark.parametrize("mode,period,enabled", [("train", 1, True), ("train", 2, True), ("train", 0, False), ("smoke", 1, False)])
+def test_environment_evaluation_flags(monkeypatch, mode, period, enabled):
+    import miles.utils.external_utils.command_utils as U
+
+    calls = []
+    monkeypatch.setattr(U, "execute_train", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(U, "get_default_wandb_args", lambda *args, **kwargs: "")
+    execute(mode=mode, eval_config="/eval.json", eval_every_n_epochs=period)
+    argv = calls[0]["train_args"]
+    assert ("--inkling-eval-config /eval.json" in argv) == enabled
+    assert (f"--inkling-eval-every-n-epochs {period}" in argv) == enabled
+
+
+def test_disabled_evaluation_does_not_read_config_or_attach_secret(monkeypatch):
+    import miles.utils.external_utils.command_utils as U
+    from scripts.run_inkling_small_sft import launch
+
+    commands = []
+    monkeypatch.setattr(U, "exec_command_cpu", commands.append)
+    launch(mode="train", eval_config="/does-not-exist.json", eval_every_n_epochs=0)
+    assert "INKLING_EVAL_SECRET" not in commands[0]
+    assert "_eval_config" not in commands[0]
+
+
+def test_negative_evaluation_interval_rejected():
+    with pytest.raises(ValueError, match="nonnegative"):
+        ScriptArgs(eval_every_n_epochs=-1)
+
+
+def test_eval_rollouts_per_env_override(monkeypatch):
+    import miles.utils.external_utils.command_utils as U
+
+    calls = []
+    monkeypatch.setattr(U, "execute_train", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(U, "get_default_wandb_args", lambda *args, **kwargs: "")
+    execute(mode="train", eval_config="/eval.json", eval_rollouts_per_env=3)
+    assert "--inkling-eval-rollouts-per-env 3 " in calls[0]["train_args"]
+    execute(mode="train", eval_config="/eval.json", eval_rollouts_per_env=3, eval_every_n_epochs=0)
+    assert "--inkling-eval-" not in calls[1]["train_args"]
+    with pytest.raises(ValueError, match="eval_rollouts_per_env"):
+        ScriptArgs(eval_rollouts_per_env=0)
 
 
 def test_modal_resume_skips_incomplete_newer_adapter(tmp_path):

@@ -224,8 +224,8 @@ python -m scripts.run_inkling_small_sft modal --mode train --run-id sft-001 --re
 ```
 
 Each submission is detached. A smoke run measures the longest *actual* record;
-short data does not validate the configured 262K cap. Validation data and benchmark
-evaluation are not wired yet. Output is native per-rank adapter checkpoints with
+short data does not validate the configured 262K cap. Optional Proximal environment
+evaluation is described below. Output is native per-rank adapter checkpoints with
 optimizer/scheduler state under `iter_XXXXXXX/adapter`, saved every 100 steps and
 at the end, plus a launch configuration. The base model is not saved again at
 each step. The backend also attempts an HF adapter export; native shards remain
@@ -239,3 +239,90 @@ mode identical to the saved run. Existing full-parameter runs cannot be resumed
 as LoRA runs; use a new run ID. The launcher does not prune checkpoints.
 Persistent data and checkpoints use the Volume. Completed files are committed when a job exits; a
 hard container failure may lose work after the last persisted checkpoint.
+
+### Proximal environment evaluation
+
+Supply a local JSON file with named sets of platform environment IDs:
+
+```json
+{
+  "platform_url": "https://YOUR-PROXIMAL-API-HOST",
+  "sets": {
+    "coding": [116702, 33736],
+    "heldout": [12345, 12346]
+  },
+  "rollouts_per_environment": 3,
+  "max_concurrent_rollouts": 4,
+  "modal_secret": "inkling-eval"
+}
+```
+
+Replace the example IDs with your suites. IDs must be distinct within each set;
+an environment may appear in multiple sets. The launcher uploads this configuration
+with the run. Each ID resolves once to its latest pushed image with a digest and
+source commit. The resolved image/commit and configuration are frozen in
+`<save_dir>/evaluation/suite.json`; resume rejects changes to that contract.
+
+```bash
+python -m scripts.run_inkling_small_sft modal \
+  --mode train --run-id sft-eval-001 \
+  --data-dir /mnt/inkling/data/deepseek-distill \
+  --eval-config eval.json --eval-every-n-epochs 1 --eval-rollouts-per-env 3
+```
+
+`--eval-every-n-epochs 0` disables **all** evaluation, including the baseline,
+configuration loading, snapshot exports and platform submissions. Omitting
+`--eval-config` also disables evaluation. Smoke mode never evaluates environments.
+`--eval-rollouts-per-env` overrides `rollouts_per_environment` for every named set.
+When omitted, the configuration value is used (default 1). For two sets of 20
+environments, `--eval-rollouts-per-env 3` produces 120 rollouts per evaluation point.
+
+With evaluation enabled, the baseline finishes before the first optimizer update.
+After the first optimizer step reaching each scheduled dataset epoch boundary, the trainer saves a resumable
+checkpoint and exports an immutable adapter. Training then continues while a
+separate Modal inference deployment and Proximal sandboxes evaluate that adapter.
+One evaluation point runs at a time; if it is still running at the next scheduled
+point, training waits there. Shutdown drains the pending evaluation. There is no
+extra off-cadence final evaluation.
+For 190 examples and batch size 32, the first evaluation is after step 6
+(192 examples consumed, epoch 1.0105); at batch size 1 it is after step 190.
+The graphs use actual consumed-example epochs, including batches crossing an
+epoch boundary. The existing training loop still determines the total step budget.
+
+W&B logs `eval/coding/mean_reward`, `eval/coding/pass_rate`,
+`eval/heldout/mean_reward`, etc., each against its own `eval/<set>/epoch` axis.
+Each set also reports scored rollout counts, infrastructure failures, and
+per-environment metrics. Verified zero rewards count as scores; failed executions
+do not. `evaluation/step_XXXXXXXX/point.json` records every platform run ID and
+result incrementally. Deterministic run IDs make submission retries idempotent.
+Resume reattaches unfinished evaluations and reuses completed results.
+W&B also receives a rollout-results table for each set. Set `platform_ui_url` to
+your Proximal frontend URL to include clickable platform run URLs in those tables.
+
+Create the named Modal secret in the selected environment with:
+
+- `PROXIMAL_API_KEY`: access to the selected environments, run creation/querying,
+  and admin access to `modal.inference.endpoints` LiveConfig.
+- `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`: deploy/stop evaluation apps and commit
+  the training Volume in the same workspace.
+- `MODAL_INFERENCE_API_KEY`: the platform's Modal proxy credential in
+  `Modal-Key.Modal-Secret` form, used for endpoint readiness checks.
+
+Secrets are inherited by the trainer; they are not stored in the JSON config.
+`api_key_env` can override the Proximal key's environment variable name.
+
+Evaluation defaults to one separate `B300:8` BF16 inference replica (TP8), a
+1,048,576-token context (matching the platform's Inkling context budget), `default`
+harness, `MAX` reasoning effort, and Modal
+sandboxes. The config supports `serving_gpu`, `serving_tp`, `context_length`,
+`agent_type`, `reasoning_effort`, `deployment_config`, `timeout_seconds` (14,400),
+and `poll_seconds` (15). Baseline and later points use the same BF16 base and LoRA
+serving path, with strict adapter loading, shared outer LoRAs and virtual experts.
+The existing shared NVFP4 endpoint is not modified. Each new endpoint is registered
+under a unique name and removed after its runs finish, then its Modal app is stopped.
+Snapshots are retained for audit. Failed orchestration retains its endpoint and
+state so existing rollouts can finish and a resume can recover it.
+
+This integration requires live validation of full Inkling adapter loading,
+trainer/serving numerical agreement, and a real environment rollout before treating
+its scores as validated. CPU orchestration tests do not establish GPU memory fit.

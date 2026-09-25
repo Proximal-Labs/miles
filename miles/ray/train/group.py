@@ -332,10 +332,11 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def export_hf(self, rollout_id: int, path: str):
+    async def export_hf(self, rollout_id: int, path: str, adapter_only: bool = False):
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
+        export_options = {"adapter_only": True} if adapter_only else {}
         await retry(
-            lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path),
+            lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path, **export_options),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
