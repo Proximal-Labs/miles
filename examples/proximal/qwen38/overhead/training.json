@@ -1,8 +1,8 @@
 {
   "app_name": "miles-qwen38-training",
-  "gpu": "H200:4",
-  "num_gpus": 4,
-  "cpu": 16,
+  "gpu": "H200:8",
+  "num_gpus": 8,
+  "cpu": 32,
   "max_retries": 2,
   "model_args": "qwen3.8-27B",
   "train_args": "examples/proximal/qwen38/overhead/train_args.txt",
@@ -14,8 +14,7 @@
     "miles-qwen38-gateway",
     "miles-gsm8k-proxy",
     "miles-gsm8k-wandb",
-    "miles-platform",
-    "miles-qwen38-capture"
+    "miles-platform"
   ],
   "platform": {
     "kind": "real",

@@ -62,12 +62,13 @@ Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.te
 
 ## Overhead run (`overhead/`)
 
-Measures what capture adds to each model call on real platform traffic. The same four "3.5 flash hard" environments (`overhead/tasks.json`) run 8 rollouts each on every step, for 10 steps:
-- **Serving:** one replica on 2 × H200 at TP 2. It is one container, so every rollout's calls reach its session without sticky routing, and TP 2 gives it room for 32 long rollouts' KV.
-- **Trainer:** 4 × H200 at TP 4, with sequences up to 64k tokens.
-- **Failure budget:** 16 consecutive failed groups. A group lost to the 64k cap is retried rather than ending the run.
+Measures what capture adds to each model call on real platform traffic, on the topology closest to the final one. The same four "3.5 flash hard" environments (`overhead/tasks.json`) run 8 rollouts each on every step, for 10 steps:
+- **Serving:** 2 replicas, each on 2 × H200 at TP 2. Capture runs in each, and the platform's rollout_capture client pins every rollout's calls to one replica (`Modal-Session-Id`, proximal-mono #4726). Each replica has room for 16 rollouts growing toward 256k tokens.
+- **Trainer:** 8 × H200 at TP 4 × CP 2, with sequences up to 256k tokens. GDN context parallelism needs the default `fla` backend. Log-probs are chunked and the loss is recomputed, so the 256k × vocabulary logits never exist at once.
+- **Credentials:** replicas take capture's platform key from `miles-platform`. Capture's control credential is the gateway key, which only the trainer and the replicas hold.
+- **Failure budget:** 16 consecutive failed groups.
 
-Capture's timing log on the replica, joined with the agent journal by response id, splits each call's time outside SGLang. Use the `overhead/` files in steps 3–6 below.
+Capture's timing log on each replica, joined with the agent journal by response id, splits each call's time outside SGLang. Use the `overhead/` files in steps 3–6 below.
 
 ## Paid steps, in order (workspace `proximal`, environment `main`)
 

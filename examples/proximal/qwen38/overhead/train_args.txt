@@ -1,8 +1,10 @@
-# Overhead run: the same 4 "3.5 flash hard" environments x 8 platform rollouts every step, 10
-# steps, on 4 H200 at TP 4 (one data-parallel rank). Sequences up to 64k tokens. Everything
-# else matches ../train_args.txt.
+# Overhead run, closest to the final topology: the same 4 "3.5 flash hard" environments x 8
+# platform rollouts every step, 10 steps, sequences up to 256k tokens. 8 H200 at TP 4 x CP 2
+# (GDN context parallelism needs the default 'fla' backend); with CP, max tokens per GPU is
+# about the longest sequence / cp_size. Log-probs and the loss are chunked/recomputed so the
+# 256k x vocabulary logits never materialize at once. Otherwise matches ../train_args.txt.
 --actor-num-nodes 1
---actor-num-gpus-per-node 4
+--actor-num-gpus-per-node 8
 --calculate-per-token-loss
 --rollout-batch-size 4
 --global-batch-size 32
@@ -10,14 +12,16 @@
 --tensor-model-parallel-size 4
 --sequence-parallel
 --pipeline-model-parallel-size 1
---context-parallel-size 1
+--context-parallel-size 2
 --expert-model-parallel-size 1
 --expert-tensor-parallel-size 1
 --use-dynamic-batch-size
---max-tokens-per-gpu 65536
+--max-tokens-per-gpu 131072
 --recompute-granularity full
 --recompute-method uniform
 --recompute-num-layers 1
+--log-probs-chunk-size 4096
+--recompute-loss-function
 --advantage-estimator grpo
 --kl-loss-coef 0.00
 --kl-loss-type low_var_kl
