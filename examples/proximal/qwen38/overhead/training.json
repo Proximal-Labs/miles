@@ -1,0 +1,24 @@
+{
+  "app_name": "miles-qwen38-training",
+  "gpu": "H200:4",
+  "num_gpus": 4,
+  "cpu": 16,
+  "max_retries": 2,
+  "model_args": "qwen3.8-27B",
+  "train_args": "examples/proximal/qwen38/overhead/train_args.txt",
+  "state_volume": {
+    "volume_name": "miles-qwen38-state",
+    "environment_name": "main"
+  },
+  "secrets": [
+    "miles-qwen38-gateway",
+    "miles-gsm8k-proxy",
+    "miles-gsm8k-wandb",
+    "miles-platform",
+    "miles-qwen38-capture"
+  ],
+  "platform": {
+    "kind": "real",
+    "registration_timeout_seconds": 1200
+  }
+}

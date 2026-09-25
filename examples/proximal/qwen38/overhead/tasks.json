@@ -1,0 +1,26 @@
+{
+  "project_id": 519,
+  "source": "project 519 / DeepSWE: 4 environments of '3.5 flash hard' (folder 2760), newest imaged commit, re-checked 2026-09-25",
+  "tasks": [
+    {
+      "environment_id": 29081,
+      "image_id": 569993,
+      "source_commit_sha": "75c6ca497c5f1d73e0767ac8e5ed60ec2940bac6"
+    },
+    {
+      "environment_id": 29137,
+      "image_id": 569939,
+      "source_commit_sha": "781bb4692a12161ba177ffbf24173c972ed2decc"
+    },
+    {
+      "environment_id": 29267,
+      "image_id": 569844,
+      "source_commit_sha": "af167bfc6efc3548979e73e5285a1d35bfc8fcb8"
+    },
+    {
+      "environment_id": 30336,
+      "image_id": 480805,
+      "source_commit_sha": "6328f8f9f832ecd0418b452a10b472f276acbe8e"
+    }
+  ]
+}

@@ -60,6 +60,15 @@ The smoke deployment has `max_retries` 0, so a failure stops the run rather than
 
 Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.template.json` with `smoke/tasks.json`, and `smoke/training.json`. Volumes, secrets and the staged base are shared with the pilot.
 
+## Overhead run (`overhead/`)
+
+Measures what capture adds to each model call on real platform traffic. The same four "3.5 flash hard" environments (`overhead/tasks.json`) run 8 rollouts each on every step, for 10 steps:
+- **Serving:** one replica on 2 × H200 at TP 2. It is one container, so every rollout's calls reach its session without sticky routing, and TP 2 gives it room for 32 long rollouts' KV.
+- **Trainer:** 4 × H200 at TP 4, with sequences up to 64k tokens.
+- **Failure budget:** 16 consecutive failed groups. A group lost to the 64k cap is retried rather than ending the run.
+
+Capture's timing log on the replica, joined with the agent journal by response id, splits each call's time outside SGLang. Use the `overhead/` files in steps 3–6 below.
+
 ## Paid steps, in order (workspace `proximal`, environment `main`)
 
 1. **Volumes and secrets.**
