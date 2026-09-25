@@ -1,8 +1,8 @@
 {
   "app_name": "miles-qwen38-serving",
   "image": "radixark/miles@sha256:e4fcc8c4d40ddd2fe3cbd46cfc414287d879b55cf9915250f6e5474f7c7462b9",
-  "gpu": "H200:2",
-  "tensor_parallel": 2,
+  "gpu": "B300",
+  "tensor_parallel": 1,
   "routing_region": "us-west",
   "min_replicas": 2,
   "max_replicas": 2,

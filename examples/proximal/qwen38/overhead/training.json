@@ -1,6 +1,6 @@
 {
   "app_name": "miles-qwen38-training",
-  "gpu": "H200:8",
+  "gpu": "B300:8",
   "num_gpus": 8,
   "cpu": 32,
   "max_retries": 2,

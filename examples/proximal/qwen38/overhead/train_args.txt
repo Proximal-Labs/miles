@@ -1,6 +1,8 @@
 # Overhead run, closest to the final topology: the same 4 "3.5 flash hard" environments x 8
-# platform rollouts every step, 10 steps, sequences up to 256k tokens. 8 H200 at TP 4 with two
-# data-parallel ranks. No context parallelism: Megatron-Bridge's Qwen3-VL model (which Qwen3.8
+# platform rollouts every step, 10 steps, sequences up to 256k tokens. 8 B300 at TP 4 with two
+# data-parallel ranks: a 262k-token micro-batch needs about 155 GB on one GPU (it ran out of
+# memory on H200's 141 GB), which B300's 288 GB holds.
+# No context parallelism: Megatron-Bridge's Qwen3-VL model (which Qwen3.8
 # uses) needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's
 # text-only path does not provide them. Log-probs are chunked and the loss recomputed, so the
 # 256k x vocabulary logits never exist at once. Otherwise matches ../train_args.txt.

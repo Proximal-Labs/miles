@@ -63,8 +63,8 @@ Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.te
 ## Overhead run (`overhead/`)
 
 Measures what capture adds to each model call on real platform traffic, on the topology closest to the final one. The same four "3.5 flash hard" environments (`overhead/tasks.json`) run 8 rollouts each on every step, for 10 steps:
-- **Serving:** 2 replicas, each on 2 × H200 at TP 2. Capture runs in each, and the platform's rollout_capture client pins every rollout's calls to one replica (`Modal-Session-Id`, proximal-mono #4726). Each replica has room for 16 rollouts growing toward 256k tokens.
-- **Trainer:** 8 × H200 at TP 4 with two data-parallel ranks, with sequences up to 256k tokens. Log-probs are chunked and the loss is recomputed, so the 256k × vocabulary logits never exist at once. There is no context parallelism yet: Megatron-Bridge's Qwen3-VL model, which Qwen3.8 uses, needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's text-only path does not provide them.
+- **Serving:** 2 replicas, each on 1 × B300 (288 GB: the 27B plus about 180 GB of KV cache). Capture runs in each, and the platform's rollout_capture client pins every rollout's calls to one replica (`Modal-Session-Id`, proximal-mono #4726). Each replica has room for 16 rollouts growing toward 256k tokens.
+- **Trainer:** 8 × B300 at TP 4 with two data-parallel ranks, with sequences up to 256k tokens. A 262k-token micro-batch needs about 155 GB on one GPU, which ran out of memory on H200. Log-probs are chunked and the loss is recomputed, so the 256k × vocabulary logits never exist at once. There is no context parallelism yet: Megatron-Bridge's Qwen3-VL model, which Qwen3.8 uses, needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's text-only path does not provide them.
 - **Credentials:** replicas take capture's platform key from `miles-platform`. Capture's control credential is the gateway key, which only the trainer and the replicas hold.
 - **Failure budget:** 16 consecutive failed groups.
 
