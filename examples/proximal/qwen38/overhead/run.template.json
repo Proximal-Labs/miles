@@ -12,7 +12,7 @@
   "harness": {
     "agent_type": "mini-swe",
     "revision": "695e097df0805d697e906bb5ad0fd8580813c11b",
-    "max_turns": 30,
+    "max_turns": 200,
     "timeout_seconds": 3600,
     "p2p_enforce": false
   },

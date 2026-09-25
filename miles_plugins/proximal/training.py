@@ -108,8 +108,8 @@ def check_train_args(deployment: TrainingDeployment, text: str) -> None:
         )
 
 
-def registered_capture_url(registry_json: str, model: str, endpoint_name: str | None) -> str | None:
-    """The base URL the platform routes ``model`` to, if it is a rollout-capture endpoint."""
+def registered_capture_endpoint(registry_json: str, model: str, endpoint_name: str | None) -> dict[str, object] | None:
+    """The rollout-capture endpoint record the platform routes ``model`` to, if any."""
     config = json.loads(registry_json)
     entry = config.get("models", {}).get(model)
     if not isinstance(entry, dict):
@@ -118,8 +118,29 @@ def registered_capture_url(registry_json: str, model: str, endpoint_name: str | 
     endpoint = entry.get("endpoints", {}).get(name)
     if not isinstance(endpoint, dict) or endpoint.get("kind") != "rollout_capture":
         return None
-    url = endpoint.get("baseURL")
-    return url if isinstance(url, str) else None
+    return endpoint
+
+
+def routes_to_pool(registry_json: str, run: RunConfig) -> bool:
+    """Whether the platform routes the run's model to its pool with the run's token budget.
+
+    The platform sizes each solve from the endpoint's budget (mini-swe stops at
+    (context - max output) x 0.9), so a stale budget would let rollouts run past the
+    run's sequence cap, or stop them early.
+    """
+    endpoint = registered_capture_endpoint(registry_json, run.platform_route.model, run.platform_route.endpoint_name)
+    sampling = run.research.sampling
+    return (
+        endpoint is not None
+        and endpoint.get("baseURL") == run.capture.url
+        and endpoint.get("contextWindowTokens") == sampling.max_sequence_tokens
+        and endpoint.get("maxOutputTokens") == sampling.max_tokens
+    )
+
+
+def pool_endpoint_name(app_name: str, run: RunConfig) -> str:
+    """Registry endpoints can't be edited in place, so the name carries the budget."""
+    return f"{app_name}-ctx{run.research.sampling.max_sequence_tokens}"
 
 
 def fetch_registry(platform_url: str, api_key: str, timeout_seconds: float = 30) -> str:
@@ -143,7 +164,9 @@ def registration_command(run: RunConfig, endpoint: str, pool_url: str) -> str:
         "pnpm tsx packages/backend/scripts/modal/switch-endpoint.ts "
         f"--model {run.platform_route.model} --register {endpoint} --set-default {endpoint} "
         f"--kind rollout_capture --base-url {pool_url} --wire-model {run.base_model.name} "
-        f"--api-key-env {run.capture.platform_key_env} --apply"
+        f"--api-key-env {run.capture.platform_key_env} "
+        f"--context-window-tokens {run.research.sampling.max_sequence_tokens} "
+        f"--max-output-tokens {run.research.sampling.max_tokens} --apply"
     )
 
 

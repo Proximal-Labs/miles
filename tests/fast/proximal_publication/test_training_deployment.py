@@ -8,10 +8,12 @@ from miles_plugins.proximal.training import (
     TrainingDeployment,
     check_deployment,
     check_train_args,
+    pool_endpoint_name,
     prepare_run_config,
     read_training_deployment,
-    registered_capture_url,
+    registered_capture_endpoint,
     registration_command,
+    routes_to_pool,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -53,21 +55,43 @@ def test_registry_resolves_the_default_capture_endpoint():
             "capture-2": {"kind": "rollout_capture", "baseURL": TUNNEL},
         }
     )
-    assert registered_capture_url(registry, "miles/qwen38-27b", None) == TUNNEL
-    assert registered_capture_url(registry, "miles/qwen38-27b", "capture-1") == "https://old.modal.host"
-    assert registered_capture_url(registry, "miles/other", None) is None
+    assert registered_capture_endpoint(registry, "miles/qwen38-27b", None)["baseURL"] == TUNNEL
+    assert (
+        registered_capture_endpoint(registry, "miles/qwen38-27b", "capture-1")["baseURL"] == "https://old.modal.host"
+    )
+    assert registered_capture_endpoint(registry, "miles/other", None) is None
 
 
 def test_registry_ignores_endpoints_that_are_not_rollout_capture():
     registry = _registry(**{"capture-2": {"mode": "dedicated", "baseURL": TUNNEL}})
-    assert registered_capture_url(registry, "miles/qwen38-27b", None) is None
+    assert registered_capture_endpoint(registry, "miles/qwen38-27b", None) is None
+
+
+def test_the_pool_counts_as_registered_only_with_the_runs_budget():
+    run = _real_run()
+    sampling = run.research.sampling
+    pool = {"kind": "rollout_capture", "baseURL": run.capture.url}
+    budget = {"contextWindowTokens": sampling.max_sequence_tokens, "maxOutputTokens": sampling.max_tokens}
+    assert routes_to_pool(_registry(**{"capture-2": pool | budget}), run)
+    assert not routes_to_pool(_registry(**{"capture-2": pool}), run)  # Legacy entry: the platform's default budget.
+    stale = budget | {"contextWindowTokens": sampling.max_sequence_tokens // 2}
+    assert not routes_to_pool(_registry(**{"capture-2": pool | stale}), run)
+    assert not routes_to_pool(_registry(**{"capture-2": budget | {"kind": "rollout_capture", "baseURL": TUNNEL}}), run)
 
 
 def test_registration_command_names_the_tunnel_and_worker_key():
     command = registration_command(_real_run(), "capture-17", TUNNEL)
     assert "--model miles/qwen38-27b --register capture-17 --set-default capture-17" in command
     assert f"--kind rollout_capture --base-url {TUNNEL}" in command
-    assert "--api-key-env STAGE_A_CAPTURE_PLATFORM_KEY --apply" in command
+    sampling = _real_run().research.sampling
+    assert (
+        f"--api-key-env STAGE_A_CAPTURE_PLATFORM_KEY --context-window-tokens {sampling.max_sequence_tokens} "
+        f"--max-output-tokens {sampling.max_tokens} --apply"
+    ) in command
+    assert (
+        pool_endpoint_name("miles-qwen38-serving", _real_run())
+        == f"miles-qwen38-serving-ctx{sampling.max_sequence_tokens}"
+    )
 
 
 def test_example_deployments_match_their_platforms():

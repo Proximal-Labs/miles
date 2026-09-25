@@ -47,9 +47,10 @@ from miles_plugins.proximal.training import (
     check_deployment,
     check_train_args,
     fetch_registry,
+    pool_endpoint_name,
     read_training_deployment,
-    registered_capture_url,
     registration_command,
+    routes_to_pool,
 )
 
 _TRAINING_PATH = "PROXIMAL_TRAINING_CONFIG"
@@ -120,21 +121,21 @@ def _wait_healthy(url: str, process: subprocess.Popen[bytes], log: Path, timeout
 def _wait_for_registration(platform: RealPlatform) -> None:
     """Create no runs until the platform routes this model to the pool's capture."""
     pool_url = RUN.capture.url
-    command = registration_command(RUN, DEPLOYMENT.app_name, pool_url)
+    command = registration_command(RUN, pool_endpoint_name(DEPLOYMENT.app_name, RUN), pool_url)
     api_key = os.environ[RUN.platform.api_key_env]
     deadline = time.monotonic() + platform.registration_timeout_seconds
     announced = 0.0
     while time.monotonic() < deadline:
         try:
             registry = fetch_registry(RUN.platform.url, api_key)
-            if registered_capture_url(registry, RUN.platform_route.model, None) == pool_url:
+            if routes_to_pool(registry, RUN):
                 print(f"[training] {RUN.platform_route.model} routes to {pool_url}", flush=True)
                 return
         except (urllib.error.URLError, OSError, ValueError) as exc:
             print(f"[training] registry read failed ({exc}); retrying", flush=True)
         if time.monotonic() - announced > 60:
             print(
-                f"[training] the platform does not route {RUN.platform_route.model} to {pool_url} yet;"
+                f"[training] the platform does not route {RUN.platform_route.model} to {pool_url} with this run's budget yet;"
                 f" register the pool from proximal-mono (once per pool):\n  {command}",
                 flush=True,
             )
