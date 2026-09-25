@@ -30,7 +30,7 @@ from miles_plugins.proximal.contracts import (
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import add_arguments
 from miles_plugins.proximal.storage import write_immutable
-from miles_plugins.proximal.store import RolloutStore, open_store
+from miles_plugins.proximal.store import CAPTURE_ARCHIVE_BATCH_SIZE, RolloutStore, open_store
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,10 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=self.config.request_timeout_seconds,
-                limits=httpx.Limits(max_connections=self.config.max_in_flight_samples * 3),
+                # Long archive PUTs must not consume the rollout HTTP capacity.
+                limits=httpx.Limits(
+                    max_connections=self.config.max_in_flight_samples * 3 + CAPTURE_ARCHIVE_BATCH_SIZE
+                ),
             )
             self._capture = CaptureClient(self.authorization, self._client)
             self._platform = PlatformClient(self.authorization, self._client)

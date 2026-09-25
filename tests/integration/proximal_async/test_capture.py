@@ -188,7 +188,10 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
                 await client.collect(handle, attempt)
 
 
-@pytest.mark.parametrize("graded,tool_turn,handoff_failure", [(True, False, False), (False, False, False), (True, True, False), (True, False, True)])
+@pytest.mark.parametrize(
+    "graded,tool_turn,handoff_failure",
+    [(True, False, False), (False, False, False), (True, True, False), (True, False, True)],
+)
 async def test_task_to_captured_and_graded_miles_sample(
     config, authorization, policy, attempt, tokenizer, store, graded, tool_turn, handoff_failure
 ):

@@ -38,6 +38,8 @@ from miles_plugins.proximal.storage import write_immutable
 if TYPE_CHECKING:
     import psycopg
 
+CAPTURE_ARCHIVE_BATCH_SIZE = 4
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS proximal_capture_archives (
     training_run_id text NOT NULL,
@@ -200,8 +202,8 @@ class RolloutStore:
             cursor = await self.connection.execute(
                 "SELECT evidence::text, payload_path FROM proximal_capture_archives"
                 " WHERE training_run_id = %s AND NOT published AND next_attempt_at <= clock_timestamp()"
-                " ORDER BY next_attempt_at, attempt_id LIMIT 4",
-                (self.run_id,),
+                " ORDER BY next_attempt_at, attempt_id LIMIT %s",
+                (self.run_id, CAPTURE_ARCHIVE_BATCH_SIZE),
             )
             rows = await cursor.fetchall()
         return [(AcceptedAttempt.model_validate_json(str(row[0])), Path(str(row[1]))) for row in rows]
