@@ -159,6 +159,11 @@ class TrainerController:
         if (disposer := self._watcher_disposer) is not None:
             await disposer()
             self._watcher_disposer = None
+        # Worker tracking clients are separate from the driver's. Await their
+        # uploads before Ray tears down actors when the driver exits.
+        await asyncio.gather(
+            *[cell.execute("finish_tracking", kill_on_failure=False) for cell in self._cells if cell.is_alive]
+        )
 
     # ------------------------ API :: train ------------------------
 

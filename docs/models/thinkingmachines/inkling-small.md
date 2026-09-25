@@ -64,7 +64,7 @@ entries. New shapes or changed code may compile again, and changing the image
 reference selects a separate cache directory. This does not add a kernel warmup.
 
 [`scripts/run_inkling_small_sft.py`](https://github.com/radixark/miles/blob/main/scripts/run_inkling_small_sft.py)
-targets **one node of 8 B300s**, text LoRA SFT, one epoch, with
+targets **one node of 8 B300s**, text LoRA SFT, 30 epochs by default, with
 Miles' standard `adam` distributed optimizer. The BF16 base is frozen;
 only adapters are trained. Fresh SFT runs explicitly start at rollout 0; the release
 base checkpoint's iteration 0 does not count as a completed training rollout.
@@ -88,7 +88,10 @@ updated parallelism layout.
 The provisional LR is `1e-5`, with 3% warmup and cosine decay to `1e-6`; this is
 configurable and is not a validated Inkling/Adam LoRA SFT optimum. Global and microbatch
 size are both one conversation, so one epoch visits every prepared record without
-dropping a partial batch. This favors memory feasibility over throughput.
+dropping a partial batch. Set `num_epoch` in the Modal config JSON to override
+the default 30 passes. With one prepared conversation, this produces 30 optimizer
+steps. Trainer tracking clients are flushed before normal shutdown so the final
+training metrics upload before Ray exits. This favors memory feasibility over throughput.
 
 ### Modal configuration
 

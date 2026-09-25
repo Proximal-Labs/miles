@@ -73,7 +73,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-batch-size 1
   --global-batch-size 1
   --n-samples-per-prompt 1
-  --num-epoch 1
+  --num-epoch 30
   --loss-type sft_loss
   --calculate-per-token-loss
   --disable-compute-advantages-and-returns

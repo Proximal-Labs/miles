@@ -10,6 +10,7 @@ Args:
   --mode: data (CPU download/render), prepare (GPU conversion), smoke, train.
   --source-data: Raw JSONL with messages and optional tools/reasoning_effort.
   --max-length: Total token cap, including reasoning and tool results.
+  --num-epoch: Passes over the prepared dataset (default 30).
   --lr: Initial experimental Adam learning rate; no validated Inkling SFT LR.
   --distributed-timeout-minutes: GPU communication timeout (default 30), including
     waits while another pipeline stage compiles its first-step kernels.
@@ -55,6 +56,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     max_length: int = 262144
     lr: float = 1e-5
+    num_epoch: int = 30
     lora_rank: int = 32
     lora_alpha: int = 32
     lora_adapter_path: str | None = None
@@ -83,6 +85,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("Use --resume with --lora-adapter-path")
         if self.distributed_timeout_minutes < 1:
             raise ValueError("distributed_timeout_minutes must be positive")
+        if self.num_epoch < 1:
+            raise ValueError("num_epoch must be positive")
 
     @property
     def hf_checkpoint(self):
@@ -137,7 +141,7 @@ def execute(args: ScriptArgs):
         "--data-source-path miles.rollout.inkling_sft_data_source.InklingSFTDataSource "
         f"--prompt-data {q(args.dataset)} --input-key text --metadata-key metadata "
         "--rollout-shuffle --rollout-batch-size 1 --global-batch-size 1 --n-samples-per-prompt 1 "
-        "--num-epoch 1 --loss-type sft_loss --calculate-per-token-loss "
+        f"--num-epoch {args.num_epoch} --loss-type sft_loss --calculate-per-token-loss "
         "--disable-compute-advantages-and-returns --debug-train-only "
     )
     perf_args = f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
