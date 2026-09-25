@@ -197,3 +197,6 @@ _examples_synced/
 # Stage A local harness state (examples/proximal/e2e)
 .stage-a/
 .cpu-sglang/
+
+# miles sft
+data/
