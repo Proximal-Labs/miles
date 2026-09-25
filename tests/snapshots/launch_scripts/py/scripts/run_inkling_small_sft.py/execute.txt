@@ -70,10 +70,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --input-key text
   --metadata-key metadata
   --rollout-shuffle
-  --rollout-batch-size 1
-  --global-batch-size 1
+  --rollout-batch-size 32
+  --global-batch-size 32
   --n-samples-per-prompt 1
-  --num-epoch 30
+  --num-epoch 10
   --loss-type sft_loss
   --calculate-per-token-loss
   --disable-compute-advantages-and-returns
@@ -91,9 +91,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --seq-length 262144 
   --optimizer adam
   --lr 1e-05
-  --min-lr 1.0000000000000002e-06
+  --min-lr 1e-06
   --lr-decay-style cosine
-  --lr-warmup-fraction 0.03
+  --lr-warmup-init 0
+  --lr-warmup-fraction 0.01
   --weight-decay 0.1
   --clip-grad 1.0 
   --distributed-timeout-minutes 30

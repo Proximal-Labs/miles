@@ -14,6 +14,7 @@ from miles.utils.metric_utils import (
     dict_add_prefix,
     has_repetition,
 )
+from miles.utils.sft_metric_utils import data_metrics, is_inkling_sft
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
@@ -71,6 +72,11 @@ def log_eval_skip(rollout_id, args, reason: str):
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+    if is_inkling_sft(args):
+        metrics = data_metrics(samples, rollout_id, rollout_time)
+        logger.info("sft data %s: %s", rollout_id, metrics)
+        tracking.log(args, metrics, step_key="train/step")
+        return
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):

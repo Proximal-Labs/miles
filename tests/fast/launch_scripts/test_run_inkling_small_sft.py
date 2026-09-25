@@ -35,7 +35,9 @@ def test_prepare_volume_error_does_not_allocate_gpus(monkeypatch):
         raise ConnectionError("Volume unavailable")
 
     monkeypatch.setattr(launcher, "volume", SimpleNamespace(read_file=read_file))
-    monkeypatch.setattr(launcher, "train", SimpleNamespace(remote=lambda config: pytest.fail("Unexpected GPU allocation")))
+    monkeypatch.setattr(
+        launcher, "train", SimpleNamespace(remote=lambda config: pytest.fail("Unexpected GPU allocation"))
+    )
     with pytest.raises(ConnectionError, match="Volume unavailable"):
         launcher.main('{"mode":"prepare"}')
 
@@ -95,10 +97,16 @@ def test_fresh_sft_starts_at_first_rollout(monkeypatch):
     execute(run_id="fresh")
     assert "--start-rollout-id 0 " in calls[0]["train_args"]
     assert "--distributed-timeout-minutes 30 " in calls[0]["train_args"]
-    assert "--num-epoch 30 " in calls[0]["train_args"]
-    execute(run_id="longer-warmup", distributed_timeout_minutes=40, num_epoch=2)
+    assert "--num-epoch 10 " in calls[0]["train_args"]
+    assert "--lr 1e-05 --min-lr 1e-06 " in calls[0]["train_args"]
+    assert "--lr-decay-style cosine --lr-warmup-init 0 --lr-warmup-fraction 0.01 " in calls[0]["train_args"]
+    assert "--rollout-batch-size 32 --global-batch-size 32 " in calls[0]["train_args"]
+    assert "--micro-batch-size 1 " in calls[0]["train_args"]
+    execute(run_id="longer-warmup", distributed_timeout_minutes=40, num_epoch=2, global_batch_size=4)
     assert "--distributed-timeout-minutes 40 " in calls[1]["train_args"]
     assert "--num-epoch 2 " in calls[1]["train_args"]
+    assert "--rollout-batch-size 4 --global-batch-size 4 " in calls[1]["train_args"]
+    assert "--lr-warmup-fraction 0.05 " in calls[1]["train_args"]
 
 
 def test_lora_rank_cannot_silently_disable_adapters():

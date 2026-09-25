@@ -6,6 +6,7 @@ import wandb
 from wandb.sdk.lib.runid import generate_id
 
 from miles.utils.env_report import decode_env_report
+from miles.utils.sft_metric_utils import is_inkling_sft
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def init_wandb_primary(args):
 
     wandb.init(**init_kwargs)
 
-    _init_wandb_common()
+    _init_wandb_common(args)
 
     # Set wandb_run_id in args for easy access throughout the training process
     args.wandb_run_id = wandb.run.id
@@ -155,12 +156,16 @@ def init_wandb_secondary(args, router_addr=None):
 
     wandb.init(**init_kwargs)
 
-    _init_wandb_common()
+    _init_wandb_common(args)
 
 
-def _init_wandb_common():
+def _init_wandb_common(args=None):
     wandb.define_metric("train/step")
     wandb.define_metric("train/*", step_metric="train/step")
+    if is_inkling_sft(args):
+        wandb.define_metric("data/*", step_metric="train/step")
+        wandb.define_metric("perf/*", step_metric="train/step")
+        return
     wandb.define_metric("rollout/step")
     wandb.define_metric("rollout/*", step_metric="rollout/step")
     wandb.define_metric("multi_turn/*", step_metric="rollout/step")

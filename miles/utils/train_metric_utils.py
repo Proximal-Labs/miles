@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from miles.utils.device_flops import local_peak_bf16_tflops
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.sft_metric_utils import is_inkling_sft, perf_metrics
 from miles.utils.timer import Timer
 from miles.utils.tracking_utils import tracking
 
@@ -23,6 +24,12 @@ def log_perf_data_raw(
     timer_instance.reset()
 
     if not is_primary_rank:
+        return
+
+    if is_inkling_sft(args):
+        metrics = perf_metrics(log_dict_raw, timer_instance.seq_lens, rollout_id)
+        logger.info("sft perf %s: %s", rollout_id, metrics)
+        tracking.log(args, metrics, step_key="train/step")
         return
 
     log_dict = {f"perf/{key}_time": val for key, val in log_dict_raw.items()}

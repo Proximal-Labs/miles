@@ -11,6 +11,7 @@ from miles.utils import train_metric_utils
 from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.sft_metric_utils import is_inkling_sft
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
@@ -175,6 +176,10 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
     - Non-tensor lists are averaged elementwise.
     - Scalars are converted to Python numbers.
     """
+    if is_inkling_sft(args):
+        # The data source already logs SFT token statistics; these fields include
+        # placeholder rewards and response spans that are not SFT targets.
+        return
     parallel_state = get_parallel_state()
     if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
         cp_size = parallel_state.cp.size

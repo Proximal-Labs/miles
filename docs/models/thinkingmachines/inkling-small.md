@@ -64,7 +64,7 @@ entries. New shapes or changed code may compile again, and changing the image
 reference selects a separate cache directory. This does not add a kernel warmup.
 
 [`scripts/run_inkling_small_sft.py`](https://github.com/radixark/miles/blob/main/scripts/run_inkling_small_sft.py)
-targets **one node of 8 B300s**, text LoRA SFT, 30 epochs by default, with
+targets **one node of 8 B300s**, text LoRA SFT, 10 epochs by default, with
 Miles' standard `adam` distributed optimizer. The BF16 base is frozen;
 only adapters are trained. Fresh SFT runs explicitly start at rollout 0; the release
 base checkpoint's iteration 0 does not count as a completed training rollout.
@@ -85,13 +85,45 @@ parallelism is used in this experimental profile. The current Modal launcher is
 single-node; scaling to additional nodes requires a clustered launcher and an
 updated parallelism layout.
 
-The provisional LR is `1e-5`, with 3% warmup and cosine decay to `1e-6`; this is
-configurable and is not a validated Inkling/Adam LoRA SFT optimum. Global and microbatch
-size are both one conversation, so one epoch visits every prepared record without
-dropping a partial batch. Set `num_epoch` in the Modal config JSON to override
-the default 30 passes. With one prepared conversation, this produces 30 optimizer
-steps. Trainer tracking clients are flushed before normal shutdown so the final
-training metrics upload before Ray exits. This favors memory feasibility over throughput.
+The provisional peak LR is `1e-5`. Linear warmup starts at zero and spans 10%
+of the samples in **one epoch**, followed by cosine decay over the rest of the
+10-epoch run to a floor of `1e-6`. The launcher passes a whole-run warmup fraction
+of `0.1 / num_epoch`, rather than warming up for 10% of all 10 epochs.
+Warmup is resolved at optimizer-step boundaries, so very small datasets do not
+produce a multi-step ramp. Configure `lr`, `min_lr`, and `warmup_epoch_fraction`
+as needed; these defaults are not a validated Inkling/Adam LoRA SFT optimum.
+
+Global batch size and the SFT loader's batch size both default to 32 conversations.
+Microbatch size is 1. With TP4, PP2, CP1 on eight GPUs, data parallel size is 1,
+so each optimizer step accumulates 32 microbatches. Expert parallel size 4 shares
+the existing GPU topology and does not create four independent data replicas.
+Set `global_batch_size` and `num_epoch` in the Modal config JSON to override these.
+Miles schedules `num_epoch * floor(dataset_size / global_batch_size)` full batches;
+use a dataset divisible by 32 for exactly ten full passes. The earlier one-record
+dataset is too small for batch size 32; use `global_batch_size: 1` for that test.
+Trainer tracking clients flush before normal shutdown so final metrics upload
+before Ray exits.
+
+### SFT metrics
+
+SFT logs `train/loss`, `train/grad_norm`, per-parameter-group learning rates, and
+`train/step`. All data and performance charts also use `train/step` (zero-based).
+Dataset statistics are `data/num_samples`, `data/sequence_tokens/mean`, and
+`data/target_tokens/{mean,median,min,max}`; target counts include only loss-masked
+assistant tokens. `data/epoch` reports fractional passes through the dataset,
+`data/progress_fraction` divides that by the configured epoch count, and
+`data/cumulative_target_tokens` counts target tokens read so far, including prior
+epochs and resumed progress. These are dataset-consumption metrics, emitted before
+the corresponding optimizer update, not proof that an update completed.
+
+Performance metrics include `perf/train_time`, `perf/train_tok_per_s` (full sequence
+tokens), `perf/data_load_time`, `perf/data_preprocess_time`, `perf/train_wait_time`,
+`perf/step_time`, `perf/wait_time_ratio`, and `perf/save_model_time` when a previous
+save was timed. Save timing is emitted with the next training batch. W&B system
+telemetry remains enabled. Placeholder rewards, RL group statistics, generation
+metrics, inference-cache metrics, duplicate response lengths, inference weight-sync
+timing, and approximate FLOP/MFU metrics are excluded for this SFT recipe.
+Validation loss, accuracy, and perplexity are not computed by this recipe.
 
 ### Modal configuration
 

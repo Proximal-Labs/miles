@@ -90,3 +90,19 @@ def test_non_primary_rank_logs_nothing(timer, logged):
     timer.timers = {"actor_train": 2.0}
     log_perf_data_raw(rollout_id=0, args=make_args(), is_primary_rank=False, compute_total_fwd_flops=lambda **_: 1.0)
     assert logged == []
+
+
+def test_inkling_sft_skips_flops_and_uses_train_axis(timer, logged):
+    timer.timers = {"actor_train": 2.0, "train": 2.0, "update_weights": 0.1}
+    args = make_args(rollout_function_path="miles.rollout.inkling_sft.generate_rollout")
+    log_perf_data_raw(
+        rollout_id=2,
+        args=args,
+        is_primary_rank=True,
+        compute_total_fwd_flops=lambda **kwargs: pytest.fail("SFT should not estimate full-training FLOPs"),
+    )
+    [payload] = logged
+    assert payload["train/step"] == 2
+    assert payload["perf/train_tok_per_s"] == sum(SEQ_LENS) / 2
+    assert "rollout/step" not in payload
+    assert "perf/update_weights_time" not in payload

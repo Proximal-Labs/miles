@@ -10,8 +10,11 @@ Args:
   --mode: data (CPU download/render), prepare (GPU conversion), smoke, train.
   --source-data: Raw JSONL with messages and optional tools/reasoning_effort.
   --max-length: Total token cap, including reasoning and tool results.
-  --num-epoch: Passes over the prepared dataset (default 30).
+  --num-epoch: Passes over the prepared dataset (default 10).
+  --global-batch-size: Conversations per optimizer step (default 32).
   --lr: Initial experimental Adam learning rate; no validated Inkling SFT LR.
+  --min-lr: Cosine decay floor (default 1e-6).
+  --warmup-epoch-fraction: Linear warmup as a fraction of one epoch (default 0.1).
   --distributed-timeout-minutes: GPU communication timeout (default 30), including
     waits while another pipeline stage compiles its first-step kernels.
   --lora-rank / --lora-alpha: Adapter rank and scaling numerator (both default 32).
@@ -56,7 +59,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     max_length: int = 262144
     lr: float = 1e-5
-    num_epoch: int = 30
+    min_lr: float = 1e-6
+    warmup_epoch_fraction: float = 0.1
+    num_epoch: int = 10
+    global_batch_size: int = 32
     lora_rank: int = 32
     lora_alpha: int = 32
     lora_adapter_path: str | None = None
@@ -87,6 +93,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("distributed_timeout_minutes must be positive")
         if self.num_epoch < 1:
             raise ValueError("num_epoch must be positive")
+        if self.global_batch_size < 1:
+            raise ValueError("global_batch_size must be positive")
+        if not 0 <= self.min_lr <= self.lr:
+            raise ValueError("min_lr must be between zero and lr")
+        if not 0 <= self.warmup_epoch_fraction < min(1, self.num_epoch):
+            raise ValueError("warmup_epoch_fraction must be in [0, 1)")
 
     @property
     def hf_checkpoint(self):
@@ -140,14 +152,16 @@ def execute(args: ScriptArgs):
         "--rollout-function-path miles.rollout.inkling_sft.generate_rollout "
         "--data-source-path miles.rollout.inkling_sft_data_source.InklingSFTDataSource "
         f"--prompt-data {q(args.dataset)} --input-key text --metadata-key metadata "
-        "--rollout-shuffle --rollout-batch-size 1 --global-batch-size 1 --n-samples-per-prompt 1 "
+        f"--rollout-shuffle --rollout-batch-size {args.global_batch_size} --global-batch-size {args.global_batch_size} --n-samples-per-prompt 1 "
         f"--num-epoch {args.num_epoch} --loss-type sft_loss --calculate-per-token-loss "
         "--disable-compute-advantages-and-returns --debug-train-only "
     )
     perf_args = f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
     optimizer_args = (
-        f"--optimizer adam --lr {args.lr} --min-lr {args.lr * 0.1} "
-        "--lr-decay-style cosine --lr-warmup-fraction 0.03 --weight-decay 0.1 --clip-grad 1.0 "
+        f"--optimizer adam --lr {args.lr} --min-lr {args.min_lr} "
+        # Megatron expresses warmup relative to the entire multi-epoch run.
+        f"--lr-decay-style cosine --lr-warmup-init 0 --lr-warmup-fraction {args.warmup_epoch_fraction / args.num_epoch} "
+        "--weight-decay 0.1 --clip-grad 1.0 "
     )
     misc_args = f"--distributed-timeout-minutes {args.distributed_timeout_minutes} --bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)

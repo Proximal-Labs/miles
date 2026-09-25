@@ -483,3 +483,35 @@ def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
         WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
     ]
     return sample
+
+
+def test_inkling_sft_emits_data_metrics_without_rl_diagnostics(monkeypatch):
+    from types import SimpleNamespace
+    from miles.ray.rollout import metrics
+
+    calls = []
+    monkeypatch.setattr(metrics.tracking, "log", lambda args, payload, **kw: calls.append((payload, kw)))
+    monkeypatch.setattr(metrics, "_compute_metrics_from_samples", lambda *a: pytest.fail("RL metrics in SFT"))
+    args = SimpleNamespace(rollout_function_path="miles.rollout.inkling_sft.generate_rollout")
+    samples = [SimpleNamespace(tokens=[1, 2, 3], loss_mask=[1, 0, 1], metadata={})]
+    log_rollout_data(2, args, samples, {}, 0.1)
+    [(payload, kwargs)] = calls
+    assert payload["data/target_tokens/mean"] == 2
+    assert payload["train/step"] == 2
+    assert kwargs["step_key"] == "train/step"
+    assert not any(key.startswith("rollout/") for key in payload)
+
+
+def test_inkling_wandb_axes_use_training_steps(monkeypatch):
+    from types import SimpleNamespace
+    from miles.utils.tracking_utils import wandb_utils
+
+    calls = []
+    monkeypatch.setattr(wandb_utils.wandb, "define_metric", lambda *a, **kw: calls.append((a, kw)))
+    wandb_utils._init_wandb_common(SimpleNamespace(rollout_function_path="miles.rollout.inkling_sft.generate_rollout"))
+    assert calls == [
+        (("train/step",), {}),
+        (("train/*",), {"step_metric": "train/step"}),
+        (("data/*",), {"step_metric": "train/step"}),
+        (("perf/*",), {"step_metric": "train/step"}),
+    ]
