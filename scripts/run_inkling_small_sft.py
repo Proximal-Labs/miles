@@ -121,7 +121,8 @@ def execute(args: ScriptArgs):
             raise ValueError("Local execute --resume requires --lora-adapter-path; Modal resolves it automatically")
         checkpoint_args += f"--lora-adapter-path {q(args.lora_adapter_path)} "
     if not args.resume:
-        checkpoint_args += "--no-load-optim --no-load-rng --finetune "
+        # The release base reports iteration 0, but contains no completed SFT rollout.
+        checkpoint_args += "--no-load-optim --no-load-rng --start-rollout-id 0 --finetune "
     lora_args = (
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} "
         "--target-modules all-linear --experts-shared-outer-loras "

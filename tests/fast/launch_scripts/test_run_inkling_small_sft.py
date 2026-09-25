@@ -77,12 +77,23 @@ def test_lora_resume_keeps_base_checkpoint_and_restores_adapter_optimizer(monkey
     assert "--target-modules all-linear --experts-shared-outer-loras" in command
     assert "--no-load-optim" not in command
     assert "--finetune" not in command
+    assert "--start-rollout-id" not in command
     assert "offload" not in command
     assert "--optimizer adam " in command
     assert "--optimizer muon" not in command
     assert "--optimizer dist_muon" not in command
     assert "--data-source-path miles.rollout.inkling_sft_data_source.InklingSFTDataSource" in command
     assert calls[0]["train_script"] == "train.py"
+
+
+def test_fresh_sft_starts_at_first_rollout(monkeypatch):
+    import miles.utils.external_utils.command_utils as U
+
+    calls = []
+    monkeypatch.setattr(U, "execute_train", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(U, "get_default_wandb_args", lambda *args, **kwargs: "")
+    execute(run_id="fresh")
+    assert "--start-rollout-id 0 " in calls[0]["train_args"]
 
 
 def test_lora_rank_cannot_silently_disable_adapters():
