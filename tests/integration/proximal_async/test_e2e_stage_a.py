@@ -24,6 +24,7 @@ from miles_plugins.proximal.e2e import fake_trainer
 from miles_plugins.proximal.e2e.adapters import DenseDecoderShape, write_adapter
 from miles_plugins.proximal.e2e.fake_pool import FakePool
 from miles_plugins.proximal.e2e.stub_platform import StubPlatform
+from miles_plugins.proximal.runtime import _run_control
 from miles_plugins.proximal.store import open_store
 
 
@@ -101,6 +102,10 @@ async def run_stage_a(run, path, ports, tmp_path, **overrides):
             for key, value in overrides.items():
                 setattr(args, key, value)
             report = await asyncio.wait_for(fake_trainer.run(args), 120)
+            # The one-off rollout CLI must use the same durable handoff as the producer.
+            before = await store.pending_capture_count()
+            await _run_control(Namespace(command="rollout", task_index=0), authorization, backend, store)
+            assert await store.pending_capture_count() == before + 1
             return report, stub, pool
         finally:
             for server, task in servers:

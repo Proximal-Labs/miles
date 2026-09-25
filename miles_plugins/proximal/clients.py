@@ -7,6 +7,8 @@ No container, replica or Volume lifecycle operations exist in this client.
 import asyncio
 import hashlib
 import time
+from pathlib import Path
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, FiniteFloat
@@ -14,6 +16,7 @@ from pydantic.alias_generators import to_camel
 
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
 from miles_plugins.proximal.contracts import (
+    AcceptedAttempt,
     Attempt,
     CaptureReceipt,
     Grade,
@@ -62,6 +65,36 @@ class Summary(Wire):
     run_id: str
     image_id: int
     source_commit_sha: str
+
+
+class ArchiveReceipt(Wire):
+    session_id: str
+    request_sha256: str
+    payload_sha256: str
+    training_run_id: str
+    policy_version: int
+    snapshot_sha256: str
+    base_model: str
+    base_revision: str
+    num_calls: int
+    num_tokens: int
+    size_bytes: str  # uint64 uses a decimal string in protobuf JSON.
+
+
+class ArchiveAttachment(Wire):
+    state: Literal["pending", "ready"]
+    receipt: ArchiveReceipt
+    receipt_sha256: str
+
+
+class ArchiveUpload(Wire):
+    attachment: ArchiveAttachment
+    upload_url: str = ""  # Ready retries omit proto default fields.
+    upload_headers: dict[str, str] = {}
+
+
+class ArchiveComplete(Wire):
+    attachment: ArchiveAttachment
 
 
 class IneligibleAttempt(RuntimeError):
@@ -174,6 +207,54 @@ class PlatformClient:
 
     async def _rpc(self, name: str, body: object) -> httpx.Response:
         return await request(self.client, "POST", f"{self.url}/{name}", headers=self.headers, body=body)
+
+    async def archive_capture(self, evidence: AcceptedAttempt, path: Path) -> None:
+        capture = evidence.capture
+
+        def file_digest() -> str:
+            with path.open("rb") as stream:
+                return hashlib.file_digest(stream, "sha256").hexdigest()
+
+        if await asyncio.to_thread(file_digest) != capture.payload_sha256:
+            raise ValueError("Local capture archive checksum mismatch")
+        receipt = ArchiveReceipt(
+            session_id=capture.session_id,
+            request_sha256=capture.request_sha256,
+            payload_sha256=capture.payload_sha256,
+            training_run_id=capture.policy.run_id,
+            policy_version=capture.policy.version,
+            snapshot_sha256=capture.policy.snapshot.sha256,
+            base_model=capture.policy.base_model.name,
+            base_revision=capture.policy.base_model.revision,
+            num_calls=capture.num_calls,
+            num_tokens=capture.num_tokens,
+            size_bytes=str(path.stat().st_size),
+        )
+        body = {"rolloutId": evidence.grade.rollout_id, "receipt": receipt.model_dump(by_alias=True)}
+        response = await self._rpc("PrepareMilesCaptureUpload", body)
+        upload = ArchiveUpload.model_validate_json(response.content)
+        if upload.attachment.receipt != receipt:
+            raise ValueError("Platform reserved a different capture receipt")
+        if upload.attachment.state == "ready":
+            return
+        if upload.attachment.state != "pending" or not upload.upload_url:
+            raise ValueError("Platform returned an invalid capture upload state")
+
+        # No platform credentials accompany the scoped S3 URL. Immutable PUTs may
+        # return 412 after a previous successful upload whose acknowledgement was lost.
+        async def chunks():
+            with path.open("rb") as stream:
+                while chunk := await asyncio.to_thread(stream.read, 1024 * 1024):
+                    yield chunk
+
+        response = await self.client.put(
+            upload.upload_url, content=chunks(), headers=upload.upload_headers, follow_redirects=False
+        )
+        if response.status_code != 412:
+            response.raise_for_status()
+        completed = ArchiveComplete.model_validate_json((await self._rpc("CompleteMilesCaptureUpload", body)).content)
+        if completed.attachment.receipt != receipt or completed.attachment.state != "ready":
+            raise ValueError("Platform did not acknowledge the sealed capture")
 
     async def preflight(self) -> None:
         """Free check before the first paid run: the pinned tasks are still project members."""

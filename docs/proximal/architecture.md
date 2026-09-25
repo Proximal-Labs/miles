@@ -107,3 +107,25 @@ The platform owns sandbox retention. The operator owns retention for stored grou
 The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/replay payloads. Unsupported modes fail during free argument validation.
 
 CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.
+
+## Rollout-end platform archive
+
+The rollout worker on the trainer cluster publishes the replica's existing sealed
+sample artifact. Capture/rollout owns its receipt, Dataflow's existing artifact
+mount and Postgres own the durable handoff, and the platform owns its archive
+attachment and download authorization. PolicyPublisher still only publishes
+weights; this does not change that capability, the objective, or resource teardown.
+
+After validation the producer retains `samples.safetensors` and `accepted.json`,
+commits the payload mount and queues `proximal_capture_archives` before releasing
+the replica session. An independent worker uploads through platform-issued signed
+URLs and acknowledges only verified `ready` attachments. Pending rows survive
+restart and are independent of policy rewind, stale/discarded groups and trainer
+consumption: the archive is forensic evidence, not an eligibility decision.
+
+The platform journal remains terminal. The artifact is attached to the rollout
+through the dedicated Miles RPCs documented in platform-contract.md. Publication
+is restricted to validated, graded captures in this first pass. Failed/cancelled
+attempts are not synthesized into training artifacts. Replica-local persistence
+was rejected as the publication owner because those files are ephemeral and the
+trainer already fetches and retains the same bytes for learning.
