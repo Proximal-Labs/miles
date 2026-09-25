@@ -76,6 +76,9 @@ def build_inkling_config(
     fp32_residual=False,
     pp_first_stage_layers=None,
     pp_last_stage_layers=None,
+    recompute_granularity=None,
+    recompute_method=None,
+    recompute_num_layers=None,
 ) -> TransformerConfig:
     inter = text_cfg["intermediate_size"]
     ns = text_cfg["n_shared_experts"]
@@ -121,6 +124,9 @@ def build_inkling_config(
         params_dtype=torch.bfloat16 if bf16 else torch.float32,
         gated_linear_unit=True,
         pipeline_dtype=torch.bfloat16 if bf16 else torch.float32,
+        recompute_granularity=recompute_granularity,
+        recompute_method=recompute_method,
+        recompute_num_layers=recompute_num_layers,
     )
     cfg.inkling = InklingExtra(text_cfg)
     cfg.moe_activation_in_fp32 = True
@@ -275,6 +281,9 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
         fp32_residual=getattr(args, "fp32_residual_connection", False),
         pp_first_stage_layers=getattr(args, "decoder_first_pipeline_num_layers", None),
         pp_last_stage_layers=getattr(args, "decoder_last_pipeline_num_layers", None),
+        recompute_granularity=getattr(args, "recompute_granularity", None),
+        recompute_method=getattr(args, "recompute_method", None),
+        recompute_num_layers=getattr(args, "recompute_num_layers", None),
     )
     model = InklingGPTModel(
         config=config,

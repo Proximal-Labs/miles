@@ -74,7 +74,11 @@ matching the native Inkling adapter layout. Set `--lora-rank` and `--lora-alpha`
 to override them. It starts no inference engines. This is an **unvalidated fit**,
 especially at the default **262,144 total tokens per conversation**. The model's
 1M context capability does not establish training memory feasibility. TP4/PP2/EP4,
-sequence parallelism and full recomputation are enabled. Conversion and training
+sequence parallelism and full recomputation are enabled. The custom model provider
+forwards the recomputation granularity, method and layer count into TransformerConfig.
+The LoRA provider enables gradients on frozen embedding outputs during training so
+reentrant checkpoints preserve adapter gradients without training the embeddings.
+Conversion and training
 explicitly request FP32 routing (`--moe-router-dtype fp32`), matching the Inkling
 model provider. Base weights, adapters, adapter gradients and optimizer state
 stay in GPU memory; CPU and NVMe optimizer

@@ -427,11 +427,26 @@ def apply_inkling_lora(model, args):
     return model
 
 
+def _enable_full_recompute_input_grads(model) -> None:
+    """Keep reentrant checkpoints differentiable when the embedding is frozen."""
+    if model.config.recompute_granularity != "full" or not model.pre_process:
+        return
+
+    def enable_grad(module, _inputs, output):
+        if module.training and torch.is_grad_enabled():
+            output.requires_grad_(True)
+        return output
+
+    model.embedding.register_forward_hook(enable_grad)
+
+
 def wrap_model_provider_with_inkling_lora(provider_func, args):
     """Wrap a miles model provider so every built chunk gets LoRA before DDP wrap."""
 
     def wrapped(*provider_args, **provider_kwargs):
-        return apply_inkling_lora(provider_func(*provider_args, **provider_kwargs), args)
+        model = apply_inkling_lora(provider_func(*provider_args, **provider_kwargs), args)
+        _enable_full_recompute_input_grads(model)
+        return model
 
     return wrapped
 
