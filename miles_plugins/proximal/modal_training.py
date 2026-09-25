@@ -256,6 +256,7 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     # The rollout executor, Ray and Postgres share this container's CPUs; a GPU
     # function otherwise gets about one core and they starve.
     cpu=float(TRAINING.cpu),
+    memory=TRAINING.memory_mib,
     volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
     retries=modal.Retries(max_retries=TRAINING.max_retries, initial_delay=30.0) if TRAINING.max_retries else None,
     secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],

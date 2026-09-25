@@ -48,6 +48,10 @@ class TrainingDeployment(Contract):
     gpu: Nonempty  # Modal GPU spec, e.g. "H200:8".
     num_gpus: Positive  # GPUs Ray may schedule; must match the spec's count.
     cpu: Positive
+    # Host memory reserved for the node: Megatron's host-side buffers, Ray's object store
+    # and the rollout store. Unset, Modal's default is far too small for a training step
+    # (8 x B300 at 256k was killed for running out of host memory).
+    memory_mib: Positive
     # Modal retries after a crash; each resumes from the latest snapshot. A real-platform
     # retry opens a new tunnel and waits, holding its GPUs, for a new registration.
     max_retries: Annotated[int, Field(ge=0)]

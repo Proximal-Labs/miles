@@ -3,6 +3,7 @@
   "gpu": "H200:8",
   "num_gpus": 8,
   "cpu": 32,
+  "memory_mib": 524288,
   "max_retries": 3,
   "model_args": "qwen3.8-27B",
   "train_args": "examples/proximal/qwen38/train_args.txt",

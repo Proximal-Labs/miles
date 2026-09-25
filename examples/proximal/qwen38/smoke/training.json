@@ -3,6 +3,7 @@
   "gpu": "H200:4",
   "num_gpus": 4,
   "cpu": 16,
+  "memory_mib": 262144,
   "max_retries": 0,
   "model_args": "qwen3.8-27B",
   "train_args": "examples/proximal/qwen38/smoke/train_args.txt",

@@ -3,6 +3,7 @@
   "gpu": "H100",
   "num_gpus": 1,
   "cpu": 16,
+  "memory_mib": 131072,
   "max_retries": 3,
   "model_args": "qwen3-0.6B",
   "train_args": "examples/proximal/gsm8k/train_args.txt",
