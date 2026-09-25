@@ -1,6 +1,6 @@
-# Required proximal-mono change: route a rollout's model calls to Miles capture
+# Proximal platform contracts: capture routing and rollout archive
 
-Audited against proximal-mono `origin/main` `593de5e46063`. This is the one platform change Miles needs. Everything else uses run APIs that already exist.
+The original routing contract was audited against proximal-mono `origin/main` `593de5e46063`. Run execution still uses the existing APIs. Rollout-end archive publication additionally requires proximal-mono PR #4821, described below. Deploy those RPCs before relying on platform archive availability; older platforms leave uploads pending without changing training.
 
 ## What Miles sends and reads (no change)
 
@@ -94,3 +94,114 @@ The rollout workers that run agent-px must reach the capture service URL. With a
 - A run with `agents[].endpointName` for that entry sends every mini-swe model call there, with `agents[].reasoningEffort` as `reasoning_effort`.
 - Existing Modal Responses endpoints are unchanged.
 - One capped live rollout (e.g. `maxTurns` 3) reaches a Miles capture service and returns a scored container.
+
+
+## Miles rollout capture archive
+
+The platform archives Miles's existing, sealed `samples.safetensors` **once per
+accepted rollout**. Exact input/output IDs, loss masks, behavior logprobs and policy
+spans remain authored by Miles's SessionCore and sample codec. The platform neither
+re-tokenizes nor re-encodes the tensor payload. Inference calls keep their existing
+streaming protocol and perform no archive uploads or catalog writes.
+
+```mermaid
+sequenceDiagram
+    participant R as Modal serving replica
+    participant M as Miles rollout worker (trainer cluster)
+    participant D as Trainer artifact mount + Postgres
+    participant P as Platform API
+    participant S as S3 rollout artifact bucket
+    Note over R,P: Platform rollout and verification complete
+    M->>R: Seal and collect existing capture
+    R-->>M: Receipt + exact safetensors bytes
+    M->>D: Retain accepted capture, commit mount, enqueue publication
+    M->>R: Release capture session
+    Note over M,D: Training can consume the sample independently
+    M->>P: PrepareMilesCaptureUpload(rolloutId, receipt)
+    P-->>M: Immutable reservation + scoped PUT URL/headers
+    M->>S: PUT exact bytes (SHA-256, size, If-None-Match)
+    M->>P: CompleteMilesCaptureUpload(same receipt)
+    P->>S: HEAD with checksum enabled
+    P->>P: Atomically mark attachment ready
+    P-->>M: Ready receipt
+    M->>D: Acknowledge publication
+```
+
+## Platform contract and ownership
+
+The three RPCs live on `proximal.v1.EnvironmentRunService`:
+
+- `PrepareMilesCaptureUpload`: `{ rolloutId, receipt }` reserves one immutable
+  receipt. Returns `{ attachment, uploadUrl, uploadHeaders }`; a ready retry needs
+  no upload. The signed PUT expires after 15 minutes, covers one key, requires the
+  declared checksum/length and forbids overwriting an existing object.
+- `CompleteMilesCaptureUpload`: same input. Verifies actual S3 SHA-256 and byte
+  count before setting `attachment.state = "ready"`. Caller metadata alone is
+  insufficient. Identical retries succeed; conflicting identities fail.
+- `GetMilesCapture`: `{ rolloutId }` returns the attachment (absent before prepare,
+  `pending` before commit, `ready` after verification) and a 15-minute download URL
+  only when ready. URLs are bearer capabilities and must not be logged.
+
+The typed receipt contains `sessionId`, `requestSha256`, `payloadSha256`,
+`trainingRunId`, `policyVersion`, `snapshotSha256`, `baseModel`, `baseRevision`,
+`numCalls`, `numTokens`, `sizeBytes` (protobuf JSON uint64 decimal string).
+This is **Miles-reported provenance**, not independent attestation of GPU weights.
+The platform matches the base model against the persisted capture endpoint.
+
+Only authenticated automation or full platform users may access these RPCs.
+Publication requires an existing successful/completed rollout whose solver run
+has a persisted `rollout_capture` endpoint assignment. A stored attachment remains
+readable after operational journal/assignment retention. Ordinary Modal/provider paths
+cannot publish. Initial scope is Miles's single-instance `<attempt>-rollout-0`.
+
+The small reservation/attachment lives at `rollouts.miles_capture` in the existing
+Mongo rollout document. The object lives in the configured `ARTIFACTS_BUCKET` at
+`miles/rollout-captures/<rolloutId>/<receiptHash>/samples.safetensors`. No new bucket,
+collection or lifecycle policy. It is separate from sandbox `artifacts_url` and
+from the terminal agent journal; neither is overwritten or reopened. Discovery
+and download are through the RPC, not a new journal event or token viewer.
+
+## Failure and retry semantics
+
+Archive status never rewrites solver status, verifier reward, or training
+eligibility. Miles retains the exact accepted artifact on its existing artifact
+mount, commits Modal Volume visibility, then inserts a Postgres outbox row before
+releasing the replica session. An independent worker publishes at bounded
+concurrency with backoff. Restarting the producer resumes pending rows. A lost PUT
+acknowledgement yields 412 on retry; completion still verifies the existing object.
+A lost completion acknowledgement safely repeats prepare/complete. No archive
+failure initiates another rollout. Local files are retained after publication;
+this change adds no garbage collector.
+
+This first pass publishes **validated, graded captures only**. Failed/cancelled
+rollouts currently have no accepted capture and get no fabricated attachment.
+The durable handoff can delay sample return by a mount commit and local index
+write; S3 publication is outside that path. Durable handoff failure is a local
+infrastructure error and retains the replica session for diagnosis, subject to
+its existing expiry. Replica loss before handoff remains the existing capture
+failure mode. The artifact mount and Postgres must both survive trainer restart.
+
+The maximum artifact is 5 GiB (one PUT). No compression is added: preserving the
+sealed bytes preserves the receipt's checksum. No tensor arrays enter platform
+Mongo/Postgres or API bodies. S3 permission requirements are PutObject, GetObject
+and checksum-enabled HeadObject (plus the bucket's existing KMS permissions, if
+applicable). Abandoned pending objects/reservations require an explicit future
+retention policy; they are not silently collected by the agent-journal GC.
+
+Spans `MilesCapture.*` and metrics `miles.capture.archive.operations` / `.bytes`
+cover platform outcomes. Dashboard: `infra/datadog/dashboards/miles-capture.json`.
+The trainer outbox exposes attempts, next retry time and last error class; logs
+contain attempt IDs and error classes, never signed URLs or credentials.
+
+### Replay without starting training
+
+On a CPU process with the same artifact mount and Postgres credentials:
+
+```bash
+python -m miles_plugins.proximal.archive --config run.json --yes-rollouts --yes-publish --watch
+```
+
+This uses the existing run authorization but starts no inference, trainer, or
+replica. Without `--watch`, it drains rows currently due; deferred retries remain
+in the outbox and the command exits nonzero. Mount visibility and database retention follow the existing run
+storage policy. Shutdown leaves pending rows intact for resume or this command.

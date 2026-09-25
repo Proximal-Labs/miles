@@ -24,13 +24,35 @@ from miles.rollout.session.samples.codec import (
 )
 from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import secret_env
-from miles_plugins.proximal.contracts import Contract, Policy, RunConfig, SafeId, digest, training_contract
+from miles_plugins.proximal.contracts import (
+    AcceptedAttempt,
+    Contract,
+    Policy,
+    RunConfig,
+    SafeId,
+    digest,
+    training_contract,
+)
 from miles_plugins.proximal.storage import write_immutable
 
 if TYPE_CHECKING:
     import psycopg
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS proximal_capture_archives (
+    training_run_id text NOT NULL,
+    attempt_id text NOT NULL,
+    evidence jsonb NOT NULL,
+    payload_path text NOT NULL,
+    published boolean NOT NULL DEFAULT false,
+    attempts integer NOT NULL DEFAULT 0,
+    last_error_type text,
+    next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (training_run_id, attempt_id)
+);
+CREATE INDEX IF NOT EXISTS proximal_capture_archives_pending
+    ON proximal_capture_archives (training_run_id, next_attempt_at) WHERE NOT published;
+
 CREATE TABLE IF NOT EXISTS proximal_policies (
     training_run_id text NOT NULL,
     version integer NOT NULL,
@@ -148,6 +170,69 @@ class RolloutStore:
 
     async def close(self) -> None:
         await self.connection.close()
+
+    # Archive publication is operational state, independent of group eligibility/consumption.
+    async def enqueue_capture(self, evidence: AcceptedAttempt, payload_path: Path) -> None:
+        if evidence.attempt.run_id != self.run_id:
+            raise ValueError("Capture belongs to another training run")
+        await asyncio.to_thread(self.sync.commit)
+        async with self._lock:
+            await self.connection.execute(
+                "INSERT INTO proximal_capture_archives (training_run_id, attempt_id, evidence, payload_path)"
+                " VALUES (%s, %s, %s::jsonb, %s) ON CONFLICT (training_run_id, attempt_id) DO NOTHING",
+                (self.run_id, evidence.attempt.attempt_id, evidence.model_dump_json(), str(payload_path)),
+            )
+            cursor = await self.connection.execute(
+                "SELECT evidence::text, payload_path FROM proximal_capture_archives"
+                " WHERE training_run_id = %s AND attempt_id = %s",
+                (self.run_id, evidence.attempt.attempt_id),
+            )
+            row = await cursor.fetchone()
+        if (
+            row is None
+            or AcceptedAttempt.model_validate_json(str(row[0])) != evidence
+            or str(row[1]) != str(payload_path)
+        ):
+            raise ValueError("Capture archive identity conflict")
+
+    async def pending_captures(self) -> list[tuple[AcceptedAttempt, Path]]:
+        async with self._lock:
+            cursor = await self.connection.execute(
+                "SELECT evidence::text, payload_path FROM proximal_capture_archives"
+                " WHERE training_run_id = %s AND NOT published AND next_attempt_at <= clock_timestamp()"
+                " ORDER BY next_attempt_at, attempt_id LIMIT 4",
+                (self.run_id,),
+            )
+            rows = await cursor.fetchall()
+        return [(AcceptedAttempt.model_validate_json(str(row[0])), Path(str(row[1]))) for row in rows]
+
+    async def pending_capture_count(self) -> int:
+        async with self._lock:
+            cursor = await self.connection.execute(
+                "SELECT count(*) FROM proximal_capture_archives WHERE training_run_id = %s AND NOT published",
+                (self.run_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Capture outbox count returned no row")
+        return int(str(row[0]))
+
+    async def finish_capture_upload(self, attempt_id: str) -> None:
+        async with self._lock:
+            await self.connection.execute(
+                "UPDATE proximal_capture_archives SET published = true, last_error_type = NULL"
+                " WHERE training_run_id = %s AND attempt_id = %s",
+                (self.run_id, attempt_id),
+            )
+
+    async def retry_capture_upload(self, attempt_id: str, error_type: str) -> None:
+        async with self._lock:
+            await self.connection.execute(
+                "UPDATE proximal_capture_archives SET attempts = attempts + 1, last_error_type = %s,"
+                " next_attempt_at = clock_timestamp() + make_interval(secs => LEAST(300, power(2, LEAST(attempts, 8))) * (0.5 + random()))"
+                " WHERE training_run_id = %s AND attempt_id = %s AND NOT published",
+                (error_type, self.run_id, attempt_id),
+            )
 
     # ------------------------------ policies ------------------------------
 

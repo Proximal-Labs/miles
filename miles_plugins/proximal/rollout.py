@@ -14,6 +14,7 @@ from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, Da
 from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
+from miles_plugins.proximal.archive import publish_loop
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
@@ -57,13 +58,22 @@ async def wait_for_releases() -> None:
 
 
 async def execute_attempt(
-    attempt: Attempt, sample: Sample, *, capture: CaptureClient, platform: PlatformClient, artifact_root: Path
+    attempt: Attempt,
+    sample: Sample,
+    *,
+    capture: CaptureClient,
+    platform: PlatformClient,
+    artifact_root: Path,
+    store: RolloutStore,
 ) -> Sample:
     handle = await capture.create(attempt)
-    complete = False
+    platform_finished = False
+    retain_session = False
     try:
         grade = await platform.execute(attempt, handle)
+        platform_finished = True
         receipt, payload = await capture.collect(handle, attempt)
+        retain_session = True
         decoded = decode_samples_and_merge_input_sample(payload, sample)
         if len(decoded.samples) != 1:
             raise ValueError("A graded linear platform rollout must yield exactly one training sample")
@@ -74,20 +84,24 @@ async def execute_attempt(
         directory = artifact_root / attempt.attempt_id
         write_immutable(directory / "samples.safetensors", payload)
         write_immutable(directory / "accepted.json", canonical_bytes(evidence))
+        await store.enqueue_capture(evidence, directory / "samples.safetensors")
+        retain_session = False
         result.metadata["proximal_accepted"] = evidence.model_dump_json()
-        complete = True
         return result
     finally:
         # These are logical API lifetimes. Platform alone owns physical resources.
         # Cancellation is bounded and awaited before dropping the local session.
-        if not complete:
+        if not platform_finished:
             try:
                 await asyncio.wait_for(platform.cancel(attempt), timeout=30)
             except Exception as exc:
                 logger.error("Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(exc).__name__)
-        task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
-        _releases.add(task)
-        task.add_done_callback(_releases.discard)
+        if not retain_session:
+            task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
+            _releases.add(task)
+            task.add_done_callback(_releases.discard)
+        else:
+            logger.error("Capture retained on replica: durable handoff failed for attempt %s", attempt.attempt_id)
 
 
 def _sample_index(sample: Sample) -> int:
@@ -109,6 +123,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         self._capture: CaptureClient | None = None
         self._platform: PlatformClient | None = None
         self._store: RolloutStore | None = None
+        self._archive_worker: asyncio.Task[None] | None = None
 
     # Async like FullyAsyncRolloutFn.__call__, which Miles's executor awaits; the
     # base class annotates the sync form.
@@ -119,6 +134,9 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             if not isinstance(self.data_source, PlatformTaskSource):
                 raise ValueError("Platform rollouts require the platform task source")
             self._store = await open_store(self.config)
+            self._ensure_clients()
+            assert self._platform is not None
+            self._archive_worker = asyncio.create_task(publish_loop(self._store, self._platform))
             buffer = PlatformDataBuffer(
                 DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
             )
@@ -128,7 +146,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             logger.info("Started platform rollout worker against the durable rollout store")
         return await super().__call__(input)
 
-    async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
+    def _ensure_clients(self) -> None:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=self.config.request_timeout_seconds,
@@ -136,6 +154,9 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             )
             self._capture = CaptureClient(self.authorization, self._client)
             self._platform = PlatformClient(self.authorization, self._client)
+
+    async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
+        self._ensure_clients()
         assert self._capture is not None and self._platform is not None and self._store is not None
         policy = await self._store.current_policy()
         if policy is None:
@@ -163,6 +184,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
                     capture=self._capture,
                     platform=self._platform,
                     artifact_root=self.config.artifact_directory / self.config.run_id / "accepted",
+                    store=self._store,
                 )
             )
             for attempt, sample in zip(attempts, prompt_group, strict=True)
@@ -189,11 +211,17 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         raise ValueError("Platform eval needs a separately pinned evaluation contract; training-only first pass")
 
     async def close(self) -> None:
-        await super().close()
-        await wait_for_releases()
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
-        if self._store is not None:
-            await self._store.close()
-            self._store = None
+        try:
+            await super().close()
+        finally:
+            await wait_for_releases()
+            if self._archive_worker is not None:
+                self._archive_worker.cancel()
+                await asyncio.gather(self._archive_worker, return_exceptions=True)
+                self._archive_worker = None
+            if self._client is not None:
+                await self._client.aclose()
+                self._client = None
+            if self._store is not None:
+                await self._store.close()
+                self._store = None

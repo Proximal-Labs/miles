@@ -188,9 +188,9 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
                 await client.collect(handle, attempt)
 
 
-@pytest.mark.parametrize("graded,tool_turn", [(True, False), (False, False), (True, True)])
+@pytest.mark.parametrize("graded,tool_turn,handoff_failure", [(True, False, False), (False, False, False), (True, True, False), (True, False, True)])
 async def test_task_to_captured_and_graded_miles_sample(
-    config, authorization, policy, attempt, tokenizer, store, graded, tool_turn
+    config, authorization, policy, attempt, tokenizer, store, graded, tool_turn, handoff_failure
 ):
     config_path = config.artifact_directory.parent / "run.json"
     config_path.write_text(config.model_dump_json())
@@ -283,6 +283,7 @@ async def test_task_to_captured_and_graded_miles_sample(
                 platform = PlatformClient(authorization, platform_http)
                 kwargs = {
                     "capture": capture,
+                    "store": store,
                     "platform": platform,
                     "artifact_root": config.artifact_directory / "accepted",
                 }
@@ -292,12 +293,30 @@ async def test_task_to_captured_and_graded_miles_sample(
                         await execute_attempt(attempt, sample, **kwargs)
                     assert not directory.exists()
                     assert "StopEnvironmentRun" in methods
+                elif handoff_failure:
+                    from miles_plugins.proximal.store import PayloadSync
+
+                    def failed_commit():
+                        raise OSError("commit failed")
+
+                    store.sync = PayloadSync(commit=failed_commit, reload=lambda: None)
+                    with pytest.raises(OSError, match="commit failed"):
+                        await execute_attempt(attempt, sample, **kwargs)
+                    assert await store.pending_captures() == []
+                    assert "StopEnvironmentRun" not in methods
+                    await wait_for_releases()
+                    handle = await capture.create(attempt)
+                    _, retained = await capture.collect(handle, attempt)
+                    assert retained == (directory / "samples.safetensors").read_bytes()
+                    return
                 else:
                     result = await execute_attempt(attempt, sample, **kwargs)
                     assert result.index == sample.index and result.group_index == sample.group_index
                     assert result.metadata["proximal_task"] == sample.metadata["proximal_task"]
                     proof = AcceptedAttempt.model_validate_json((directory / "accepted.json").read_bytes())
                     assert proof.attempt == attempt and proof.capture.num_calls == 2
+                    assert await store.pending_captures() == [(proof, directory / "samples.safetensors")]
+                    assert "PrepareMilesCaptureUpload" not in methods
                     assert result.reward == 0.0 and sum(result.loss_mask) > 0
                     assert len(result.rollout_log_probs) == result.response_length
                     assert "StopEnvironmentRun" not in methods
