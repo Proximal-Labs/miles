@@ -23,6 +23,8 @@
   "cpu": 8,
   "memory_mib": 65536,
   "modal_proxy_auth": false,
+  "attention": null,
+  "speculative": null,
   "extra_engine_args": [
     "--mem-fraction-static",
     "0.85"

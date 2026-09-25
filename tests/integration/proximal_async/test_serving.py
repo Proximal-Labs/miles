@@ -33,8 +33,18 @@ def deployment(**overrides):
         "cpu": 8,
         "memory_mib": 32768,
         "modal_proxy_auth": False,
+        "attention": None,
+        "speculative": None,
     }
     return ServingDeployment.model_validate_json(json.dumps(data | overrides))
+
+
+BLACKWELL_MTP = {
+    "gpu": "B300",
+    "tensor_parallel": 1,
+    "attention": {"backend": "trtllm_mha", "page_size": 64},
+    "speculative": {"algorithm": "NEXTN", "num_steps": 3, "num_draft_tokens": 4},
+}
 
 
 def test_engine_arguments_follow_the_run_lora_contract(config):
@@ -125,3 +135,43 @@ def test_stage_a_example_configs_are_valid():
 def test_a_pool_holding_capture_sessions_has_a_fixed_size():
     with pytest.raises(ValueError, match="set min_replicas equal to max_replicas"):
         deployment(min_replicas=1)
+
+
+def test_attention_and_speculation_are_rendered_from_the_serving_config(config):
+    args = parse_server_args_argv(engine_argv(config, deployment(**BLACKWELL_MTP)))
+    assert (args.attention_backend, args.page_size) == ("trtllm_mha", 64)
+    assert args.speculative_algorithm in ("NEXTN", "EAGLE")  # SGLang resolves NEXTN to EAGLE.
+    assert (args.speculative_num_steps, args.speculative_eagle_topk, args.speculative_num_draft_tokens) == (3, 1, 4)
+    # Always on with speculation: accepted tokens are exact samples from the served model.
+    assert args.speculative_use_rejection_sampling is True
+    plain = parse_server_args_argv(engine_argv(config, deployment()))
+    assert plain.speculative_algorithm is None and plain.attention_backend is None
+
+
+def test_attention_and_speculation_must_be_stated_explicitly():
+    stated = deployment().model_dump(mode="json")  # null is a choice; leaving the key out is not.
+    for key in ("attention", "speculative"):
+        with pytest.raises(ValueError, match=f"{key}\\n  Field required"):
+            ServingDeployment.model_validate_json(json.dumps({k: v for k, v in stated.items() if k != key}))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            BLACKWELL_MTP | {"speculative": {"algorithm": "NEXTN", "num_steps": 3, "num_draft_tokens": 5}},
+            "num_steps \\+ 1",
+        ),
+        (BLACKWELL_MTP | {"gpu": "H200"}, "Blackwell"),
+        (BLACKWELL_MTP | {"attention": {"backend": "trtllm_mha", "page_size": 1}}, "larger than one token"),
+    ],
+)
+def test_serving_config_rejects_unservable_attention_or_speculation(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        deployment(**overrides)
+
+
+def test_extras_cannot_turn_on_speculation_or_change_attention(config):
+    for extra in (["--speculative-algorithm", "NEXTN"], ["--attention-backend", "trtllm_mha"]):
+        with pytest.raises(ValueError, match="non-operational settings"):
+            engine_argv(config, deployment(extra_engine_args=extra))

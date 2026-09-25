@@ -17,7 +17,7 @@ This module is pure configuration; serving_app.py is the Modal deployment.
 """
 
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -29,6 +29,41 @@ from miles_plugins.proximal.snapshot import Nonempty
 
 ENGINE_PORT = 30000
 GATEWAY_PORT = 8000
+# GPUs whose SGLang build has the trtllm_mha attention kernels (SM100/SM103).
+BLACKWELL_GPUS = frozenset({"B200", "B300"})
+
+
+class Attention(Contract):
+    """SGLang's full-attention kernel for the replica.
+
+    Left to SGLang, Qwen3.5-family hybrids (Qwen3.8) on Blackwell fall back to Triton with
+    one-token KV pages; trtllm_mha measured 2x faster decode at 100k-token contexts.
+    """
+
+    backend: Literal["triton", "flashinfer", "fa3", "trtllm_mha"]
+    page_size: Positive
+
+
+class Speculation(Contract):
+    """Speculative decoding with the checkpoint's own MTP head (SGLang's NEXTN), one chain.
+
+    Rejection sampling is always on, not a setting: it keeps every accepted token an exact
+    sample from the served (LoRA) model, and the returned logprobs are that model's, which
+    rollout_logprobs behavior correction relies on. The draft head runs without the LoRA
+    adapter, which lowers acceptance but not correctness.
+    """
+
+    algorithm: Literal["NEXTN"]
+    num_steps: Positive
+    num_draft_tokens: Positive
+
+    @model_validator(mode="after")
+    def _chain(self) -> "Speculation":
+        if self.num_draft_tokens != self.num_steps + 1:
+            raise ValueError(
+                "A single draft chain verifies num_steps + 1 tokens: set num_draft_tokens = num_steps + 1"
+            )
+        return self
 
 
 class ServingDeployment(Contract):
@@ -67,6 +102,10 @@ class ServingDeployment(Contract):
     # platform's agents call capture directly and hold only the capture credential, so a
     # pool serving platform rollouts sets this false; every route checks its own key.
     modal_proxy_auth: bool
+    # SGLang's full-attention kernel; null leaves the choice to SGLang.
+    attention: Attention | None
+    # Speculative decoding; null serves without it.
+    speculative: Speculation | None
     # Operational SGLang flags only; see OPERATIONAL_ENGINE_SETTINGS.
     extra_engine_args: tuple[str, ...] = ()
 
@@ -81,6 +120,13 @@ class ServingDeployment(Contract):
                 raise ValueError("Container paths must be absolute")
         if self.adapter_mount == self.base_mount:
             raise ValueError("Adapters and base weights use separate Volumes")
+        if self.attention is not None and self.attention.backend == "trtllm_mha":
+            if self.gpu.split(":")[0] not in BLACKWELL_GPUS:
+                raise ValueError(
+                    f"trtllm_mha attention needs a Blackwell GPU ({', '.join(sorted(BLACKWELL_GPUS))}), not {self.gpu}"
+                )
+            if self.attention.page_size == 1:
+                raise ValueError("trtllm_mha attention needs KV pages larger than one token")
         return self
 
 
@@ -114,6 +160,26 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
         "tool_call_parser": run.model_protocol.tool_call_parser,
         "skip_server_warmup": True,
         "enable_metrics": True,
+        **_attention_args(deployment.attention),
+        **_speculative_args(deployment.speculative),
+    }
+
+
+def _attention_args(attention: Attention | None) -> dict[str, object]:
+    if attention is None:
+        return {}
+    return {"attention_backend": attention.backend, "page_size": attention.page_size}
+
+
+def _speculative_args(speculative: Speculation | None) -> dict[str, object]:
+    if speculative is None:
+        return {}
+    return {
+        "speculative_algorithm": speculative.algorithm,
+        "speculative_num_steps": speculative.num_steps,
+        "speculative_eagle_topk": 1,
+        "speculative_num_draft_tokens": speculative.num_draft_tokens,
+        "speculative_use_rejection_sampling": True,
     }
 
 

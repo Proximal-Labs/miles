@@ -23,6 +23,15 @@
   "cpu": 16,
   "memory_mib": 65536,
   "modal_proxy_auth": false,
+  "attention": {
+    "backend": "trtllm_mha",
+    "page_size": 64
+  },
+  "speculative": {
+    "algorithm": "NEXTN",
+    "num_steps": 3,
+    "num_draft_tokens": 4
+  },
   "extra_engine_args": [
     "--mem-fraction-static",
     "0.85"
