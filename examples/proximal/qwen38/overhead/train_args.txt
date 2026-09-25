@@ -1,8 +1,9 @@
 # Overhead run, closest to the final topology: the same 4 "3.5 flash hard" environments x 8
-# platform rollouts every step, 10 steps, sequences up to 256k tokens. 8 H200 at TP 4 x CP 2
-# (GDN context parallelism needs the default 'fla' backend); with CP, max tokens per GPU is
-# about the longest sequence / cp_size. Log-probs and the loss are chunked/recomputed so the
-# 256k x vocabulary logits never materialize at once. Otherwise matches ../train_args.txt.
+# platform rollouts every step, 10 steps, sequences up to 256k tokens. 8 H200 at TP 4 with two
+# data-parallel ranks. No context parallelism: Megatron-Bridge's Qwen3-VL model (which Qwen3.8
+# uses) needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's
+# text-only path does not provide them. Log-probs are chunked and the loss recomputed, so the
+# 256k x vocabulary logits never exist at once. Otherwise matches ../train_args.txt.
 --actor-num-nodes 1
 --actor-num-gpus-per-node 8
 --calculate-per-token-loss
@@ -12,11 +13,11 @@
 --tensor-model-parallel-size 4
 --sequence-parallel
 --pipeline-model-parallel-size 1
---context-parallel-size 2
+--context-parallel-size 1
 --expert-model-parallel-size 1
 --expert-tensor-parallel-size 1
 --use-dynamic-batch-size
---max-tokens-per-gpu 131072
+--max-tokens-per-gpu 262144
 --recompute-granularity full
 --recompute-method uniform
 --recompute-num-layers 1
