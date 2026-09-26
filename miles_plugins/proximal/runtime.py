@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run
-from miles_plugins.proximal.contracts import RunConfig, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, behavior_correction_argv, read_run_config
 from miles_plugins.proximal.options import BUFFER, ROLLOUT, SOURCE, TRANSFER
 
 if TYPE_CHECKING:
@@ -48,7 +48,8 @@ def training_argv(path: str) -> list[str]:
         "train-backend": "megatron",
         "megatron-to-hf-mode": "bridge",
     }
-    return ["--fully-async", "--rollout-external", "--use-rollout-logprobs"] + [
+    correction = behavior_correction_argv(config.research.behavior_correction)
+    return ["--fully-async", "--rollout-external", *correction] + [
         item for name, value in values.items() for item in (f"--{name}", str(value))
     ]
 

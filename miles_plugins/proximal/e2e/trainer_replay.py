@@ -18,6 +18,7 @@ a stress step near the context cap.
 """
 
 import json
+import os
 import random
 import shlex
 import subprocess
@@ -29,6 +30,7 @@ from typing import Any
 import modal
 
 from miles_plugins.proximal import modal_training as node
+from miles_plugins.proximal.contracts import behavior_correction_argv
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume
 
 MOCK = Path("/mock")
@@ -112,7 +114,7 @@ def replay_command(num_steps: int) -> list[str]:
         "--lora-dropout", "0",
         "--target-modules", ",".join(research.lora.target_modules),
         "--n-samples-per-prompt", str(research.group_size),
-        "--use-rollout-logprobs",
+        *behavior_correction_argv(research.behavior_correction),
         "--rollout-max-response-len", str(research.sampling.max_tokens),
         "--rollout-max-context-len", str(research.sampling.max_sequence_tokens),
         "--disable-rollout-global-dataset",
@@ -129,12 +131,26 @@ app = modal.App(f"{node.TRAINING.app_name}-replay")
     gpu=node.TRAINING.gpu,
     cpu=float(node.TRAINING.cpu),
     memory=node.TRAINING.memory_mib,
-    volumes={str(DEPLOYMENT.base_mount): base_volume},
+    volumes={str(DEPLOYMENT.base_mount): base_volume, **node.kernel_mounts},
     timeout=3 * 3600,
 )
-def replay(steps: list[list[int]], rollout_batch_size: int) -> dict[str, Any]:
+def replay(steps: list[list[int]], rollout_batch_size: int, tune: bool = False) -> dict[str, Any]:
     step_bounds = tuple((low, high) for low, high in steps)
     write_mock_rollouts(step_bounds, groups=rollout_batch_size, group_size=RUN.research.group_size)
+    # py-spy, for stack dumps of every rank while a step hangs (ray stack / py-spy dump).
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "py-spy"], check=False)
+    # NCCL flight recorder: on a collective timeout every rank dumps the collectives it
+    # issued, so a desync shows which rank stopped where.
+    os.environ.update(
+        {
+            "TORCH_NCCL_TRACE_BUFFER_SIZE": "4000",
+            "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
+            "TORCH_FR_DUMP_TEMP_FILE": "/tmp/nccl_trace_rank_",
+        }
+    )
+    if tune:
+        # Tuning must autotune whatever the deployment's cache mode (kernel_tune).
+        os.environ["FLA_CACHE_MODE"] = "disabled"
     subprocess.run(["ray", "stop", "--force"], check=False, capture_output=True)
     subprocess.run(
         ["ray", "start", "--head", "--num-gpus", str(node.TRAINING.num_gpus), "--disable-usage-stats"], check=True
@@ -145,11 +161,17 @@ def replay(steps: list[list[int]], rollout_batch_size: int) -> dict[str, Any]:
         code = subprocess.run(replay_command(len(step_bounds)), stdout=out, stderr=subprocess.STDOUT).returncode
     text = log.read_text(errors="replace")
     print(text[-20000:], flush=True)
+    tuned = _write_fla_configs() if tune else []
+    if node.kernel_volume is not None:
+        node.kernel_volume.commit()
     wanted = (
         "train/",
         "grad_norm",
         "Timer train",
         "Timer log_probs",
+        "compute_log_prob",
+        "Watchdog",
+        "tis",
         "Memory-Usage",
         "rollout 0",
         "rollout 1",
@@ -163,14 +185,35 @@ def replay(steps: list[list[int]], rollout_batch_size: int) -> dict[str, Any]:
         "exit_code": code,
         "seconds": round(time.monotonic() - started),
         "lines": [line[:400] for line in text.splitlines() if any(w in line for w in wanted)][-200:],
+        "fla_configs": tuned,
     }
 
 
+def _write_fla_configs() -> list[str]:
+    """After a tuning replay: every kernel Triton tuned, as FLA configs on the kernel volume."""
+    # Only in the training image.
+    import tilelang  # type: ignore[import-not-found]
+    import triton  # type: ignore[import-not-found]
+    from fla.ops.utils.cache import AutotuneKey  # type: ignore[import-not-found]
+
+    from miles_plugins.proximal.kernel_tune import fla_configs, fla_key_hash, write_fla_configs
+
+    cache = node.TRAINING.kernel_cache
+    assert cache is not None, "Tuning needs the deployment's kernel_cache"
+    sample = [4096, 128, "torch.bfloat16"]
+    if fla_key_hash(sample) != AutotuneKey.key_hash(tuple(sample)):
+        raise RuntimeError("fla_key_hash no longer matches FLA's AutotuneKey.key_hash")
+    print(f"[replay] TileLang cache dir: {getattr(tilelang.env, 'TILELANG_CACHE_DIR', '?')}", flush=True)
+    files = fla_configs(Path(str(cache.triton_cache_dir)), triton.__version__)
+    write_fla_configs(files, Path(str(cache.fla_config_dir)))
+    return sorted(files)
+
+
 @app.local_entrypoint()
-def main(steps: str = "", out: str = "trainer_replay.json") -> None:
+def main(steps: str = "", out: str = "trainer_replay.json", tune: bool = False) -> None:
     bounds = [list(map(int, s.split("-"))) for s in steps.split(",")] if steps else [list(s) for s in DEFAULT_STEPS]
     lines = (node.REPO / node.TRAINING.train_args).read_text()
     batch = int(shlex.split(lines[lines.index("--rollout-batch-size") :])[1])
-    result = replay.remote(bounds, batch)
+    result = replay.remote(bounds, batch, tune)
     Path(out).write_text(json.dumps(result, indent=2))
     print(f"[replay] exit {result['exit_code']} after {result['seconds']} s; details in {out}", flush=True)

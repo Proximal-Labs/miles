@@ -40,6 +40,44 @@ def test_runtime_arguments_use_actual_miles_parser(config, tmp_path, monkeypatch
         validate_args(args)
 
 
+def test_truncated_importance_sampling_selects_miles_tis(config, tmp_path, monkeypatch):
+    from miles_plugins.proximal.contracts import TruncatedImportanceSampling, read_run_config
+
+    correction = TruncatedImportanceSampling(kind="truncated_importance_sampling", clip=2.0, clip_low=0.0)
+    tis = config.model_copy(
+        update={"research": config.research.model_copy(update={"behavior_correction": correction})}
+    )
+    path = tmp_path / "run.json"
+    path.write_text(tis.model_dump_json())
+    assert read_run_config(path).research.behavior_correction == correction
+    argv = training_argv(str(path)) + [
+        "--proximal-yes-rollouts",
+        "--proximal-yes-publish",
+        "--rollout-batch-size",
+        "1",
+    ]
+    assert "--use-tis" in argv and "--use-rollout-logprobs" not in argv
+    monkeypatch.setattr(sys, "argv", ["train_async.py", *argv])
+    args = get_miles_extra_args_provider()(argparse.ArgumentParser()).parse_args(argv)
+    validate_args(args)
+    assert args.use_tis and not args.use_rollout_logprobs and (args.tis_clip, args.tis_clip_low) == (2.0, 0.0)
+    args.use_rollout_logprobs = True
+    with pytest.raises(ValueError, match="use-rollout-logprobs"):
+        validate_args(args)
+
+
+def test_truncated_importance_sampling_bounds_are_explicit_and_valid():
+    from pydantic import ValidationError
+
+    from miles_plugins.proximal.contracts import TruncatedImportanceSampling
+
+    for clip, clip_low in ((1.0, 0.0), (2.0, 1.0), (2.0, -0.1)):
+        with pytest.raises(ValidationError):
+            TruncatedImportanceSampling(kind="truncated_importance_sampling", clip=clip, clip_low=clip_low)
+    with pytest.raises(ValidationError):
+        TruncatedImportanceSampling.model_validate({"kind": "truncated_importance_sampling", "clip": 2.0})
+
+
 async def test_existing_async_worker_overlaps_consumption_and_cancels_children(
     config, tmp_path, attempt, policy, store
 ):
