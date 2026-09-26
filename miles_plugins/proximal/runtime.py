@@ -64,7 +64,7 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
     store = await open_store(config)
     try:
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
-            service = CaptureServer(authorization, tokenizer=tokenizer, client=client, store=store)
+            service = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=client, store=store)
             await uvicorn.Server(
                 uvicorn.Config(service.app, host=host, port=port, workers=1, access_log=False)
             ).serve()

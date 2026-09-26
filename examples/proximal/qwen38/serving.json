@@ -19,6 +19,13 @@
   "max_loaded_adapters": 4,
   "gateway_secret": "miles-qwen38-gateway",
   "gateway_key_env": "MILES_GATEWAY_KEY",
+  "capture_secret": "miles-qwen38-capture",
+  "cpu": 16,
+  "memory_mib": 65536,
+  "modal_proxy_auth": false,
+  "attention": null,
+  "speculative": null,
+  "kv_cache_dtype": "auto",
   "extra_engine_args": [
     "--mem-fraction-static",
     "0.85"

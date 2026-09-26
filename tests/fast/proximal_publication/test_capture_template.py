@@ -13,7 +13,7 @@ import pytest
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils import get_tito_tokenizer
-from miles_plugins.proximal.capture_server import capture_registry, capture_tokenizer
+from miles_plugins.proximal.capture_server import capture_registry, capture_tokenizer, session_config
 from miles_plugins.proximal.contracts import RunConfig
 
 TOKENIZER = os.environ.get("PROXIMAL_TEST_QWEN38_TOKENIZER")
@@ -77,3 +77,29 @@ def test_capture_refuses_a_tokenizer_without_the_fixed_template():
     with pytest.raises(ValueError, match="fixed chat template"):
         capture_registry(_config(), native)
     capture_registry(_config(), capture_tokenizer(TOKENIZER, "qwen38small"))
+
+
+def test_capture_renders_the_runs_reasoning_effort():
+    # Through capture's own renderer and request path, with the request body capture
+    # forwards (it names enable_thinking only).
+    from miles.rollout.session.request_args import prepare_chat_request
+
+    tokenizer = capture_tokenizer(TOKENIZER, "qwen38small")
+
+    def system_prompt(config: RunConfig) -> str:
+        registry = capture_registry(config, tokenizer)
+        request = {"messages": FIRST_TURN[:2], "tools": TOOLS, "chat_template_kwargs": {"enable_thinking": True}}
+        prepared = prepare_chat_request(
+            request, registry.tito_tokenizer, config=session_config(config), turn_args=None
+        )
+        return tokenizer.apply_chat_template(
+            FIRST_TURN[:2], tokenize=False, add_generation_prompt=True, **prepared.template_args
+        )
+
+    config = _config()
+    assert config.model_protocol.reasoning_effort == "xhigh"
+    assert "Reasoning effort is set to xhigh" in system_prompt(config)
+    low = config.model_copy(
+        update={"model_protocol": config.model_protocol.model_copy(update={"reasoning_effort": "low"})}
+    )
+    assert "Reasoning effort is set to low" in system_prompt(low)

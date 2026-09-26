@@ -17,7 +17,7 @@ def deployment(**overrides):
         "gpu": "H100:2",
         "tensor_parallel": 2,
         "routing_region": "us-west",
-        "min_replicas": 1,
+        "min_replicas": 4,
         "max_replicas": 4,
         "target_concurrency": 8,
         "scaledown_window_seconds": 1200,
@@ -29,8 +29,23 @@ def deployment(**overrides):
         "max_loaded_adapters": 4,
         "gateway_secret": "miles-gateway",
         "gateway_key_env": "MILES_GATEWAY_KEY",
+        "capture_secret": "miles-capture",
+        "cpu": 8,
+        "memory_mib": 32768,
+        "modal_proxy_auth": False,
+        "attention": None,
+        "speculative": None,
+        "kv_cache_dtype": "auto",
     }
     return ServingDeployment.model_validate_json(json.dumps(data | overrides))
+
+
+BLACKWELL_MTP = {
+    "gpu": "B300",
+    "tensor_parallel": 1,
+    "attention": {"backend": "trtllm_mha", "page_size": 64},
+    "speculative": {"algorithm": "NEXTN", "num_steps": 3, "num_draft_tokens": 4},
+}
 
 
 def test_engine_arguments_follow_the_run_lora_contract(config):
@@ -116,3 +131,56 @@ def test_stage_a_example_configs_are_valid():
     # The offline config differs only in where inference goes and its identity.
     differing = {key for key in modal_run.model_fields if getattr(modal_run, key) != getattr(offline, key)}
     assert differing == {"run_id", "inference_url", "inference_header_env"}
+
+
+def test_a_pool_holding_capture_sessions_has_a_fixed_size():
+    with pytest.raises(ValueError, match="set min_replicas equal to max_replicas"):
+        deployment(min_replicas=1)
+
+
+def test_attention_and_speculation_are_rendered_from_the_serving_config(config):
+    args = parse_server_args_argv(engine_argv(config, deployment(**BLACKWELL_MTP)))
+    assert (args.attention_backend, args.page_size) == ("trtllm_mha", 64)
+    assert args.speculative_algorithm in ("NEXTN", "EAGLE")  # SGLang resolves NEXTN to EAGLE.
+    assert (args.speculative_num_steps, args.speculative_eagle_topk, args.speculative_num_draft_tokens) == (3, 1, 4)
+    # Default verification: the rejection-sampling path corrupted samples on this image.
+    assert args.speculative_use_rejection_sampling is False
+    plain = parse_server_args_argv(engine_argv(config, deployment()))
+    assert plain.speculative_algorithm is None and plain.attention_backend is None
+
+
+def test_attention_and_speculation_must_be_stated_explicitly():
+    stated = deployment().model_dump(mode="json")  # null is a choice; leaving the key out is not.
+    for key in ("attention", "speculative", "kv_cache_dtype"):
+        with pytest.raises(ValueError, match=f"{key}\\n  Field required"):
+            ServingDeployment.model_validate_json(json.dumps({k: v for k, v in stated.items() if k != key}))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            BLACKWELL_MTP | {"speculative": {"algorithm": "NEXTN", "num_steps": 3, "num_draft_tokens": 5}},
+            "num_steps \\+ 1",
+        ),
+        (BLACKWELL_MTP | {"gpu": "H200"}, "Blackwell"),
+        (BLACKWELL_MTP | {"attention": {"backend": "trtllm_mha", "page_size": 1}}, "larger than one token"),
+    ],
+)
+def test_serving_config_rejects_unservable_attention_or_speculation(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        deployment(**overrides)
+
+
+def test_extras_cannot_turn_on_speculation_or_change_attention(config):
+    for extra in (["--speculative-algorithm", "NEXTN"], ["--attention-backend", "trtllm_mha"]):
+        with pytest.raises(ValueError, match="non-operational settings"):
+            engine_argv(config, deployment(extra_engine_args=extra))
+
+
+def test_kv_cache_precision_is_rendered_from_the_serving_config(config):
+    assert parse_server_args_argv(engine_argv(config, deployment())).kv_cache_dtype == "auto"
+    fp8 = parse_server_args_argv(engine_argv(config, deployment(**BLACKWELL_MTP, kv_cache_dtype="fp8_e4m3")))
+    assert fp8.kv_cache_dtype == "fp8_e4m3"
+    with pytest.raises(ValueError, match="non-operational settings"):
+        engine_argv(config, deployment(extra_engine_args=["--kv-cache-dtype", "fp8_e4m3"]))

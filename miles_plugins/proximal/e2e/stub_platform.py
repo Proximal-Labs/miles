@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from miles_plugins.proximal.contracts import RunConfig, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, affinity_headers, platform_rollout_id, read_run_config
 
 RewardRule = Literal["mixed", "zero", "one"]
 
@@ -178,6 +178,23 @@ def grade(run_id: str, rule: RewardRule) -> float:
     return float(int(hashlib.sha256(run_id.encode()).hexdigest(), 16) % 2)
 
 
+def _commands(calls: object) -> list[str] | None:
+    """Each tool call's bash command, or None when the reply made no well-formed call."""
+    if not isinstance(calls, list) or not calls:
+        return None
+    commands = []
+    for call in calls:
+        try:
+            arguments = json.loads(call["function"]["arguments"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        command = arguments.get("command") if isinstance(arguments, dict) else None
+        if not isinstance(command, str):
+            return None
+        commands.append(command)
+    return commands
+
+
 class StubPlatform:
     def __init__(
         self, run: RunConfig, *, api_key: str, capture_key: str, reward: RewardRule, client: httpx.AsyncClient
@@ -193,8 +210,9 @@ class StubPlatform:
 
     async def _agent(self, state: RunState) -> None:
         run_id = state.request.run_id
-        url = f"{self.run.capture.url}/rollouts/{run_id}-rollout-0/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {self.capture_key}"}
+        url = f"{self.run.capture.url}/rollouts/{platform_rollout_id(run_id)}/v1/chat/completions"
+        # Like the platform's rollout_capture client: sticky to the replica holding the session.
+        headers = {"Authorization": f"Bearer {self.capture_key}"} | affinity_headers(platform_rollout_id(run_id))
         messages: list[dict[str, object]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -226,15 +244,17 @@ class StubPlatform:
                 messages.append(assistant)
                 state.turns = turn + 1
                 calls = assistant.get("tool_calls") or []
-                if not calls:
+                commands = _commands(calls)
+                if commands is None:
+                    # Like mini-swe, an agent that never acts ends and is graded: a model's
+                    # format failure is not a harness failure.
                     if reminders == FORMAT_REMINDERS:
-                        raise RuntimeError("No tool call after the format reminders")
+                        break
                     reminders += 1
                     messages.append({"role": "user", "content": NO_TOOL_CALL})
                     continue
                 submitted = False
-                for call in calls:  # type: ignore[attr-defined]
-                    command = json.loads(call["function"]["arguments"]).get("command", "")
+                for call, command in zip(calls, commands, strict=True):  # type: ignore[call-overload]
                     submitted = submitted or command.strip() == SUBMISSION_COMMAND
                     result = {"returncode": 0, "output": "" if submitted else "README.md\nsrc\n"}
                     messages.append(

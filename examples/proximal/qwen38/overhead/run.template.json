@@ -1,19 +1,19 @@
 {
-  "run_id": "qwen38-27b-deepswe-001",
+  "run_id": "qwen38-27b-overhead-006",
   "base_model": {
     "name": "Qwen/Qwen3.8-27B",
     "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
   },
   "dataset": {
     "schema_version": 1,
-    "project_id": 519,
+    "project_id": 283,
     "tasks": "GENERATED: training prepare --tasks <tasks file>"
   },
   "harness": {
     "agent_type": "mini-swe",
     "revision": "695e097df0805d697e906bb5ad0fd8580813c11b",
-    "max_turns": 30,
-    "timeout_seconds": 3600,
+    "max_turns": 200,
+    "timeout_seconds": 10800,
     "p2p_enforce": false
   },
   "research": {
@@ -30,15 +30,15 @@
       "temperature": 1.0,
       "top_p": 1.0,
       "top_k": -1,
-      "max_tokens": 8192,
-      "max_sequence_tokens": 32768,
+      "max_tokens": 32768,
+      "max_sequence_tokens": 262144,
       "logprob_semantics": "untransformed",
       "budget_policy": "cap_to_remaining_context"
     },
-    "group_size": 4,
+    "group_size": 8,
     "max_policy_lag": 1,
     "unused_groups": "retry",
-    "max_consecutive_failed_groups": 5
+    "max_consecutive_failed_groups": 16
   },
   "platform": {
     "url": "https://backend-public-bc16.onrender.com",
@@ -50,7 +50,7 @@
   },
   "capture": {
     "url": "https://REPLACE_WITH_DEPLOYED_SERVING_URL",
-    "api_key_env": "MILES_CAPTURE_ADMIN_KEY",
+    "api_key_env": "MILES_GATEWAY_KEY",
     "platform_key_env": "MILES_CAPTURE_PLATFORM_KEY"
   },
   "inference_url": "https://REPLACE_WITH_DEPLOYED_SERVING_URL",
@@ -77,7 +77,7 @@
     "reasoning_effort": "xhigh"
   },
   "max_in_flight_samples": 64,
-  "completed_group_capacity": 32,
+  "completed_group_capacity": 8,
   "request_timeout_seconds": 3600,
   "poll_interval_seconds": 5.0
 }

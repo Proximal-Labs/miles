@@ -19,9 +19,12 @@ from miles_plugins.proximal.contracts import (
     Grade,
     Policy,
     PolicyEvidence,
+    ServingContract,
     SessionHandle,
+    affinity_headers,
     digest,
     pinned_dataset,
+    platform_rollout_id,
 )
 
 
@@ -74,7 +77,14 @@ async def request(
         try:
             response = await client.request(method, url, headers=headers, json=body, follow_redirects=False)
             if response.status_code not in (429, 502, 503, 504) or attempt == 2:
-                response.raise_for_status()
+                if response.is_error:
+                    # Keep the service's stated reason (our capture's or the platform's
+                    # error text); never headers.
+                    raise httpx.HTTPStatusError(
+                        f"{response.status_code} for {method} {url}: {response.text[:300]}",
+                        request=response.request,
+                        response=response,
+                    )
                 return response
         except httpx.TransportError:
             if attempt == 2:
@@ -91,20 +101,36 @@ class CaptureClient:
         self.url = self.config.capture.url
 
     async def create(self, attempt: Attempt) -> SessionHandle:
+        rollout = platform_rollout_id(attempt.attempt_id)
         response = await request(
-            self.client, "POST", f"{self.url}/sessions", headers=self.headers, body=attempt.model_dump(mode="json")
+            self.client,
+            "POST",
+            f"{self.url}/sessions",
+            headers=self.headers | affinity_headers(rollout),
+            body=attempt.model_dump(mode="json"),
         )
         handle = SessionHandle.model_validate_json(response.content)
-        expected = f"{self.url}/rollouts/{attempt.attempt_id}-rollout-0/v1"
-        if handle.request_sha256 != digest(attempt) or handle.base_url != expected:
+        expected = f"{self.url}/rollouts/{rollout}/v1"
+        if handle.request_sha256 != digest(attempt) or handle.rollout_id != rollout or handle.base_url != expected:
             raise ValueError("Session service returned a mismatched binding")
         return handle
+
+    async def serving_contract(self, affinity: str) -> ServingContract:
+        """What the replica this affinity key routes to was deployed with."""
+        response = await request(
+            self.client, "GET", f"{self.url}/capture/contract", headers=self.headers | affinity_headers(affinity)
+        )
+        return ServingContract.model_validate_json(response.content)
 
     def _session(self, handle: SessionHandle) -> str:
         return f"{self.url}/sessions/{handle.session_id}"
 
+    def _headers(self, handle: SessionHandle) -> dict[str, str]:
+        # The replica that holds the session; see contracts.AFFINITY_HEADER.
+        return self.headers | affinity_headers(handle.rollout_id)
+
     async def collect(self, handle: SessionHandle, attempt: Attempt) -> tuple[CaptureReceipt, bytes]:
-        response = await request(self.client, "POST", f"{self._session(handle)}/seal", headers=self.headers)
+        response = await request(self.client, "POST", f"{self._session(handle)}/seal", headers=self._headers(handle))
         receipt = CaptureReceipt.model_validate_json(response.content)
         if (
             receipt.session_id != handle.session_id
@@ -112,13 +138,15 @@ class CaptureClient:
             or receipt.policy != attempt.policy
         ):
             raise ValueError("Sealed capture provenance differs from the attempt")
-        payload = (await request(self.client, "GET", f"{self._session(handle)}/samples", headers=self.headers)).content
+        payload = (
+            await request(self.client, "GET", f"{self._session(handle)}/samples", headers=self._headers(handle))
+        ).content
         if hashlib.sha256(payload).hexdigest() != receipt.payload_sha256:
             raise ValueError("Sealed capture payload checksum mismatch")
         return receipt, payload
 
     async def release(self, handle: SessionHandle) -> None:
-        await request(self.client, "DELETE", self._session(handle), headers=self.headers)
+        await request(self.client, "DELETE", self._session(handle), headers=self._headers(handle))
 
 
 class ServingPoolClient:

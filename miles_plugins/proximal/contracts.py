@@ -101,9 +101,14 @@ class Research(Contract):
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 # Chat-template families capture can render with (Miles's --tito-model). Each binds the
 # SGLang reasoning and tool-call parsers the replicas must use (check_tito_protocol).
-# Inkling is not listed: its template also takes reasoning_effort, which capture does
-# not yet pass.
+# Inkling is not listed: its template takes a numeric reasoning_effort, which has no
+# platform equivalent.
 TitoModel = Literal["qwen3", "qwen35", "qwen36", "qwen38small", "qwennext"]
+# The efforts a family's fixed template renders. Capture passes the run's effort to
+# these templates; a family not listed renders none.
+TEMPLATE_REASONING_EFFORTS: dict[str, frozenset[str]] = {
+    "qwen38small": frozenset({"xhigh", "medium", "low"}),
+}
 
 
 class ModelProtocol(Contract):
@@ -113,7 +118,8 @@ class ModelProtocol(Contract):
 
     reasoning_parser: Nonempty
     tool_call_parser: Nonempty
-    # Sent to the platform for every run; capture rejects a model call asking otherwise.
+    # Sent to the platform for every run; capture rejects a model call asking otherwise
+    # and renders it through the template (TEMPLATE_REASONING_EFFORTS).
     reasoning_effort: ReasoningEffort
 
 
@@ -194,6 +200,12 @@ class RunConfig(Contract):
         forbidden = {"host", "content-length", "transfer-encoding", "x-proximal-policy-sha256"}
         if any(name.lower() in forbidden for name in self.inference_header_env):
             raise ValueError("Invalid inference authentication header")
+        rendered = TEMPLATE_REASONING_EFFORTS.get(self.tito_model)
+        if rendered is not None and self.model_protocol.reasoning_effort not in rendered:
+            raise ValueError(
+                f"The {self.tito_model} template renders reasoning effort {', '.join(sorted(rendered))}, "
+                f"not {self.model_protocol.reasoning_effort!r}"
+            )
         return self
 
 
@@ -235,6 +247,57 @@ def training_contract(config: RunConfig) -> TrainingContract:
     )
 
 
+class ServingContract(Contract):
+    """What a serving deployment binds for every run it serves: the base model, how its
+    capture renders and parses turns, the adapter shape its engines load, and its
+    sequence ceiling.
+
+    Everything else about a run (run id, tasks, harness, token budgets within the
+    ceiling) travels with each session's attempt, so a new run on the same deployment
+    needs no redeploy. Changing any field here does: the replicas were started with it.
+    """
+
+    base_model: BaseModelIdentity
+    tokenizer: Nonempty
+    tito_model: TitoModel
+    enable_thinking: bool
+    model_protocol: ModelProtocol
+    lora_rank: Positive
+    lora_target_modules: tuple[Nonempty, ...]
+    max_sequence_tokens: Positive
+
+
+def serving_contract(config: RunConfig) -> ServingContract:
+    return ServingContract(
+        base_model=config.base_model,
+        tokenizer=config.tokenizer_path.name,
+        tito_model=config.tito_model,
+        enable_thinking=config.enable_thinking,
+        model_protocol=config.model_protocol,
+        lora_rank=config.research.lora.rank,
+        lora_target_modules=config.research.lora.target_modules,
+        max_sequence_tokens=config.research.sampling.max_sequence_tokens,
+    )
+
+
+def serving_mismatches(config: RunConfig, deployed: ServingContract) -> list[str]:
+    """Why a deployment cannot serve this run; empty when it can."""
+    run = serving_contract(config)
+    same = ("base_model", "tokenizer", "tito_model", "enable_thinking", "model_protocol", "lora_target_modules")
+    reasons = [
+        f"{name}: the run has {getattr(run, name)!r}, the deployment {getattr(deployed, name)!r}"
+        for name in same
+        if getattr(run, name) != getattr(deployed, name)
+    ]
+    if run.lora_rank > deployed.lora_rank:
+        reasons.append(f"lora rank {run.lora_rank} exceeds the deployment's maximum {deployed.lora_rank}")
+    if run.max_sequence_tokens > deployed.max_sequence_tokens:
+        reasons.append(
+            f"max_sequence_tokens {run.max_sequence_tokens} exceeds the deployment's {deployed.max_sequence_tokens}"
+        )
+    return reasons
+
+
 class Policy(Contract):
     run_id: SafeId
     version: Positive
@@ -260,11 +323,34 @@ class Attempt(Contract):
         return self
 
 
+# The platform names a run's rollouts ``<run id>-rollout-<index>``; Miles runs have one.
+ROLLOUT_SUFFIX = "-rollout-0"
+
+# Modal routes requests that carry the same ``Modal-Session-Id`` to the same container.
+# Capture keeps each rollout's token history in the replica that serves it, so every
+# caller of a rollout's routes sends this header: the trainer (create, seal, fetch,
+# release) and the platform's agent (chat calls, from the registry's rollout_capture
+# client). The value is the SHA-256 of the platform rollout ID, on both sides.
+AFFINITY_HEADER = "Modal-Session-Id"
+
+
+def platform_rollout_id(attempt_id: str) -> str:
+    """The platform rollout ID of an attempt's single-instance run."""
+    return f"{attempt_id}{ROLLOUT_SUFFIX}"
+
+
+def affinity_headers(rollout_id: str) -> dict[str, str]:
+    """Pin every call for one rollout to the replica that holds its session."""
+    return {AFFINITY_HEADER: hashlib.sha256(rollout_id.encode()).hexdigest()}
+
+
 class SessionHandle(Contract):
     """A registered attempt's capture session. ``base_url`` is the rollout route the
-    platform derives for this run; no per-session credential leaves Miles."""
+    platform derives for this run; no per-session credential leaves Miles. Calls about
+    the session carry ``affinity_headers(rollout_id)``."""
 
     session_id: SafeId
+    rollout_id: Nonempty
     base_url: Endpoint
     request_sha256: Digest
 

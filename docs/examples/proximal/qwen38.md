@@ -3,22 +3,33 @@ title: "Qwen3.8-27B on real platform rollouts"
 description: "Qwen3.8-27B trained on real Proximal platform rollouts (DeepSWE tasks) from a Modal training node and replicas."
 # Generated from examples/proximal/qwen38/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
-The first run against the real Proximal platform. Miles trains `Qwen/Qwen3.8-27B` on DeepSWE feature tasks. Each rollout is a real mini-swe session in a platform sandbox: agent-px calls capture through an HTTPS tunnel, and the platform grades the rollout.
+The first run against the real Proximal platform. Miles trains `Qwen/Qwen3.8-27B` on DeepSWE feature tasks. Each rollout is a real mini-swe session in a platform sandbox: agent-px calls capture in the serving replica that holds the rollout's session, and the platform grades the rollout.
 
 | Part | Here |
 | --- | --- |
-| Training node | Modal 1× 8 H200 (`modal_training` with `training.json`, platform `real`): Megatron LoRA trainer at TP 4, capture, rollout store |
-| Serving | Modal 2× H200 (`serving_app`), one replica per GPU |
-| Platform | Production: runs created with the run config's platform key; rollout workers call capture through the node's tunnel |
+| Training node | Modal 1× 8 H200 (`modal_training` with `training.json`, platform `real`): Megatron LoRA trainer at TP 4, rollout store |
+| Serving | Modal 2× H200 (`serving_app`), one replica per GPU. Each replica runs SGLang and a front process with the gateway and capture. |
+| Platform | Production: runs created with the run config's platform key; rollout workers call the pool's URL, and sticky routing sends each rollout's calls to one replica |
 | Tasks | `tasks-pilot.json`: 41 tasks from project 519 / DeepSWE. It combines "3.8 good passrate" (13), "3.5 flash medium" (8) and the first 20 of "3.5 flash hard". `tasks-hard.json` holds all 348 "3.5 flash hard" tasks: gpt-5.5 solves more than 75% of rollouts on the newest image, and gemini-3.5 solved 1–2 of 8. |
 
 ## Settings and why
 
-- **Chat template and parsers:** the template family is `qwen38small`, which Miles's own tests use with the 27B. The replicas use the `qwen3_coder` tool-call parser and the `qwen3` reasoning parser. Thinking is on, with reasoning effort `high`.
+- **Chat template and parsers:** the template family is `qwen38small`, which Miles's own tests use with the 27B. The replicas use the `qwen3_coder` tool-call parser and the `qwen3` reasoning parser. Thinking is on, with reasoning effort `xhigh`. Capture renders the run's effort through the template, and a run config naming an effort the template can't render (it takes `xhigh`, `medium` or `low`) is rejected.
 - **MLP-only LoRA (rank 32).** In this Miles version, Qwen3.5 and Qwen3.8 train their attention and Gated DeltaNet projections as separate Hugging Face-style layers, while SGLang serves them fused (`in_proj_qkvz`, `in_proj_ba`, fused QKV). Adapters on those layers are not yet verified to load on the replicas. The MLP layers use the same mapping proven on Qwen3-0.6B.
 - **Batch:** 8 tasks × 4 samples = 32 rollouts per step, one optimizer update per step. The Miles recipe uses 1 node × 8 GPUs at TP 4.
 - **Limits:** mini-swe with `max_turns` 30, 8k tokens per turn, 32k per sequence, and 64 samples in flight. At that concurrency, per-attempt polling is cheap.
-- **Routing:** `platform_route.endpoint_name` is unset, so the platform routes the model's calls to its *default* registry endpoint. Each start of the node registers a new endpoint as the default.
+- **Routing:** `platform_route.endpoint_name` is unset, so the platform routes the model's calls to its *default* registry endpoint: the serving pool's URL, registered once per pool.
+
+## Capture in the replicas
+
+Capture keeps each rollout's exact token history and calls SGLang for every turn, so it runs where SGLang runs:
+- **Per call**, the path is agent-px → the pool's URL → the replica's front process → SGLang on localhost. The training node is not on it. Measured with capture on the training node instead (which Modal placed in eu-north-1 while the replicas ran in us-west), each call paid about 1.6 s outside SGLang; about 0.9 s of that was capture's round trip to the replica.
+- **Sticky routing.** Modal sends requests carrying the same `Modal-Session-Id` to the same container. The trainer and the platform's `rollout_capture` client both send the SHA-256 of the platform rollout ID (`contracts.AFFINITY_HEADER`). A call that reaches a replica without the rollout's session fails with 404 and the rollout is retried; the timing log records each call's container so the routing can be checked. With one replica routing is trivially sticky.
+- **Once per rollout**, the trainer seals the session and fetches its samples from the replica, and writes them to its rollout store; it remains the store's only writer. Until fetched, sealed samples live only on the replica's disk: a replica lost in between loses those rollouts, and they are retried.
+- **Abandoned sessions expire.** Replicas outlive the trainer, so a trainer that crashes leaves its sessions open. A session older than the rollout timeout, one model request and ten minutes is released when a new session opens.
+- **Fixed pool size.** `min_replicas` equals `max_replicas`: scaling a replica down would drop the sessions it holds.
+- **CPU.** Each replica requests `cpu` cores for SGLang's processes and the front process, and the front process runs at lower scheduling priority than SGLang, so capture never delays SGLang's step loop.
+- **One run per pool.** Capture enforces the run's contract (tasks, harness, sampling), so the pool is deployed with the same run config as the trainer, and a changed run config means redeploying the pool.
 
 ## Checked without paid resources
 
@@ -41,13 +52,37 @@ Before the pilot, `smoke/` runs one training step with 1 task × 4 samples:
 The step checks, in order:
 1. The replica loads the step-0 adapter (Miles publishes it before any rollout).
 2. Qwen3.8's tool calls parse in mini-swe.
-3. Platform rollout workers reach the tunnel.
+3. Platform rollout workers reach capture in the replica.
 4. The platform grades the 4 rollouts and they land in the store.
 5. Megatron loads the 27B and trains one LoRA step, then publishes version 1 and exits.
 
-The smoke deployment has `max_retries` 0, so a failure stops the run rather than holding GPUs while it waits for a new registration. Its registration timeout is 20 minutes. It uses its own run id (and so its own snapshots) and W&B group.
+The smoke deployment has `max_retries` 0, so a failure stops the run rather than retrying it. Its registration timeout is 20 minutes. It uses its own run id (and so its own snapshots) and W&B group.
 
 Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.template.json` with `smoke/tasks.json`, and `smoke/training.json`. Volumes, secrets and the staged base are shared with the pilot.
+
+## Overhead run (`overhead/`)
+
+Measures what capture adds to each model call on real platform traffic, on the topology closest to the final one. The same four "3.5 flash hard" environments (`overhead/tasks.json`) run 8 rollouts each on every step, for 10 steps, with mini-swe allowed 200 turns:
+- **Serving:** 8 replicas, each on 1 × B300 with an FP8 KV cache (the 27B plus about 3.2M tokens of KV), one inference GPU per training GPU. Capture runs in each, and the platform's rollout_capture client pins every rollout's calls to one replica (`Modal-Session-Id`, proximal-mono #4726). The 64 rollouts in flight grow about 2k tokens a turn toward 228k, so near their end they need about 12M tokens of KV: 8 per replica keeps each rollout's context cached with room for uneven routing. With 2 replicas (32 each) the cache filled by turn 25 and requests queued behind re-computed prefixes.
+- **Serving settings** (`serving.json`, `attention` and `speculative`): trtllm_mha attention with 64-token KV pages, and speculative decoding with Qwen3.8's own MTP head (NEXTN, 3 draft steps) under SGLang's default verification, and an FP8 KV cache (`kv_cache_dtype`) with 2k prefill chunks: the per-GPU recipe of proximal-mono's `infra/modal/qwen3-8-27b` (PR #4841, BF16 weights and fp32 Gated DeltaNet state). FP8 KV is the one setting that changes numerics against the BF16 trainer; watch the rollout/train logprob gap. Left to itself SGLang serves this hybrid model on Blackwell with Triton attention and one-token pages. Measured 2026-09-25 by replaying 150 real agent turns (recorded prefills and output lengths, 1 s tool gaps, prompts ~55k tokens, a non-zero LoRA adapter), ten rollouts per GPU:
+
+  | Serving | Model call p50 / p90 | Output tok/s per GPU |
+  | --- | --- | --- |
+  | SGLang's choice (run 003) | 9.4 / 46 s | ~91 |
+  | trtllm_mha, one GPU | 4.7 / 24 s | 188 |
+  | trtllm_mha, TP2 | 4.2 / 22 s | 259 |
+  | trtllm_mha + MTP, one GPU | 2.4 / 12 s | 362 |
+  | trtllm_mha + MTP, TP2 | 2.1 / 11 s | 526 |
+
+  Sampling is checked, not assumed: 600 five-token samples per prompt against serving without speculation. With default verification no token fell outside what exact sampling produced and sampled-token logprobs stayed within noise. With `--speculative-use-rejection-sampling` about 2% of speculated tokens were ones the model gives logprob -24 to -34, random multilingual tokens mid-sentence ("These tests aren 则表示 about"), so that path is not used. Returned logprobs match teacher-forced ones either way.
+- **Trainer:** 8 × B300 at TP 4 with two data-parallel ranks, with sequences up to 256k tokens. A 262k-token micro-batch needs about 155 GB on one GPU, which ran out of memory on H200. Log-probs are chunked and the loss is recomputed, so the 256k × vocabulary logits never exist at once. There is no context parallelism yet: Megatron-Bridge's Qwen3-VL model, which Qwen3.8 uses, needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's text-only path does not provide them.
+- **Credentials:** replicas take capture's platform key from `miles-platform`. Capture's control credential is the gateway key, which only the trainer and the replicas hold.
+- **Failure budget:** 16 consecutive failed groups.
+- **Trainer replay before paying for rollouts** (`miles_plugins/proximal/e2e/trainer_replay.py`): the production trainer on mock agent-shaped rollouts (model spans trained, tool outputs masked, mixed rewards per group) through Miles's `--load-debug-rollout-data`. On 8 × B300 (2026-09-26): a realistic batch (32 samples, mean 153k tokens) trained in 17 min and a stress batch (mean 227k) in 13 min, checkpoints included. Without `cuda_allocator: expandable_segments` the first step ran out of memory on a 30 GiB logits buffer with 37 GiB reserved but unallocated.
+- **Determinism is off for this trainer** (`training.json`, `deterministic_kernels: false`). FlashAttention's SM100 backward for Qwen3.8's 256-wide heads has no deterministic mode; with it forced (run 004) step 1 failed in the backward pass after a clean forward over ~147k-token samples.
+- **Running out of context ends a rollout cleanly.** Capture answers a turn that cannot fit (its own budget check, or SGLang's "maximum context length" / "longer than the model's context length") with OpenAI's `context_length_exceeded` error, which agent-px turns into a budget stop and the platform grades. Before, SGLang's flat error body reached agent-px as "400 status code (no body)", the rollout failed, the platform's retry was refused by capture, and the trainer dropped the whole group (run 004: 2 such rollouts, at turns 128 and 144, cost two groups).
+
+Capture's timing log on each replica, joined with the agent journal by response id, splits each call's time outside SGLang. Use the `overhead/` files in steps 3–6 below.
 
 ## Paid steps, in order (workspace `proximal`, environment `main`)
 
@@ -57,25 +92,36 @@ Use the `smoke/` files in steps 3–6 below: `smoke/serving.json`, `smoke/run.te
    modal volume create miles-qwen38-adapters --env main
    modal volume create miles-qwen38-state --env main
    modal secret create miles-qwen38-gateway MILES_GATEWAY_KEY=$(openssl rand -hex 32) --env main
-   # The platform API key, and the capture key the platform's rollout workers send
-   # (the same value as MILES_CAPTURE_PLATFORM_KEY in the platform's worker secrets).
-   modal secret create miles-platform PROXIMAL_PLATFORM_API_KEY=... MILES_CAPTURE_PLATFORM_KEY=... --env main
+   # Capture's credentials, for the replicas and the trainer: the trainer's control key,
+   # and the key the platform's rollout workers send (the same value as
+   # MILES_CAPTURE_PLATFORM_KEY in the platform's worker secrets).
+   modal secret create miles-qwen38-capture MILES_CAPTURE_ADMIN_KEY=$(openssl rand -hex 32) MILES_CAPTURE_PLATFORM_KEY=... --env main
+   # The platform API key the trainer creates runs with.
+   modal secret create miles-platform PROXIMAL_PLATFORM_API_KEY=... --env main
    ```
    The proxy and W&B secrets from the gsm8k run are reused.
 2. **Stage the base model** (about 55 GB), using `e2e.stage_base` with this directory's `serving.json`.
-3. **Deploy the replicas** with `serving_app`, and note the pool URL.
-4. **Write the run config** (tasks pinned by the platform's image and commit):
+3. **Write the run config** (tasks pinned by the platform's image and commit), with the pool's URL (`https://proximal--miles-qwen38-serving-replica.us-west.modal.direct`) as both `inference_url` and `capture.url`:
    ```bash
    python -m miles_plugins.proximal.training prepare --template examples/proximal/qwen38/run.template.json \
      --tasks examples/proximal/qwen38/tasks-pilot.json --inference-url <pool URL> --out run.json
    python -m miles_plugins.proximal.training check --config run.json --training examples/proximal/qwen38/training.json
    ```
-5. **Real-SGLang check:** run gsm8k through the pool with this model (a copy of the gsm8k run template with this model, template family and parsers) before creating platform runs.
+4. **Deploy the replicas** with `serving_app` and a `run.json`. A deployment binds only its serving contract (`contracts.ServingContract`: base model, tokenizer, chat-template family, thinking, model protocol including reasoning effort, LoRA shape, and the sequence ceiling). Run id, tasks, harness and token budgets within the ceiling travel with each session, so later runs that fit reuse the deployment without a redeploy. Changing a contract field needs one, and a redeploy keeps live replicas on their old config: `modal app stop miles-qwen38-serving` first.
+5. **Register the pool once:** make the pool's URL the default `rollout_capture` endpoint of `miles/qwen38-27b`, from proximal-mono (it writes the production registry):
+   ```bash
+   pnpm tsx packages/backend/scripts/modal/switch-endpoint.ts --model miles/qwen38-27b \
+     --register miles-qwen38-serving-ctx<max_sequence_tokens>-out<max_tokens> --set-default miles-qwen38-serving-ctx<max_sequence_tokens>-out<max_tokens> \
+     --kind rollout_capture --base-url <pool URL> --wire-model Qwen/Qwen3.8-27B --api-key-env MILES_CAPTURE_PLATFORM_KEY \
+     --context-window-tokens <max_sequence_tokens> --max-output-tokens <max_tokens> --apply
+   ```
+   The endpoint carries the run's token budget (proximal-mono #4760): the platform sizes each solve from it, so mini-swe stops at (context − max output) × 0.9, before capture's cap. The node checks both the URL and the budget. Endpoints can't be edited in place, so the name carries both budgets.
 6. **Start the training node.**
    ```bash
    PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=examples/proximal/qwen38/serving.json \
    PROXIMAL_TRAINING_CONFIG=examples/proximal/qwen38/training.json \
      modal run --detach --env main -m miles_plugins.proximal.modal_training
    ```
-   The node opens its capture tunnel and prints a `switch-endpoint.ts` command. Run it from proximal-mono (it writes the production registry, `--apply`). The node polls the registry and creates platform runs only once `miles/qwen38-27b`'s default endpoint is its tunnel. A restart after a crash opens a new tunnel and prints a new command.
+   The node creates platform runs only once `miles/qwen38-27b`'s default endpoint is the pool's URL; until then it prints the registration command from step 5. The registration survives node restarts.
+   Before it starts the trainer, the node checks that the replicas it reaches were deployed with a serving contract this run fits (`preflight.check_serving`; it waits for replicas that are still starting). After the first policy is published and before any platform run, a canary opens a real capture session: one model call is sealed as a sample, and a turn past the sequence budget must come back as OpenAI's `context_length_exceeded`, which agent-px ends as a graded rollout (`preflight.canary`). Either failure stops the node within a few minutes of launch instead of deep into a run.
 7. **Tear down:** `modal app stop miles-qwen38-training --env main` and `modal app stop miles-qwen38-serving --env main`.

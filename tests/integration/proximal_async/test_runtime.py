@@ -63,6 +63,9 @@ async def test_existing_async_worker_overlaps_consumption_and_cancels_children(
     gate = asyncio.Event()
 
     class Producer(PlatformRolloutFn):
+        async def _preflight(self):  # No capture here; test_preflight covers the canary.
+            return None
+
         async def _generate_group(self, prompt_group):
             nonlocal started
             started += 1

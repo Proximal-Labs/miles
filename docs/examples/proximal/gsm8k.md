@@ -9,8 +9,8 @@ modules, lr 1e-5, 32 prompts × 8 samples), on the same topology as platform tra
 
 | Part | Here |
 | --- | --- |
-| Training node | Modal 1× H100 (`modal_training` with `training.json`): Megatron LoRA trainer, capture service, rollout store, gsm8k platform |
-| Serving | Modal 2× L4 (`serving_app`), loading each published version from the adapter Volume |
+| Training node | Modal 1× H100 (`modal_training` with `training.json`): Megatron LoRA trainer, rollout store, gsm8k platform |
+| Serving | Modal 2× L4 (`serving_app`), loading each published version from the adapter Volume; capture runs in each replica |
 | Platform | `math_platform`: the platform's run API; each run is one gsm8k problem, one Chat Completions call through capture, graded with Miles's `math` reward |
 
 Swapping `platform.url` for the real platform (and the dataset for real tasks) is the platform run.
@@ -44,6 +44,7 @@ test image so SGLang and this fork are importable.
    modal secret create miles-gsm8k-gateway MILES_GATEWAY_KEY=$(openssl rand -hex 32) --env main
    modal secret create miles-gsm8k-proxy MODAL_PROXY_KEY=wk-... MODAL_PROXY_SECRET=ws-... --env main
    modal secret create miles-gsm8k-wandb WANDB_API_KEY=... --env main
+   modal secret create miles-gsm8k-capture GSM8K_CAPTURE_KEY=$(openssl rand -hex 32) GSM8K_CAPTURE_PLATFORM_KEY=$(openssl rand -hex 32) --env main
    ```
 2. **Stage the base model and the data** (small CPU jobs).
    ```bash
@@ -52,15 +53,16 @@ test image so SGLang and this fork are importable.
    PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=examples/proximal/gsm8k/serving.json \
      modal run --env main -m miles_plugins.proximal.e2e.stage_gsm8k --revision 0cbd9f31d91ac21a7613dcbc7fef992adac459ae
    ```
-3. **Deploy the two replicas** and note the printed URL.
-   ```bash
-   PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=examples/proximal/gsm8k/serving.json \
-     modal deploy --env main -m miles_plugins.proximal.serving_app
-   ```
-4. **Write the run config** with the pool URL (tasks are pinned to the dataset file's hash).
+3. **Write the run config** with the pool's URL, `https://proximal--miles-gsm8k-serving-replica.us-west.modal.direct`
+   (tasks are pinned to the dataset file's hash; the URL is both `inference_url` and `capture.url`).
    ```bash
    python -m miles_plugins.proximal.e2e.math_platform prepare --data train.parquet \
      --template examples/proximal/gsm8k/run.template.json --inference-url <pool URL> --out run.json
+   ```
+4. **Deploy the two replicas** with that run config: capture in the replicas enforces it.
+   ```bash
+   PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=examples/proximal/gsm8k/serving.json \
+     modal deploy --env main -m miles_plugins.proximal.serving_app
    ```
 5. **Real-SGLang check** before the trainer: the Stage A launcher with the fake trainer
    against the pool (`--publish modal`), a couple of steps.

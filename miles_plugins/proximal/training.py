@@ -4,12 +4,15 @@
 The platform is explicit:
 
 - ``gsm8k``: the stand-in platform (``e2e.math_platform``) runs on loopback in the
-  training container and grades gsm8k problems. Capture is loopback-only.
+  training container and grades gsm8k problems; its agent calls capture in the pool.
 - ``real``: runs are created on the Proximal platform named by the run config. Its
-  rollout workers reach capture through an HTTPS tunnel opened by the training node.
-  Each start registers that tunnel as the platform model's default ``rollout_capture``
-  endpoint (an operator runs the printed ``switch-endpoint`` command); the node creates
-  no runs until the registry points at its tunnel.
+  rollout workers call capture in the serving pool directly. The pool's URL is the
+  platform model's default ``rollout_capture`` endpoint, registered once per pool (an
+  operator runs the printed ``switch-endpoint`` command); the node creates no runs
+  until the registry points at the pool.
+
+Either way capture runs in the serving replicas, so the run config's ``capture.url`` is
+the pool's URL (``inference_url``).
 
 This module has no Modal dependency, so the registry checks are testable offline.
 """
@@ -45,9 +48,23 @@ class TrainingDeployment(Contract):
     gpu: Nonempty  # Modal GPU spec, e.g. "H200:8".
     num_gpus: Positive  # GPUs Ray may schedule; must match the spec's count.
     cpu: Positive
+    # Host memory reserved for the node: Megatron's host-side buffers, Ray's object store
+    # and the rollout store. Unset, Modal's default is far too small for a training step
+    # (8 x B300 at 256k was killed for running out of host memory).
+    memory_mib: Positive
     # Modal retries after a crash; each resumes from the latest snapshot. A real-platform
     # retry opens a new tunnel and waits, holding its GPUs, for a new registration.
     max_retries: Annotated[int, Field(ge=0)]
+    # Deterministic kernels and collectives (NCCL ring, cuBLAS workspace, no
+    # nondeterministic Transformer Engine algorithms): reproducible steps, at some speed.
+    # FlashAttention's SM100 backward for 256-wide heads (Qwen3.8 on Blackwell) has no
+    # deterministic mode, so that combination must set false.
+    deterministic_kernels: bool
+    # PyTorch's CUDA allocator. expandable_segments returns fragmented reserve to large
+    # requests (Qwen3.8 at 256k: a 30 GiB logits buffer failed with 37 GiB reserved but
+    # unallocated); it breaks torch_memory_saver, which only a colocated or offloading
+    # trainer uses.
+    cuda_allocator: Literal["default", "expandable_segments"]
     # Model args script under scripts/models (without ``.py``), e.g. "qwen3.8-27B".
     model_args: Nonempty
     # Miles training arguments file, relative to the repository root.
@@ -66,6 +83,8 @@ def check_deployment(run: RunConfig, deployment: TrainingDeployment) -> None:
     count = int(deployment.gpu.rpartition(":")[2]) if ":" in deployment.gpu else 1
     if count != deployment.num_gpus:
         raise ValueError(f"gpu {deployment.gpu!r} provides {count} GPUs, but num_gpus is {deployment.num_gpus}")
+    if run.capture.url != run.inference_url:
+        raise ValueError("Capture runs in the serving replicas; capture.url must be the pool's inference_url")
     loopback_platform = run.platform.url.startswith(("http://127.0.0.1", "http://localhost"))
     if isinstance(deployment.platform, Gsm8kPlatform) and not loopback_platform:
         raise ValueError("The gsm8k platform runs on loopback; point platform.url at it")
@@ -74,8 +93,8 @@ def check_deployment(run: RunConfig, deployment: TrainingDeployment) -> None:
             raise ValueError("A real platform run needs the platform's URL, not loopback")
         if run.platform_route.endpoint_name is not None:
             raise ValueError(
-                "A real platform run registers a new endpoint each start and routes by the model's default "
-                "endpoint; leave platform_route.endpoint_name unset"
+                "A real platform run routes by the model's default endpoint, the registered pool; "
+                "leave platform_route.endpoint_name unset"
             )
 
 
@@ -99,8 +118,8 @@ def check_train_args(deployment: TrainingDeployment, text: str) -> None:
         )
 
 
-def registered_capture_url(registry_json: str, model: str, endpoint_name: str | None) -> str | None:
-    """The base URL the platform routes ``model`` to, if it is a rollout-capture endpoint."""
+def registered_capture_endpoint(registry_json: str, model: str, endpoint_name: str | None) -> dict[str, object] | None:
+    """The rollout-capture endpoint record the platform routes ``model`` to, if any."""
     config = json.loads(registry_json)
     entry = config.get("models", {}).get(model)
     if not isinstance(entry, dict):
@@ -109,8 +128,30 @@ def registered_capture_url(registry_json: str, model: str, endpoint_name: str | 
     endpoint = entry.get("endpoints", {}).get(name)
     if not isinstance(endpoint, dict) or endpoint.get("kind") != "rollout_capture":
         return None
-    url = endpoint.get("baseURL")
-    return url if isinstance(url, str) else None
+    return endpoint
+
+
+def routes_to_pool(registry_json: str, run: RunConfig) -> bool:
+    """Whether the platform routes the run's model to its pool with the run's token budget.
+
+    The platform sizes each solve from the endpoint's budget (mini-swe stops at
+    (context - max output) x 0.9), so a stale budget would let rollouts run past the
+    run's sequence cap, or stop them early.
+    """
+    endpoint = registered_capture_endpoint(registry_json, run.platform_route.model, run.platform_route.endpoint_name)
+    sampling = run.research.sampling
+    return (
+        endpoint is not None
+        and endpoint.get("baseURL") == run.capture.url
+        and endpoint.get("contextWindowTokens") == sampling.max_sequence_tokens
+        and endpoint.get("maxOutputTokens") == sampling.max_tokens
+    )
+
+
+def pool_endpoint_name(app_name: str, run: RunConfig) -> str:
+    """Registry endpoints can't be edited in place, so the name carries the budget."""
+    sampling = run.research.sampling
+    return f"{app_name}-ctx{sampling.max_sequence_tokens}-out{sampling.max_tokens}"
 
 
 def fetch_registry(platform_url: str, api_key: str, timeout_seconds: float = 30) -> str:
@@ -128,13 +169,15 @@ def fetch_registry(platform_url: str, api_key: str, timeout_seconds: float = 30)
     return value
 
 
-def registration_command(run: RunConfig, endpoint: str, tunnel_url: str) -> str:
-    """The proximal-mono command that makes this node's tunnel the model's default endpoint."""
+def registration_command(run: RunConfig, endpoint: str, pool_url: str) -> str:
+    """The proximal-mono command that makes the pool's capture the model's default endpoint."""
     return (
         "pnpm tsx packages/backend/scripts/modal/switch-endpoint.ts "
         f"--model {run.platform_route.model} --register {endpoint} --set-default {endpoint} "
-        f"--kind rollout_capture --base-url {tunnel_url} --wire-model {run.base_model.name} "
-        f"--api-key-env {run.capture.platform_key_env} --apply"
+        f"--kind rollout_capture --base-url {pool_url} --wire-model {run.base_model.name} "
+        f"--api-key-env {run.capture.platform_key_env} "
+        f"--context-window-tokens {run.research.sampling.max_sequence_tokens} "
+        f"--max-output-tokens {run.research.sampling.max_tokens} --apply"
     )
 
 
@@ -151,6 +194,7 @@ def prepare_run_config(template: Path, tasks_file: Path, inference_url: str, out
         )
     config["dataset"]["tasks"] = tasks["tasks"]
     config["inference_url"] = inference_url
+    config["capture"]["url"] = inference_url  # Capture runs in the pool's replicas.
     out.write_text(json.dumps(config, indent=2) + "\n")
     run = read_run_config(out)
     check_tito_protocol(run)
