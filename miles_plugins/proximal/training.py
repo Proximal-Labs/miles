@@ -55,6 +55,11 @@ class TrainingDeployment(Contract):
     # Modal retries after a crash; each resumes from the latest snapshot. A real-platform
     # retry opens a new tunnel and waits, holding its GPUs, for a new registration.
     max_retries: Annotated[int, Field(ge=0)]
+    # Deterministic kernels and collectives (NCCL ring, cuBLAS workspace, no
+    # nondeterministic Transformer Engine algorithms): reproducible steps, at some speed.
+    # FlashAttention's SM100 backward for 256-wide heads (Qwen3.8 on Blackwell) has no
+    # deterministic mode, so that combination must set false.
+    deterministic_kernels: bool
     # Model args script under scripts/models (without ``.py``), e.g. "qwen3.8-27B".
     model_args: Nonempty
     # Miles training arguments file, relative to the repository root.

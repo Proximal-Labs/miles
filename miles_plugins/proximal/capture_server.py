@@ -15,6 +15,7 @@ import hmac
 import json
 import logging
 import math
+import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -50,6 +51,48 @@ from miles_plugins.proximal.store import RolloutStore
 
 
 logger = logging.getLogger(__name__)
+
+# SGLang's rejections of a request that does not fit the context window.
+_ENGINE_CONTEXT_LIMIT = re.compile(r"maximum context length|longer than the model's context length", re.IGNORECASE)
+
+
+class ContextLimitExceeded(Exception):
+    """A turn that cannot fit the session's token budget."""
+
+    def __init__(self, limit: int, detail: str) -> None:
+        super().__init__(detail)
+        self.limit, self.detail = limit, detail
+
+
+def openai_error(status_code: int, message: str, *, code: str | None = None) -> Response:
+    """An error in the OpenAI shape agents parse ({"error": {...}}); SGLang's flat body is not."""
+    error: dict[str, Any] = {"message": message, "type": "invalid_request_error", "param": None, "code": code}
+    return Response(orjson.dumps({"error": error}), status_code=status_code, media_type="application/json")
+
+
+def context_limit_error(limit: int, detail: str) -> Response:
+    """OpenAI's context-limit error, which agents turn into a clean end instead of a failure."""
+    return openai_error(
+        400, f"This model's maximum context length is {limit} tokens. {detail}", code="context_length_exceeded"
+    )
+
+
+def engine_error(response: Response, limit: int) -> Response:
+    """Re-shape an engine error for the agent, naming a context-window rejection as such."""
+    try:
+        data = orjson.loads(bytes(response.body))
+    except orjson.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("error"), dict):
+        message = str(data["error"].get("message", ""))
+    elif isinstance(data, dict):
+        message = str(data.get("message", ""))
+    else:
+        message = bytes(response.body).decode(errors="replace")
+    if response.status_code == 400 and _ENGINE_CONTEXT_LIMIT.search(message):
+        return context_limit_error(limit, message)
+    return openai_error(response.status_code, message or f"Engine returned {response.status_code}")
+
 
 # How long past the platform's rollout timeout and one last model request a session
 # may wait for the trainer to seal, fetch and release it (the trainer polls every few
@@ -244,7 +287,10 @@ class BoundTransport:
         payload = orjson.loads(body)  # SDK boundary; SessionCore already rendered and validated input_ids.
         remaining = attempt.sampling.max_sequence_tokens - len(payload["input_ids"])
         if remaining <= 0:
-            raise HTTPException(422, "Sequence token budget exhausted")
+            raise ContextLimitExceeded(
+                attempt.sampling.max_sequence_tokens,
+                f"The rollout's {len(payload['input_ids'])} tokens leave no room for a reply.",
+            )
         payload["max_tokens"] = min(payload["max_tokens"], remaining)
         payload["model"] = f"{self.config.base_model.name}:miles-{attempt.policy.snapshot.sha256}"
         # The engine call is always complete, never streamed; the gateway requires it explicitly.
@@ -575,6 +621,8 @@ class CaptureServer:
                 session_id, method="POST", query="", headers={}, body=orjson.dumps(body)
             )
             mark("core_done")  # SessionCore has recorded the turn and built the reply.
+            if response.status_code >= 400:
+                return engine_error(response, entry.attempt.sampling.max_sequence_tokens)
             return response
 
     def _routes(self) -> None:
@@ -583,6 +631,10 @@ class CaptureServer:
         @app.exception_handler(SessionError)
         async def session_error(request: Request, exc: SessionError) -> Response:
             return Response(status_code=exc.status_code, content=str(exc))
+
+        @app.exception_handler(ContextLimitExceeded)
+        async def context_limit(request: Request, exc: ContextLimitExceeded) -> Response:
+            return context_limit_error(exc.limit, exc.detail)
 
         @app.get("/health")
         async def health() -> dict[str, str]:

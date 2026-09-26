@@ -77,10 +77,12 @@ PLATFORM_PORT = 9010
 MEGATRON_ENV = {
     "PYTHONPATH": f"/root/Megatron-LM:{FORK}",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-    "NCCL_ALGO": "Ring",
-    "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
     "PYTHONUNBUFFERED": "1",
+    **(
+        {"NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8"}
+        if TRAINING.deterministic_kernels
+        else {"NVTE_ALLOW_NONDETERMINISTIC_ALGO": "1"}
+    ),
 }
 
 image = add_fork_sources(

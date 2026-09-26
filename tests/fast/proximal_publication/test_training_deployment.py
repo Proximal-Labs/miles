@@ -165,3 +165,13 @@ def test_prepare_writes_a_valid_qwen38_run_config(tmp_path):
     assert len(run.dataset.tasks) == 41
     check_deployment(run, read_training_deployment(QWEN38 / "training.json"))
     assert isinstance(read_training_deployment(QWEN38 / "training.json"), TrainingDeployment)
+
+
+def test_determinism_is_stated_per_deployment_and_off_where_blackwell_hd256_backward_needs_it():
+    # FlashAttention's SM100 backward for 256-wide heads (Qwen3.8 on B300) has no deterministic mode.
+    assert read_training_deployment(QWEN38 / "overhead" / "training.json").deterministic_kernels is False
+    assert read_training_deployment(GSM8K / "training.json").deterministic_kernels is True
+    raw = json.loads((GSM8K / "training.json").read_text())
+    del raw["deterministic_kernels"]
+    with pytest.raises(ValueError, match="deterministic_kernels"):
+        TrainingDeployment.model_validate_json(json.dumps(raw))

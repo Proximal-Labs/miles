@@ -5,6 +5,7 @@
   "cpu": 16,
   "memory_mib": 262144,
   "max_retries": 0,
+  "deterministic_kernels": true,
   "model_args": "qwen3.8-27B",
   "train_args": "examples/proximal/qwen38/smoke/train_args.txt",
   "state_volume": {
