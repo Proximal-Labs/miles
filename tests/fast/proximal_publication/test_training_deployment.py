@@ -175,3 +175,46 @@ def test_determinism_is_stated_per_deployment_and_off_where_blackwell_hd256_back
     del raw["deterministic_kernels"]
     with pytest.raises(ValueError, match="deterministic_kernels"):
         TrainingDeployment.model_validate_json(json.dumps(raw))
+
+
+def test_a_deployment_serves_any_run_that_fits_its_serving_contract():
+    from miles_plugins.proximal.contracts import serving_contract, serving_mismatches
+
+    run = _real_run()
+    deployed = serving_contract(run)
+    research, sampling, lora = run.research, run.research.sampling, run.research.lora
+    # Run-level fields travel with each attempt: a new run needs no redeploy.
+    next_run = run.model_copy(
+        update={
+            "run_id": "next-run",
+            "research": research.model_copy(
+                update={
+                    "sampling": sampling.model_copy(
+                        update={
+                            "max_tokens": sampling.max_tokens // 2,
+                            "max_sequence_tokens": sampling.max_sequence_tokens // 2,
+                        }
+                    ),
+                    "lora": lora.model_copy(update={"rank": lora.rank // 2, "alpha": lora.alpha * 2}),
+                }
+            ),
+        }
+    )
+    assert serving_mismatches(next_run, deployed) == []
+
+    effort = "low" if run.model_protocol.reasoning_effort != "low" else "medium"
+    rendered = run.model_copy(
+        update={"model_protocol": run.model_protocol.model_copy(update={"reasoning_effort": effort})}
+    )
+    assert [reason.split(":")[0] for reason in serving_mismatches(rendered, deployed)] == ["model_protocol"]
+    longer = run.model_copy(
+        update={
+            "research": research.model_copy(
+                update={
+                    "sampling": sampling.model_copy(update={"max_sequence_tokens": sampling.max_sequence_tokens * 2}),
+                    "lora": lora.model_copy(update={"rank": lora.rank * 2}),
+                }
+            )
+        }
+    )
+    assert len(serving_mismatches(longer, deployed)) == 2

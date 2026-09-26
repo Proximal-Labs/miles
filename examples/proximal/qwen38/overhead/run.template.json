@@ -30,7 +30,7 @@
       "temperature": 1.0,
       "top_p": 1.0,
       "top_k": -1,
-      "max_tokens": 65536,
+      "max_tokens": 32768,
       "max_sequence_tokens": 262144,
       "logprob_semantics": "untransformed",
       "budget_policy": "cap_to_remaining_context"

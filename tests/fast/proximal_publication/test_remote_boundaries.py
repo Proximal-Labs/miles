@@ -74,6 +74,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("modal_training.py", "remote"),  # Paid training node, run by hand.
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),
+        ("preflight.py", "post"),  # The canary's model calls through capture, before any platform run.
         ("replica.py", "post"),
         ("replica.py", "post"),
     ]

@@ -216,12 +216,12 @@ def _run_trainer(command: list[str]) -> int:
 
 def _set_keys() -> None:
     # Capture's credentials come from the serving pool's capture secret: the trainer's
-    # control key, and (for the stand-in platform's agent) the platform's rollout key.
-    required = [RUN.capture.api_key_env]
+    # control key, and the platform's rollout key (the stand-in platform's agent, and
+    # the preflight canary's model calls).
+    required = [RUN.capture.api_key_env, RUN.capture.platform_key_env]
     if isinstance(TRAINING.platform, Gsm8kPlatform):
         # The stand-in platform's own key never leaves this container.
         os.environ[RUN.platform.api_key_env] = secrets.token_hex(16)
-        required.append(RUN.capture.platform_key_env)
     else:
         # Must match the platform's: the node creates runs with it.
         required.append(RUN.platform.api_key_env)
@@ -229,6 +229,34 @@ def _set_keys() -> None:
         if not os.environ.get(name):
             raise RuntimeError(f"{name} is not set; add the secret that provides it to the training deployment")
     os.environ["MILES_GATEWAY_AUTHORIZATION"] = f"Bearer {os.environ[DEPLOYMENT.gateway_key_env]}"
+
+
+def _check_serving(timeout_seconds: float = 1800) -> None:
+    """Before the trainer starts: the replicas were deployed with a contract this run fits.
+    Waits for replicas that are still starting; a mismatch fails at once."""
+    import asyncio
+
+    import httpx
+
+    from miles_plugins.proximal.authorization import authorize_run
+    from miles_plugins.proximal.preflight import check_serving
+
+    authorization = authorize_run(RUN, yes_rollouts=True, yes_publish=True)
+
+    async def check() -> int:
+        deadline = time.monotonic() + timeout_seconds
+        async with httpx.AsyncClient(timeout=300) as client:
+            while True:
+                try:
+                    return await check_serving(authorization, client)
+                except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                    starting = isinstance(exc, httpx.TransportError) or exc.response.status_code >= 500
+                    if not starting or time.monotonic() > deadline:
+                        raise
+                    print(f"[training] waiting for serving replicas ({type(exc).__name__})", flush=True)
+                    await asyncio.sleep(15)
+
+    print(f"[training] serving fits this run ({asyncio.run(check())} replica contract(s) answered)", flush=True)
 
 
 def _service_commands() -> list[tuple[str, list[str], str]]:
@@ -305,6 +333,7 @@ def train() -> int:
                 print(f"[training] {name} ready", flush=True)
             if isinstance(TRAINING.platform, RealPlatform):
                 _wait_for_registration(TRAINING.platform)
+            _check_serving()
             subprocess.run(
                 [
                     "ray",

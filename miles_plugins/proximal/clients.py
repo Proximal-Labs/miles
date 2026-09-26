@@ -19,6 +19,7 @@ from miles_plugins.proximal.contracts import (
     Grade,
     Policy,
     PolicyEvidence,
+    ServingContract,
     SessionHandle,
     affinity_headers,
     digest,
@@ -76,7 +77,14 @@ async def request(
         try:
             response = await client.request(method, url, headers=headers, json=body, follow_redirects=False)
             if response.status_code not in (429, 502, 503, 504) or attempt == 2:
-                response.raise_for_status()
+                if response.is_error:
+                    # Keep the service's stated reason (our capture's or the platform's
+                    # error text); never headers.
+                    raise httpx.HTTPStatusError(
+                        f"{response.status_code} for {method} {url}: {response.text[:300]}",
+                        request=response.request,
+                        response=response,
+                    )
                 return response
         except httpx.TransportError:
             if attempt == 2:
@@ -106,6 +114,13 @@ class CaptureClient:
         if handle.request_sha256 != digest(attempt) or handle.rollout_id != rollout or handle.base_url != expected:
             raise ValueError("Session service returned a mismatched binding")
         return handle
+
+    async def serving_contract(self, affinity: str) -> ServingContract:
+        """What the replica this affinity key routes to was deployed with."""
+        response = await request(
+            self.client, "GET", f"{self.url}/capture/contract", headers=self.headers | affinity_headers(affinity)
+        )
+        return ServingContract.model_validate_json(response.content)
 
     def _session(self, handle: SessionHandle) -> str:
         return f"{self.url}/sessions/{handle.session_id}"

@@ -247,6 +247,57 @@ def training_contract(config: RunConfig) -> TrainingContract:
     )
 
 
+class ServingContract(Contract):
+    """What a serving deployment binds for every run it serves: the base model, how its
+    capture renders and parses turns, the adapter shape its engines load, and its
+    sequence ceiling.
+
+    Everything else about a run (run id, tasks, harness, token budgets within the
+    ceiling) travels with each session's attempt, so a new run on the same deployment
+    needs no redeploy. Changing any field here does: the replicas were started with it.
+    """
+
+    base_model: BaseModelIdentity
+    tokenizer: Nonempty
+    tito_model: TitoModel
+    enable_thinking: bool
+    model_protocol: ModelProtocol
+    lora_rank: Positive
+    lora_target_modules: tuple[Nonempty, ...]
+    max_sequence_tokens: Positive
+
+
+def serving_contract(config: RunConfig) -> ServingContract:
+    return ServingContract(
+        base_model=config.base_model,
+        tokenizer=config.tokenizer_path.name,
+        tito_model=config.tito_model,
+        enable_thinking=config.enable_thinking,
+        model_protocol=config.model_protocol,
+        lora_rank=config.research.lora.rank,
+        lora_target_modules=config.research.lora.target_modules,
+        max_sequence_tokens=config.research.sampling.max_sequence_tokens,
+    )
+
+
+def serving_mismatches(config: RunConfig, deployed: ServingContract) -> list[str]:
+    """Why a deployment cannot serve this run; empty when it can."""
+    run = serving_contract(config)
+    same = ("base_model", "tokenizer", "tito_model", "enable_thinking", "model_protocol", "lora_target_modules")
+    reasons = [
+        f"{name}: the run has {getattr(run, name)!r}, the deployment {getattr(deployed, name)!r}"
+        for name in same
+        if getattr(run, name) != getattr(deployed, name)
+    ]
+    if run.lora_rank > deployed.lora_rank:
+        reasons.append(f"lora rank {run.lora_rank} exceeds the deployment's maximum {deployed.lora_rank}")
+    if run.max_sequence_tokens > deployed.max_sequence_tokens:
+        reasons.append(
+            f"max_sequence_tokens {run.max_sequence_tokens} exceeds the deployment's {deployed.max_sequence_tokens}"
+        )
+    return reasons
+
+
 class Policy(Contract):
     run_id: SafeId
     version: Positive

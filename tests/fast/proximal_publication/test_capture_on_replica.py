@@ -98,6 +98,7 @@ async def test_front_sends_capture_routes_to_capture_and_the_rest_to_the_gateway
         "/sessions": "capture",
         "/sessions/abc/seal": "capture",
         "/rollouts/r-rollout-0/v1/chat/completions": "capture",
+        "/capture/contract": "capture",
         "/v1/chat/completions": "gateway",
         "/policies/prepare": "gateway",
         "/health": "gateway",

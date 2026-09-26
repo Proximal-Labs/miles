@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from miles_plugins.proximal.capture_server import PolicyCheck
     from miles_plugins.proximal.gateway import ReplicaGateway
 
-CAPTURE_PREFIXES = ("/sessions", "/rollouts/")
+CAPTURE_PREFIXES = ("/sessions", "/rollouts/", "/capture/")
 # The gateway, seen from capture over an in-process transport; the host is never resolved.
 IN_PROCESS_GATEWAY = "http://replica-gateway"
 

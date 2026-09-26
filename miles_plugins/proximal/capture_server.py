@@ -41,10 +41,11 @@ from miles_plugins.proximal.contracts import (
     CaptureReceipt,
     Policy,
     RunConfig,
+    ServingContract,
     canonical_bytes,
     digest,
-    pinned_dataset,
     platform_rollout_id,
+    serving_contract,
 )
 from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import RolloutStore
@@ -406,10 +407,8 @@ class CaptureServer:
         self.sessions: dict[str, LiveSession] = {}
         self.attempts: dict[str, str] = {}
         self._create_lock = asyncio.Lock()
-        # No rollout outlives this; a session that does was abandoned by its trainer.
-        self.session_lifetime = (
-            self.config.harness.timeout_seconds + self.config.request_timeout_seconds + SESSION_GRACE_SECONDS
-        )
+        # What every session must fit; the rest of a run travels with its attempts.
+        self.serving = serving_contract(self.config)
         self.transport = BoundTransport(self.config, engine, self.sessions)
         # Built here, never passed in: the registry's matcher is part of capture correctness.
         registry = capture_registry(self.config, tokenizer)
@@ -470,12 +469,33 @@ class CaptureServer:
         a session opens, so abandoned sessions never hold capacity new ones need. The
         trainer then finds an expired session lost and regenerates the attempt.
         """
-        deadline = time.monotonic() - self.session_lifetime
-        stale = [sid for sid, entry in self.sessions.items() if entry.opened < deadline and not entry.lock.locked()]
+        now = time.monotonic()
+        stale = [
+            sid
+            for sid, entry in self.sessions.items()
+            if now - entry.opened > self.session_lifetime(entry.attempt) and not entry.lock.locked()
+        ]
         for session_id in stale:
             await self._release(session_id)
         if stale:
-            logger.warning("Released %d capture sessions older than %ds", len(stale), self.session_lifetime)
+            logger.warning("Released %d capture sessions older than their rollouts can run", len(stale))
+
+    def session_lifetime(self, attempt: Attempt) -> float:
+        """No rollout outlives this; a session that does was abandoned by its trainer."""
+        return attempt.harness.timeout_seconds + self.config.request_timeout_seconds + SESSION_GRACE_SECONDS
+
+    def _refusal(self, attempt: Attempt) -> str | None:
+        """Why this deployment cannot serve the attempt. Run-level fields (run id, tasks,
+        harness, budgets) come from the authenticated trainer; only what the replica was
+        started with is checked here (ServingContract)."""
+        if attempt.policy.base_model != self.serving.base_model:
+            return f"The attempt's base model {attempt.policy.base_model!r} is not this deployment's"
+        if attempt.sampling.max_sequence_tokens > self.serving.max_sequence_tokens:
+            return (
+                f"The attempt's max_sequence_tokens {attempt.sampling.max_sequence_tokens} exceeds this "
+                f"deployment's {self.serving.max_sequence_tokens}"
+            )
+        return None
 
     def _directory(self, session_id: str) -> Path:
         # Session IDs are generated here, never caller-controlled filesystem paths.
@@ -517,15 +537,10 @@ class CaptureServer:
 
     async def _create_session(self, attempt: Attempt, request: Request) -> dict[str, str]:
         self._admin(request)
-        if (
-            attempt.run_id != self.config.run_id
-            or attempt.harness != self.config.harness
-            or attempt.sampling != self.config.research.sampling
-            or attempt.dataset_sha256 != pinned_dataset(self.config.dataset).sha256
-            or attempt.task not in pinned_dataset(self.config.dataset).tasks
-            or not await self.policy_known(attempt.policy)
-        ):
-            raise HTTPException(409, "Attempt is outside this run's dataset/harness/policy contract")
+        if (refusal := self._refusal(attempt)) is not None:
+            raise HTTPException(409, refusal)
+        if not await self.policy_known(attempt.policy):
+            raise HTTPException(409, f"Policy version {attempt.policy.version} is not published for this deployment")
         async with self._create_lock:
             await self._expire_stale()
             index = self.root / "attempts" / f"{attempt.attempt_id}.json"
@@ -638,7 +653,12 @@ class CaptureServer:
 
         @app.get("/health")
         async def health() -> dict[str, str]:
-            return {"status": "ok", "run_id": self.config.run_id}
+            return {"status": "ok"}
+
+        @app.get("/capture/contract")
+        async def contract(request: Request) -> ServingContract:
+            self._admin(request)
+            return self.serving
 
         @app.post("/sessions")
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:

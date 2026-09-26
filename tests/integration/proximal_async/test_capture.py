@@ -15,7 +15,7 @@ from miles.rollout.session.samples.codec import decode_samples_and_merge_input_s
 from miles.utils.types import Sample
 from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
-from miles_plugins.proximal.contracts import AcceptedAttempt
+from miles_plugins.proximal.contracts import AcceptedAttempt, serving_contract
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
 
@@ -436,6 +436,63 @@ async def test_capture_composed_like_a_replica(config, authorization, policy, at
     assert (tmp_path / "capture" / "sessions" / handle.session_id / "receipt.json").exists()
 
 
+async def test_a_new_run_on_the_same_deployment_needs_no_redeploy(
+    config, authorization, policy, attempt, tokenizer, tmp_path
+):
+    """Run-level fields (run id, tasks, harness, budgets within the ceiling) travel with the
+    attempt; capture checks only what its replica was started with (ServingContract)."""
+    requests: list[dict[str, object]] = []
+    engine = scripted_engine(config, policy, tokenizer, requests)
+
+    async def admits(candidate):
+        return candidate.snapshot == policy.snapshot
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as gateway:
+        server = CaptureServer(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint(client=gateway, url="http://replica-gateway", headers={"Authorization": "Bearer g"}),
+            policy_known=admits,
+            root=tmp_path / "capture",
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            assert await client.serving_contract("any") == serving_contract(config)
+            assert (await http.get(f"{config.capture.url}/capture/contract")).status_code == 401
+
+            sampling = attempt.sampling
+            next_run = attempt.model_copy(
+                update={
+                    "attempt_id": "next-run-attempt",
+                    "run_id": "next-run",
+                    "policy": policy.model_copy(update={"run_id": "next-run"}),
+                    "dataset_sha256": "a" * 64,
+                    "task": attempt.task.model_copy(update={"environment_id": 999}),
+                    "harness": attempt.harness.model_copy(update={"max_turns": 7}),
+                    "sampling": sampling.model_copy(update={"max_tokens": sampling.max_tokens // 2}),
+                }
+            )
+            handle = await client.create(next_run)
+            reply = await http.post(
+                handle.base_url + "/chat/completions",
+                headers=PLATFORM,
+                json={"model": config.base_model.name, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert reply.status_code == 200, reply.text
+            assert requests[-1]["max_tokens"] <= sampling.max_tokens // 2
+
+            beyond = next_run.model_copy(
+                update={
+                    "attempt_id": "beyond-ceiling",
+                    "sampling": sampling.model_copy(update={"max_sequence_tokens": sampling.max_sequence_tokens + 1}),
+                }
+            )
+            with pytest.raises(httpx.HTTPStatusError) as refused:
+                await client.create(beyond)
+            assert refused.value.response.status_code == 409
+            assert "exceeds this deployment's" in str(refused.value)
+
+
 async def test_sessions_abandoned_by_their_trainer_expire(config, authorization, policy, attempt, tokenizer, store):
     """Capture outlives the trainer that opened its sessions; one older than any rollout can
     run is released when a new session opens, and its trainer finds it lost."""
@@ -448,7 +505,7 @@ async def test_sessions_abandoned_by_their_trainer_expire(config, authorization,
             await store.commit_policy(policy)
             abandoned = await client.create(attempt)
             recent = await client.create(attempt.model_copy(update={"attempt_id": "attempt-2"}))
-            server.sessions[abandoned.session_id].opened -= server.session_lifetime + 1
+            server.sessions[abandoned.session_id].opened -= server.session_lifetime(attempt) + 1
             await client.create(attempt.model_copy(update={"attempt_id": "attempt-3"}))
             assert abandoned.session_id not in server.sessions and recent.session_id in server.sessions
             with pytest.raises(httpx.HTTPStatusError) as lost:

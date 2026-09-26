@@ -107,7 +107,7 @@ Capture's timing log on each replica, joined with the agent journal by response 
      --tasks examples/proximal/qwen38/tasks-pilot.json --inference-url <pool URL> --out run.json
    python -m miles_plugins.proximal.training check --config run.json --training examples/proximal/qwen38/training.json
    ```
-4. **Deploy the replicas** with `serving_app` and the same `run.json`: capture in the replicas enforces it.
+4. **Deploy the replicas** with `serving_app` and a `run.json`. A deployment binds only its serving contract (`contracts.ServingContract`: base model, tokenizer, chat-template family, thinking, model protocol including reasoning effort, LoRA shape, and the sequence ceiling). Run id, tasks, harness and token budgets within the ceiling travel with each session, so later runs that fit reuse the deployment without a redeploy. Changing a contract field needs one, and a redeploy keeps live replicas on their old config: `modal app stop miles-qwen38-serving` first.
 5. **Register the pool once:** make the pool's URL the default `rollout_capture` endpoint of `miles/qwen38-27b`, from proximal-mono (it writes the production registry):
    ```bash
    pnpm tsx packages/backend/scripts/modal/switch-endpoint.ts --model miles/qwen38-27b \
@@ -123,4 +123,5 @@ Capture's timing log on each replica, joined with the agent journal by response 
      modal run --detach --env main -m miles_plugins.proximal.modal_training
    ```
    The node creates platform runs only once `miles/qwen38-27b`'s default endpoint is the pool's URL; until then it prints the registration command from step 5. The registration survives node restarts.
+   Before it starts the trainer, the node checks that the replicas it reaches were deployed with a serving contract this run fits (`preflight.check_serving`; it waits for replicas that are still starting). After the first policy is published and before any platform run, a canary opens a real capture session: one model call is sealed as a sample, and a turn past the sequence budget must come back as OpenAI's `context_length_exceeded`, which agent-px ends as a graded rollout (`preflight.canary`). Either failure stops the node within a few minutes of launch instead of deep into a run.
 7. **Tear down:** `modal app stop miles-qwen38-training --env main` and `modal app stop miles-qwen38-serving --env main`.
