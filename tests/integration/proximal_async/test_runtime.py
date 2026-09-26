@@ -2,12 +2,15 @@ import argparse
 import asyncio
 import sys
 from argparse import Namespace
+from dataclasses import replace
 
 import pytest
 from tests.integration.proximal_async.test_buffer import entry
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
 from miles.utils.arguments import get_miles_extra_args_provider, resolve_rollout_function_paths
+from miles.utils.types import Sample
+from miles_plugins.proximal.clients import IneligibleAttempt
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import ROLLOUT, validate_args
 from miles_plugins.proximal.rollout import PlatformRolloutFn
@@ -86,6 +89,85 @@ async def test_existing_async_worker_overlaps_consumption_and_cancels_children(
     await producer.close()
     assert cancelled.is_set()
     assert producer._worker is None
+
+
+def _producer_args(path, granularity="sample"):
+    return Namespace(
+        proximal_config=str(path),
+        rollout_submission_granularity=granularity,
+        n_samples_per_prompt=2,
+        async_unused_samples_handler="drop",
+        rollout_sample_filter_path=None,
+        rollout_batch_size=1,
+        rollout_global_dataset=True,
+        async_max_concurrent_samples=4,
+        custom_async_data_buffer_path="miles_plugins.proximal.buffer.PlatformDataBuffer",
+        save=None,
+        load=None,
+        proximal_yes_rollouts=True,
+        proximal_yes_publish=True,
+    )
+
+
+async def _run_group(config, tmp_path, policy, store, monkeypatch, execute):
+    """One platform group through PlatformRolloutFn with ``execute`` standing in for each attempt;
+    returns the group task and the list the scheduler's per-sample callback appends to."""
+    from miles_plugins.proximal import rollout
+
+    await store.commit_policy(policy)
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    args = _producer_args(path)
+    monkeypatch.setattr(rollout, "execute_attempt", execute)
+    source = PlatformTaskSource(args)
+    producer = PlatformRolloutFn(RolloutFnConstructorInput(args=args, data_source=source))
+    producer._store = store
+    freed: list[int] = []
+    producer._scheduler.sample_done_callback = lambda: freed.append(1)
+    [group] = source.get_samples(1)
+    return producer, asyncio.create_task(producer._generate_group(group)), freed
+
+
+async def test_each_finished_rollout_frees_its_submission_slot(config, tmp_path, policy, store, monkeypatch):
+    """Miles's sample backfill: the next group can start before this group's slowest rollout ends."""
+    slow = asyncio.Event()
+    calls = 0
+
+    async def execute(attempt, sample, **_):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            await slow.wait()
+        return replace(sample, reward=1.0)
+
+    producer, running, freed = await _run_group(config, tmp_path, policy, store, monkeypatch, execute)
+
+    async def first_freed():
+        while not freed:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(first_freed(), 2)
+    assert len(freed) == 1 and not running.done()
+    slow.set()
+    result = await running
+    assert len(freed) == 2 and [sample.reward for sample in result.group] == [1.0, 1.0]
+    await producer.close()
+
+
+async def test_a_failed_group_frees_every_slot(config, tmp_path, policy, store, monkeypatch):
+    calls = 0
+
+    async def execute(attempt, sample, **_):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise IneligibleAttempt("platform rollout is ineligible")
+        await asyncio.Event().wait()  # Cancelled when its group-mate fails.
+
+    producer, running, freed = await _run_group(config, tmp_path, policy, store, monkeypatch, execute)
+    result = await asyncio.wait_for(running, 2)
+    assert len(freed) == 2 and {sample.status for sample in result.group} == {Sample.Status.ABORTED}
+    await producer.close()
 
 
 def test_rollback_rewrites_step_state_and_refuses_partial_checkpoints(config, tmp_path):

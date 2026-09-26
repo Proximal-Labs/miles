@@ -32,7 +32,8 @@ def validate_args(args: Namespace) -> None:
         "data_source_path": SOURCE,
         "custom_async_data_buffer_path": BUFFER,
         "rollout_global_dataset": True,
-        "rollout_submission_granularity": "group",
+        # Miles's fully-async default: a finished rollout frees its slot at once.
+        "rollout_submission_granularity": "sample",
         "n_samples_per_prompt": config.research.group_size,
         "max_weight_staleness": config.research.max_policy_lag,
         "async_unused_samples_handler": config.research.unused_groups,
