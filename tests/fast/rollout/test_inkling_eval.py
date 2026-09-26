@@ -181,7 +181,7 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         platform_server["blocked"] = baseline_blocked
         try:
             await asyncio.wait_for(runner.start(), timeout=2)
-            assert runner.pending is not None
+            assert runner.pending
             await asyncio.wait_for(runner.after_step(1), timeout=2)
         finally:
             baseline_blocked.set()
@@ -194,25 +194,34 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         assert exports == [-1]
         blocked = threading.Event()
         platform_server["blocked"] = blocked
-        await asyncio.wait_for(runner.after_step(10), timeout=2)
-        assert exports == [-1, 9]
-        # A normal subsequent training step is independent of the blocked rollout.
-        await asyncio.wait_for(runner.after_step(11), timeout=2)
-        blocked.set()
+        try:
+            await asyncio.wait_for(runner.after_step(10), timeout=2)
+            assert exports == [-1, 9]
+            # Both ordinary steps and later epoch boundaries proceed while the
+            # earlier evaluation is blocked, preserving every snapshot.
+            await asyncio.wait_for(runner.after_step(11), timeout=2)
+            await asyncio.wait_for(runner.after_step(20), timeout=2)
+            await asyncio.wait_for(runner.after_step(30), timeout=2)
+            assert exports == [-1, 9, 19, 29]
+            assert len(runner.pending) == 3
+            assert not runner.pending[-1].running()
+        finally:
+            blocked.set()
         await runner.finish()
-        assert len(platform_server["runs"]) == 4 * (rollouts or 1)
+        assert not runner.pending
+        assert len(platform_server["runs"]) == 8 * (rollouts or 1)
         assert {key for _, key in metrics} == {"eval/coding/checkpoint_step", "eval/heldout/checkpoint_step"}
-        assert {values[key] for values, key in metrics} == {0, 10}
+        assert {values[key] for values, key in metrics} == {0, 10, 20, 30}
         assert all(values[key.replace("/checkpoint_step", "/reward/mean")] == 0 for values, key in metrics)
         assert all(not name.endswith("/epoch") for values, _ in metrics for name in values)
         # Changing the platform's latest image cannot change a resumed suite.
         platform_server["images"] = [{"id": 99, "digest": "sha256:two", "commitHash": "def", "pushedAt": "200"}]
-        args.start_rollout_id = 10
+        args.start_rollout_id = 30
         resumed = EvaluationRunner(args, Actor(), 5)
         await resumed.start()
         await resumed.finish()
         assert resumed.suite["environments"]["1"]["imageId"] == 11
-        assert len(platform_server["runs"]) == 4 * (rollouts or 1)
-        assert exports == [-1, 9]
+        assert len(platform_server["runs"]) == 8 * (rollouts or 1)
+        assert exports == [-1, 9, 19, 29]
 
     asyncio.run(exercise())

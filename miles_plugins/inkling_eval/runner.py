@@ -1,8 +1,8 @@
-"""Durable evaluation orchestration with an asynchronous baseline.
+"""Durable evaluation orchestration with queued immutable snapshots.
 
-Training can proceed after exporting the immutable baseline snapshot. At the next
-evaluation boundary (or training completion), wait for pending evaluation results
-and propagate failures before submitting another snapshot.
+Training only waits for snapshot export and persistence at epoch boundaries.
+Evaluations run sequentially in the background; completed results and failures
+are collected between training steps. Training completion drains the queue.
 """
 
 import asyncio
@@ -10,6 +10,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,7 +31,7 @@ class EvaluationRunner:
             self.config = replace(self.config, rollouts_per_environment=args.inkling_eval_rollouts_per_env)
         self.root = Path(args.save) / "evaluation"
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self.pending = None
+        self.pending = deque()
         self.suite = None
 
     async def start(self):
@@ -49,8 +50,7 @@ class EvaluationRunner:
                 if not point.get("cleaned_up", False):
                     await asyncio.to_thread(self._cleanup, point, path)
             else:
-                await self._settle()
-                self.pending = self.executor.submit(self._evaluate, point)
+                self.pending.append(self.executor.submit(self._evaluate, point))
         if self.args.start_rollout_id == 0:
             baseline = self.root / "step_00000000" / "point.json"
             if not baseline.exists():
@@ -83,10 +83,8 @@ class EvaluationRunner:
                 platform.close()
 
     async def after_step(self, completed_steps):
-        if self.pending is not None and self.pending.done():
-            await self._settle()
+        await self._settle(wait=False)
         if self.due(completed_steps):
-            await self._settle()
             await self._submit(completed_steps)
 
     def due(self, completed_steps):
@@ -110,15 +108,16 @@ class EvaluationRunner:
         }
         write_json(directory / "point.json", point)
         await asyncio.to_thread(serving.commit_volume, self.args.inkling_eval_environment)
-        self.pending = self.executor.submit(self._evaluate, point)
+        self.pending.append(self.executor.submit(self._evaluate, point))
+        logger.info("Evaluation step %s queued; %s evaluations outstanding", step, len(self.pending))
 
-    async def _settle(self):
-        if self.pending is None:
-            return
-        future, self.pending = self.pending, None
-        logger.info("Waiting for pending evaluation before continuing")
-        point = await asyncio.wrap_future(future)
-        self._log(point)
+    async def _settle(self, *, wait=True):
+        if wait and self.pending:
+            logger.info("Waiting for %s outstanding evaluations", len(self.pending))
+        while self.pending and (wait or self.pending[0].done()):
+            point = await asyncio.wrap_future(self.pending[0])
+            self.pending.popleft()
+            self._log(point)
 
     def _log(self, point):
         from miles.utils.tracking_utils import tracking

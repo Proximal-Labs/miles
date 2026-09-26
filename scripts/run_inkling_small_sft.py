@@ -47,8 +47,9 @@ MILES_SCRIPT_EXTERNAL_RAY=1. Modal configures this automatically.
 
 Modal submission returns a durable FunctionCall ID and exits; use Modal app logs
 to monitor progress separately. Baseline evaluation runs concurrently with training
-after exporting its immutable snapshot. The next evaluation boundary waits for
-pending results, and evaluation failures still fail the training job visibly.
+after exporting its immutable snapshot. Epoch snapshots queue for sequential
+evaluation without waiting for previous results. Training completion drains the
+queue, and evaluation failures still fail the training job visibly.
 """
 
 import json
