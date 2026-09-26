@@ -19,7 +19,7 @@ Args:
   --global-batch-size: Conversations per optimizer step (default 32).
   --lr: Initial experimental Adam learning rate; no validated Inkling SFT LR.
   --min-lr: Cosine decay floor (default 1e-6).
-  --warmup-epoch-fraction: Linear warmup as a fraction of one epoch (default 0.1).
+  --warmup-epoch-fraction: Linear warmup up to one full epoch (default 0.1).
   --distributed-timeout-minutes: GPU communication timeout (default 30), including
     waits while another pipeline stage compiles its first-step kernels.
   --lora-rank / --lora-alpha: Adapter rank and scaling numerator (both default 32).
@@ -125,8 +125,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("global_batch_size must be divisible by data parallel size")
         if not 0 <= self.min_lr <= self.lr:
             raise ValueError("min_lr must be between zero and lr")
-        if not 0 <= self.warmup_epoch_fraction < min(1, self.num_epoch):
-            raise ValueError("warmup_epoch_fraction must be in [0, 1)")
+        if not 0 <= self.warmup_epoch_fraction <= 1 or self.warmup_epoch_fraction >= self.num_epoch:
+            raise ValueError("warmup_epoch_fraction must be in [0, 1] and less than num_epoch")
 
     @property
     def data_parallel_size(self):

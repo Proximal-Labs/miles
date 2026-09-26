@@ -334,21 +334,21 @@ point, training waits there. Shutdown drains the pending evaluation. There is no
 extra off-cadence final evaluation.
 For 190 examples and batch size 32, the first evaluation is after step 6
 (192 examples consumed, epoch 1.0105); at batch size 1 it is after step 190.
-The graphs use actual consumed-example epochs, including batches crossing an
-epoch boundary. The existing training loop still determines the total step budget.
+The saved evaluation records include actual consumed-example epochs, including
+batches crossing an epoch boundary. The existing training loop still determines the total step budget.
 
-W&B logs `eval/coding/mean_reward`, `eval/coding/pass_rate`,
-`eval/heldout/mean_reward`, etc., each against its own `eval/<set>/epoch` axis.
-Each set also reports scored rollout counts, infrastructure failures, and
-per-environment metrics. Verified zero rewards count as scores; failed executions
+W&B logs `eval/<set>/reward/mean` (for example, `eval/coding/reward/mean`),
+each against its own `eval/<set>/checkpoint_step` axis.
+Each set also reports total and scored rollout counts.
+Verified zero rewards count as scores; failed executions
 do not. `evaluation/step_XXXXXXXX/point.json` records every platform run ID and
 result incrementally. Deterministic run IDs make submission retries idempotent.
 Resume reattaches unfinished evaluations and reuses completed results.
 Every evaluation submission explicitly sets `autoTriggerPostQa=false`, overriding
 environment defaults. Post-rollout QA is disabled for the baseline and all later
 evaluations across every named set; environment reward verification still runs.
-W&B also receives a rollout-results table for each set. Set `platform_ui_url` to
-your Proximal frontend URL to include clickable platform run URLs in those tables.
+Set `platform_ui_url` to your Proximal frontend URL to include platform run URLs
+in the saved `point.json` results.
 
 Create the named Modal secret in the selected environment with:
 

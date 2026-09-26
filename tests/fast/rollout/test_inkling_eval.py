@@ -26,11 +26,9 @@ def test_zero_rewards_are_scored_and_failures_are_separate():
     assert summarize([{"reward": 1.0}, {"reward": 0.0}, {"reward": None}]) == {
         "rollouts": 3,
         "scored": 2,
-        "failures": 1,
-        "mean_reward": 0.5,
-        "pass_rate": 0.5,
+        "reward/mean": 0.5,
     }
-    assert summarize([{"reward": None}]) == {"rollouts": 1, "scored": 0, "failures": 1}
+    assert summarize([{"reward": None}]) == {"rollouts": 1, "scored": 0}
 
 
 @pytest.fixture
@@ -180,7 +178,7 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         await runner.start()
         assert exports == [-1]
         assert len(platform_server["runs"]) == 2 * (rollouts or 1)
-        assert definitions == [("eval/coding", "eval/coding/epoch"), ("eval/heldout", "eval/heldout/epoch")]
+        assert definitions == [("eval/coding", "eval/coding/checkpoint_step"), ("eval/heldout", "eval/heldout/checkpoint_step")]
         for step in range(1, 10):
             await runner.after_step(step)
         assert exports == [-1]
@@ -193,9 +191,10 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         blocked.set()
         await runner.finish()
         assert len(platform_server["runs"]) == 4 * (rollouts or 1)
-        assert {key for _, key in metrics} == {"eval/coding/epoch", "eval/heldout/epoch"}
-        assert {values[key] for values, key in metrics} == {0, 2}
-        assert all(values[key.replace("/epoch", "/mean_reward")] == 0 for values, key in metrics)
+        assert {key for _, key in metrics} == {"eval/coding/checkpoint_step", "eval/heldout/checkpoint_step"}
+        assert {values[key] for values, key in metrics} == {0, 10}
+        assert all(values[key.replace("/checkpoint_step", "/reward/mean")] == 0 for values, key in metrics)
+        assert all(not name.endswith("/epoch") for values, _ in metrics for name in values)
         # Changing the platform's latest image cannot change a resumed suite.
         platform_server["images"] = [{"id": 99, "digest": "sha256:two", "commitHash": "def", "pushedAt": "200"}]
         args.start_rollout_id = 10

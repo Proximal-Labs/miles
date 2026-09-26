@@ -32,7 +32,7 @@ class EvaluationRunner:
         from miles.utils.tracking_utils import tracking
 
         for name in self.config.sets:
-            tracking.define_step_key_metric_group(f"eval/{name}", f"eval/{name}/epoch")
+            tracking.define_step_key_metric_group(f"eval/{name}", f"eval/{name}/checkpoint_step")
         await asyncio.to_thread(self._resolve)
         points = sorted(self.root.glob("step_*/point.json"))
         for path in points:
@@ -120,23 +120,9 @@ class EvaluationRunner:
         for name, results in point["results"].items():
             prefix = f"eval/{name}"
             metrics = {f"{prefix}/{k}": v for k, v in summarize(results).items()}
-            metrics[f"{prefix}/epoch"] = point["epoch"]
             metrics[f"{prefix}/checkpoint_step"] = point["step"]
-            for environment_id in self.config.sets[name]:
-                subset = [r for r in results if r["environment_id"] == environment_id]
-                metrics.update({f"{prefix}/environment_{environment_id}/{k}": v for k, v in summarize(subset).items()})
-            tracking.log(self.args, metrics, step_key=f"{prefix}/epoch")
-            if getattr(self.args, "use_wandb", False):
-                self._log_rollout_table(prefix, point["epoch"], results)
+            tracking.log(self.args, metrics, step_key=f"{prefix}/checkpoint_step")
         logger.info("Evaluation at epoch %s: %s", point["epoch"], point["results"])
-
-    def _log_rollout_table(self, prefix, epoch, results):
-        # W&B tables are optional and cannot be sent to the scalar tracking backends.
-        import wandb
-
-        columns = ["environment_id", "replica", "run_id", "run_url", "reward", "status"]
-        table = wandb.Table(columns=columns, data=[[row.get(column) for column in columns] for row in results])
-        wandb.log({f"{prefix}/epoch": epoch, f"{prefix}/rollout_results": table})
 
     async def finish(self):
         try:

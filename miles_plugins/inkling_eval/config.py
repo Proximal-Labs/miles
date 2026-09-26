@@ -73,7 +73,7 @@ def evaluation_due(completed_steps: int, samples_per_epoch: int, every: int, *, 
 
 def summarize(results: list[dict]) -> dict:
     scored = [r["reward"] for r in results if r["reward"] is not None]
-    metrics = {"rollouts": len(results), "scored": len(scored), "failures": len(results) - len(scored)}
+    metrics = {"rollouts": len(results), "scored": len(scored)}
     if scored:
-        metrics.update(mean_reward=sum(scored) / len(scored), pass_rate=sum(r >= 1 for r in scored) / len(scored))
+        metrics["reward/mean"] = sum(scored) / len(scored)
     return metrics
