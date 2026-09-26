@@ -88,8 +88,38 @@ class LoRA(Contract):
     target_modules: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
 
 
+class TruncatedImportanceSampling(Contract):
+    """The decoupled off-policy correction (Miles's ``--use-tis``). The trainer recomputes
+    each token's log-prob before the step and centers the PPO ratio on it; every token's
+    gradient is then weighted by the rollout-to-trainer importance ratio, truncated to
+    ``[clip_low, clip]``. It holds up with groups several policy versions old, where
+    ``rollout_logprobs`` clips around a stale policy."""
+
+    kind: Literal["truncated_importance_sampling"]
+    clip: Annotated[FiniteFloat, Field(gt=1)]
+    clip_low: Annotated[FiniteFloat, Field(ge=0, lt=1)]
+
+
+# ``rollout_logprobs``: the PPO ratio's denominator is the rollout engine's log-prob
+# (Miles's ``--use-rollout-logprobs``), with no recomputation.
+BehaviorCorrection = Literal["rollout_logprobs"] | TruncatedImportanceSampling
+
+
+def behavior_correction_args(correction: BehaviorCorrection) -> dict[str, object]:
+    """The Miles arguments that select a behavior correction; exactly one is enabled."""
+    if correction == "rollout_logprobs":
+        return {"use_rollout_logprobs": True, "use_tis": False}
+    assert isinstance(correction, TruncatedImportanceSampling)
+    return {
+        "use_rollout_logprobs": False,
+        "use_tis": True,
+        "tis_clip": correction.clip,
+        "tis_clip_low": correction.clip_low,
+    }
+
+
 class Research(Contract):
-    behavior_correction: Literal["rollout_logprobs"]
+    behavior_correction: BehaviorCorrection
     lora: LoRA
     sampling: Sampling
     group_size: Annotated[int, Field(ge=2)]
@@ -220,7 +250,7 @@ class TrainingContract(Contract):
     base_model: BaseModelIdentity
     dataset: TaskDataset
     harness: Harness
-    behavior_correction: Literal["rollout_logprobs"]
+    behavior_correction: BehaviorCorrection
     lora: LoRA
     sampling: Sampling
     group_size: int

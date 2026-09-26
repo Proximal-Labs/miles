@@ -11,13 +11,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run
-from miles_plugins.proximal.contracts import RunConfig, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, behavior_correction_args, read_run_config
 from miles_plugins.proximal.options import BUFFER, ROLLOUT, SOURCE, TRANSFER
 
 if TYPE_CHECKING:
     import httpx
 
     from miles_plugins.proximal.store import RolloutStore
+
+
+def _flags(values: dict[str, object]) -> list[str]:
+    """Miles's argv for argument values: a true boolean is a bare flag, a false one is omitted."""
+    argv: list[str] = []
+    for name, value in values.items():
+        flag = "--" + name.replace("_", "-")
+        if value is True:
+            argv.append(flag)
+        elif value is not False:
+            argv += [flag, str(value)]
+    return argv
 
 
 def training_argv(path: str) -> list[str]:
@@ -48,7 +60,8 @@ def training_argv(path: str) -> list[str]:
         "train-backend": "megatron",
         "megatron-to-hf-mode": "bridge",
     }
-    return ["--fully-async", "--rollout-external", "--use-rollout-logprobs"] + [
+    correction = _flags(behavior_correction_args(config.research.behavior_correction))
+    return ["--fully-async", "--rollout-external", *correction] + [
         item for name, value in values.items() for item in (f"--{name}", str(value))
     ]
 

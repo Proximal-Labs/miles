@@ -1,5 +1,5 @@
 {
-  "run_id": "qwen38-27b-overhead-006",
+  "run_id": "qwen38-27b-overhead-007",
   "base_model": {
     "name": "Qwen/Qwen3.8-27B",
     "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
@@ -17,7 +17,11 @@
     "p2p_enforce": false
   },
   "research": {
-    "behavior_correction": "rollout_logprobs",
+    "behavior_correction": {
+      "kind": "truncated_importance_sampling",
+      "clip": 2.0,
+      "clip_low": 0.0
+    },
     "lora": {
       "rank": 32,
       "alpha": 32,
@@ -36,7 +40,7 @@
       "budget_policy": "cap_to_remaining_context"
     },
     "group_size": 8,
-    "max_policy_lag": 1,
+    "max_policy_lag": 3,
     "unused_groups": "retry",
     "max_consecutive_failed_groups": 16
   },

@@ -11,7 +11,7 @@
 --calculate-per-token-loss
 --rollout-batch-size 4
 --global-batch-size 32
---num-rollout 10
+--num-rollout 20
 --tensor-model-parallel-size 4
 --sequence-parallel
 --pipeline-model-parallel-size 1
