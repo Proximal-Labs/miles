@@ -1,5 +1,5 @@
 # Overhead run, closest to the final topology: the same 4 "3.5 flash hard" environments x 8
-# platform rollouts every step, 10 steps, sequences up to 256k tokens. 8 B300 at TP 4 with two
+# platform rollouts every step, 20 steps, sequences up to 256k tokens. 8 B300 at TP 4 with two
 # data-parallel ranks: a 262k-token micro-batch needs about 155 GB on one GPU (it ran out of
 # memory on H200's 141 GB), which B300's 288 GB holds.
 # No context parallelism: Megatron-Bridge's Qwen3-VL model (which Qwen3.8
@@ -49,3 +49,5 @@
 --use-wandb
 --wandb-project miles-qwen38
 --wandb-group qwen38-27b-overhead
+# Kernel tuning and compilation can hold one rank for minutes; 10 min killed run 007.
+--distributed-timeout-minutes 60

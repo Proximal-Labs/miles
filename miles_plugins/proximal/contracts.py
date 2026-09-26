@@ -118,6 +118,18 @@ def behavior_correction_args(correction: BehaviorCorrection) -> dict[str, object
     }
 
 
+def behavior_correction_argv(correction: BehaviorCorrection) -> list[str]:
+    """``behavior_correction_args`` as Miles's argv: a true boolean is a bare flag, a false one is omitted."""
+    argv: list[str] = []
+    for name, value in behavior_correction_args(correction).items():
+        flag = "--" + name.replace("_", "-")
+        if value is True:
+            argv.append(flag)
+        elif value is not False:
+            argv += [flag, str(value)]
+    return argv
+
+
 class Research(Contract):
     behavior_correction: BehaviorCorrection
     lora: LoRA
