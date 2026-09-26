@@ -6,6 +6,7 @@
   "memory_mib": 524288,
   "max_retries": 3,
   "deterministic_kernels": true,
+  "cuda_allocator": "default",
   "model_args": "qwen3.8-27B",
   "train_args": "examples/proximal/qwen38/train_args.txt",
   "state_volume": {

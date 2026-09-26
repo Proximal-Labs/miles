@@ -83,6 +83,11 @@ MEGATRON_ENV = {
         if TRAINING.deterministic_kernels
         else {"NVTE_ALLOW_NONDETERMINISTIC_ALGO": "1"}
     ),
+    **(
+        {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+        if TRAINING.cuda_allocator == "expandable_segments"
+        else {}
+    ),
 }
 
 image = add_fork_sources(

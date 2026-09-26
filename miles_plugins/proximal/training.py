@@ -60,6 +60,11 @@ class TrainingDeployment(Contract):
     # FlashAttention's SM100 backward for 256-wide heads (Qwen3.8 on Blackwell) has no
     # deterministic mode, so that combination must set false.
     deterministic_kernels: bool
+    # PyTorch's CUDA allocator. expandable_segments returns fragmented reserve to large
+    # requests (Qwen3.8 at 256k: a 30 GiB logits buffer failed with 37 GiB reserved but
+    # unallocated); it breaks torch_memory_saver, which only a colocated or offloading
+    # trainer uses.
+    cuda_allocator: Literal["default", "expandable_segments"]
     # Model args script under scripts/models (without ``.py``), e.g. "qwen3.8-27B".
     model_args: Nonempty
     # Miles training arguments file, relative to the repository root.
