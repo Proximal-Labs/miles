@@ -90,7 +90,7 @@ def test_registration_command_names_the_tunnel_and_worker_key():
     ) in command
     assert (
         pool_endpoint_name("miles-qwen38-serving", _real_run())
-        == f"miles-qwen38-serving-ctx{sampling.max_sequence_tokens}"
+        == f"miles-qwen38-serving-ctx{sampling.max_sequence_tokens}-out{sampling.max_tokens}"
     )
 
 

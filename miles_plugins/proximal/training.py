@@ -150,7 +150,8 @@ def routes_to_pool(registry_json: str, run: RunConfig) -> bool:
 
 def pool_endpoint_name(app_name: str, run: RunConfig) -> str:
     """Registry endpoints can't be edited in place, so the name carries the budget."""
-    return f"{app_name}-ctx{run.research.sampling.max_sequence_tokens}"
+    sampling = run.research.sampling
+    return f"{app_name}-ctx{sampling.max_sequence_tokens}-out{sampling.max_tokens}"
 
 
 def fetch_registry(platform_url: str, api_key: str, timeout_seconds: float = 30) -> str:

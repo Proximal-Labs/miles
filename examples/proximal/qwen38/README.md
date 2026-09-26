@@ -108,11 +108,11 @@ Capture's timing log on each replica, joined with the agent journal by response 
 5. **Register the pool once:** make the pool's URL the default `rollout_capture` endpoint of `miles/qwen38-27b`, from proximal-mono (it writes the production registry):
    ```bash
    pnpm tsx packages/backend/scripts/modal/switch-endpoint.ts --model miles/qwen38-27b \
-     --register miles-qwen38-serving-ctx<max_sequence_tokens> --set-default miles-qwen38-serving-ctx<max_sequence_tokens> \
+     --register miles-qwen38-serving-ctx<max_sequence_tokens>-out<max_tokens> --set-default miles-qwen38-serving-ctx<max_sequence_tokens>-out<max_tokens> \
      --kind rollout_capture --base-url <pool URL> --wire-model Qwen/Qwen3.8-27B --api-key-env MILES_CAPTURE_PLATFORM_KEY \
      --context-window-tokens <max_sequence_tokens> --max-output-tokens <max_tokens> --apply
    ```
-   The endpoint carries the run's token budget (proximal-mono #4760): the platform sizes each solve from it, so mini-swe stops at (context − max output) × 0.9, before capture's cap. The node checks both the URL and the budget. Endpoints can't be edited in place, so the name carries the context size.
+   The endpoint carries the run's token budget (proximal-mono #4760): the platform sizes each solve from it, so mini-swe stops at (context − max output) × 0.9, before capture's cap. The node checks both the URL and the budget. Endpoints can't be edited in place, so the name carries both budgets.
 6. **Start the training node.**
    ```bash
    PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=examples/proximal/qwen38/serving.json \
