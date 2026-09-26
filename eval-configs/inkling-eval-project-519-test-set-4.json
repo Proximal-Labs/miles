@@ -1,0 +1,15 @@
+{
+  "platform_url": "https://backend-public-bc16.onrender.com",
+  "sets": {
+    "test_set_4": [
+      105902,
+      106064,
+      106066,
+      106137
+    ]
+  },
+  "rollouts_per_environment": 1,
+  "max_concurrent_rollouts": 4,
+  "modal_secret": "inkling-eval",
+  "platform_ui_url": "https://platform.proximal.so"
+}
