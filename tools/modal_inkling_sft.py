@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 import shlex
+from contextlib import suppress
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
 import modal
+import modal.experimental
 
 _ROOT = Path(__file__).resolve().parents[1]
 _REMOTE_ROOT = "/opt/inkling-miles"
@@ -75,12 +77,12 @@ def _gpu_preflight():
 def _resume_adapter(args):
     candidates = [Path(args.lora_adapter_path)] if args.lora_adapter_path else sorted(Path(args.save_dir).glob("iter_[0-9]*/adapter"), reverse=True)
     for candidate in candidates:
-        required = [candidate / f"{prefix}{rank}.pt" for rank in range(args.num_gpus_per_node) for prefix in ("adapter_megatron_rank", "training_state_rank")]
+        required = [candidate / f"{prefix}{rank}.pt" for rank in range(args.num_nodes * args.num_gpus_per_node) for prefix in ("adapter_megatron_rank", "training_state_rank")]
         iteration = int(candidate.parent.name.removeprefix("iter_"))
         required.append(candidate.parents[1] / f"rollout/global_dataset_state_dict_{iteration}.pt")
         if all(path.is_file() and path.stat().st_size > 0 for path in required):
             return str(candidate)
-    raise FileNotFoundError("No complete native LoRA checkpoint found with all 8 ranks and the matching dataset cursor")
+    raise FileNotFoundError("No complete native LoRA checkpoint found with all training ranks and the matching dataset cursor")
 
 
 @app.function(
@@ -111,7 +113,7 @@ def prepare_data(config_json: str):
     volume.commit()
 
 
-@app.function(
+_GPU_OPTIONS = dict(
     image=image,
     gpu="B300:8",
     cpu=32,
@@ -128,6 +130,9 @@ def prepare_data(config_json: str):
     retries=0,
     max_containers=1,
 )
+
+
+@app.function(**_GPU_OPTIONS)
 def train(config_json: str):
     from scripts.run_inkling_small_sft import prepare
 
@@ -150,7 +155,9 @@ def train(config_json: str):
     destination = Path(args.save_dir)
     if args.resume:
         saved_config = json.loads((destination / "launch.json").read_text())
-        for field in ("lora_rank", "lora_alpha", "num_nodes", "num_gpus_per_node", "lr", "mode"):
+        # Older one-node runs predate configurable parallelism.
+        saved_config = {"tensor_model_parallel_size": 4, "pipeline_model_parallel_size": 2, "expert_model_parallel_size": 4, "decoder_first_pipeline_num_layers": None, "decoder_last_pipeline_num_layers": None, **saved_config}
+        for field in ("lora_rank", "lora_alpha", "num_nodes", "num_gpus_per_node", "lr", "mode", "tensor_model_parallel_size", "pipeline_model_parallel_size", "expert_model_parallel_size", "decoder_first_pipeline_num_layers", "decoder_last_pipeline_num_layers"):
             if saved_config.get(field) != getattr(args, field):
                 raise ValueError(f"Cannot resume with changed {field}; retain the saved LoRA configuration")
         args = replace(args, lora_adapter_path=_resume_adapter(args))
@@ -168,7 +175,7 @@ def train(config_json: str):
         config_path.write_text(encoded)
         args = replace(args, eval_config=str(config_path))
     (destination / "launch.json").write_text(json.dumps(asdict(args), indent=2) + "\n")
-    print(f"EXPERIMENTAL: LoRA rank {args.lora_rank} / 8 B300 / TP4 PP2 EP4 / cap {args.max_length}; fit is unvalidated")
+    print(f"EXPERIMENTAL: LoRA rank {args.lora_rank} / {args.num_nodes} x 8 B300 / TP{args.tensor_model_parallel_size} PP{args.pipeline_model_parallel_size} EP{args.expert_model_parallel_size} DP{args.data_parallel_size} / cap {args.max_length}; fit is unvalidated")
     try:
         # Bound subprocess time independently of Modal's outer 24-hour timeout,
         # leaving time to commit completed checkpoints after a failure.
@@ -189,10 +196,41 @@ def train(config_json: str):
     finally:
         # Ray workers outlive the submitting CLI. Stop them before committing,
         # including when timeout killed the CLI while its job was still active.
+        if args.num_nodes == 1:
+            try:
+                U.exec_command_cpu("ray stop --force")
+            finally:
+                volume.commit()
+
+
+@app.function(**{**_GPU_OPTIONS, "max_containers": 2})
+@modal.experimental.clustered(size=2, rdma=True)
+def train_two_nodes(config_json: str, state: modal.Dict):
+    # GPU/Ray dependencies are supplied by the remote image.
+    from tools.modal_inkling_sft_cluster import training_cluster
+
+    args = _config(config_json)
+    info = modal.experimental.get_cluster_info()
+    with training_cluster(args, state, info.rank, info.container_ipv4_ips, volume, _gpu_preflight):
+        if info.rank == 0:
+            train.local(config_json)
+
+
+@app.function(image=image, timeout=86400, retries=0, max_containers=1)
+def run_cluster(config_json: str):
+    # Own the coordination resource remotely so detaching the local CLI cannot
+    # delete it underneath a running training job. All containers share this App.
+    with modal.Dict.ephemeral() as state:
+        call = train_two_nodes.spawn(config_json, state)
         try:
-            U.exec_command_cpu("ray stop --force")
+            call.get()
+        except BaseException:
+            state["error"] = "Cluster coordinator cancelled or failed"
+            with suppress(Exception):
+                call.get(timeout=180)
+            raise
         finally:
-            volume.commit()
+            call.cancel(terminate_containers=True)
 
 
 def _prepared_checkpoint_cached(config):
@@ -220,5 +258,7 @@ def main(config_json: str):
         prepare_data.remote(config_json)
     elif config["mode"] == "prepare" and _prepared_checkpoint_cached(config):
         print("Converted Inkling-Small checkpoint is cached on inkling-small-rft; skipping GPU allocation.")
+    elif config["mode"] in {"smoke", "train"} and config.get("num_nodes", 1) == 2:
+        run_cluster.remote(config_json)
     else:
         train.remote(config_json)

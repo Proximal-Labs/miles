@@ -1,4 +1,4 @@
-"""Experimental Inkling-Small LoRA SFT on one node of 8 B300s.
+"""Experimental Inkling-Small LoRA SFT on one or two nodes of 8 B300s each.
 
 Uses Miles/Megatron, GPU-resident Adam, TP4/PP2/EP4,
 full activation recomputation and no rollout inference. 262K training is an
@@ -7,6 +7,11 @@ with the Miles Megatron fork. The frozen BF16 base and trainable adapters stay
 on GPU; only adapters have gradients and optimizer state.
 
 Args:
+  --num-nodes: One or two; TP4/PP2 defaults give DP1 or DP2 respectively.
+  --tensor-model-parallel-size / --pipeline-model-parallel-size: Default 4 / 2.
+  --expert-model-parallel-size: Default 4; expert tensor parallelism stays 1.
+  --decoder-first-pipeline-num-layers / --decoder-last-pipeline-num-layers:
+    Optional uneven stage sizes. For PP4, set the last stage to 12 (10/10/10/12).
   --mode: data (CPU download/render), prepare (GPU conversion), smoke, train.
   --source-data: Raw JSONL with messages and optional tools/reasoning_effort.
   --max-length: Total token cap, including reasoning and tool results.
@@ -33,8 +38,12 @@ Examples (local host, Modal credentials for proximal already configured):
   python -m scripts.run_inkling_small_sft modal --mode prepare
   python -m scripts.run_inkling_small_sft modal --mode smoke --run-id fit-check
   python -m scripts.run_inkling_small_sft modal --mode train --run-id sft-001
+  python -m scripts.run_inkling_small_sft modal --mode train --num-nodes 2 --run-id sft-dp2
+  python -m scripts.run_inkling_small_sft modal --mode train --num-nodes 2 --pipeline-model-parallel-size 4 --decoder-last-pipeline-num-layers 12 --run-id sft-pp4
 
 Inside a prepared container, use `execute` or `prepare` instead of `modal`.
+Multi-node `execute` requires an already joined Ray cluster and
+MILES_SCRIPT_EXTERNAL_RAY=1. Modal configures this automatically.
 """
 
 import json
@@ -54,6 +63,11 @@ app = typer.Typer()
 class ScriptArgs(U.ExecuteTrainConfig):
     num_nodes: int = 1
     num_gpus_per_node: int = 8
+    tensor_model_parallel_size: int = 4
+    pipeline_model_parallel_size: int = 2
+    expert_model_parallel_size: int = 4
+    decoder_first_pipeline_num_layers: int | None = None
+    decoder_last_pipeline_num_layers: int | None = None
     run_id: str = field(default_factory=U.create_run_id)
     mode: Literal["data", "prepare", "smoke", "train"] = "smoke"
     model_dir: str = "/mnt/inkling/models"
@@ -84,8 +98,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     eval_rollouts_per_env: int | None = None
 
     def __post_init__(self):
-        if (self.num_nodes, self.num_gpus_per_node) != (1, 8):
-            raise ValueError("This experimental profile requires exactly one node with 8 GPUs")
+        if self.num_nodes not in (1, 2) or self.num_gpus_per_node != 8:
+            raise ValueError("This experimental profile requires one or two nodes with 8 GPUs each")
+        self._validate_parallelism()
         if not 1 <= self.max_length <= 1048576:
             raise ValueError("max_length must be between 1 and 1048576")
         if not self.run_id or Path(self.run_id).name != self.run_id or self.run_id in {".", ".."}:
@@ -106,10 +121,32 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("eval_rollouts_per_env must be positive")
         if self.global_batch_size < 1:
             raise ValueError("global_batch_size must be positive")
+        if self.global_batch_size % self.data_parallel_size:
+            raise ValueError("global_batch_size must be divisible by data parallel size")
         if not 0 <= self.min_lr <= self.lr:
             raise ValueError("min_lr must be between zero and lr")
         if not 0 <= self.warmup_epoch_fraction < min(1, self.num_epoch):
             raise ValueError("warmup_epoch_fraction must be in [0, 1)")
+
+    @property
+    def data_parallel_size(self):
+        return self.num_nodes * self.num_gpus_per_node // (self.tensor_model_parallel_size * self.pipeline_model_parallel_size)
+
+    def _validate_parallelism(self):
+        tp, pp, ep = self.tensor_model_parallel_size, self.pipeline_model_parallel_size, self.expert_model_parallel_size
+        world_size = self.num_nodes * self.num_gpus_per_node
+        if min(tp, pp, ep) < 1 or world_size % (tp * pp):
+            raise ValueError("Positive TP and PP must divide the total GPU count")
+        if 8 % tp or tp < 2:
+            raise ValueError("TP must be 2, 4 or 8 for this sequence-parallel Inkling recipe")
+        if 256 % ep or (world_size // pp) % ep:
+            raise ValueError("EP must divide both 256 experts and the GPUs per pipeline stage (expert TP=1)")
+        overrides = [n for n in (self.decoder_first_pipeline_num_layers, self.decoder_last_pipeline_num_layers) if n is not None]
+        if overrides and (pp == 1 or any(n < 1 for n in overrides)):
+            raise ValueError("Pipeline layer overrides require PP > 1 and positive layer counts")
+        stages, layers = pp - len(overrides), 42 - sum(overrides)
+        if (stages == 0 and layers != 0) or (stages > 0 and (layers < stages or layers % stages)):
+            raise ValueError("42 layers must divide the remaining pipeline stages; for PP4 set --decoder-last-pipeline-num-layers 12")
 
     @property
     def hf_checkpoint(self):
@@ -169,15 +206,18 @@ def execute(args: ScriptArgs):
         "--disable-compute-advantages-and-returns --debug-train-only "
     )
     perf_args = (
-        f"--tensor-model-parallel-size 4 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
+        f"--tensor-model-parallel-size {args.tensor_model_parallel_size} --pipeline-model-parallel-size {args.pipeline_model_parallel_size} --expert-model-parallel-size {args.expert_model_parallel_size} --expert-tensor-parallel-size 1 --context-parallel-size 1 --sequence-parallel --micro-batch-size 1 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --seq-length {args.max_length} "
     )
+    for name in ("decoder_first_pipeline_num_layers", "decoder_last_pipeline_num_layers"):
+        if (value := getattr(args, name)) is not None:
+            perf_args += f"--{name.replace('_', '-')} {value} "
     optimizer_args = (
         f"--optimizer adam --lr {args.lr} --min-lr {args.min_lr} "
         # Megatron expresses warmup relative to the entire multi-epoch run.
         f"--lr-decay-style cosine --lr-warmup-init 0 --lr-warmup-fraction {args.warmup_epoch_fraction / args.num_epoch} "
         "--weight-decay 0.1 --clip-grad 1.0 "
     )
-    misc_args = f"--distributed-timeout-minutes {args.distributed_timeout_minutes} --bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
+    misc_args = f"--distributed-timeout-minutes {args.distributed_timeout_minutes} --bf16 --moe-router-dtype fp32 --transformer-impl transformer_engine --attention-dropout 0 --hidden-dropout 0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --no-bias-dropout-fusion --actor-num-nodes {args.num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)
     eval_args = ""
     if args.eval_enabled:

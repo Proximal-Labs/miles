@@ -525,7 +525,7 @@ def flex_compiled():
         assert flex_attention is not None, "flex_attention needs torch>=2.5 + inductor"
         torch._dynamo.config.cache_size_limit = 1024
         torch._dynamo.config.accumulated_cache_size_limit = 1024
-        _FLEX_COMPILED = torch.compile(flex_attention, dynamic=True, mode="max-autotune-no-cudagraphs")
+        _FLEX_COMPILED = torch.compile(flex_attention, dynamic=True, mode="default")
     return _FLEX_COMPILED
 
 

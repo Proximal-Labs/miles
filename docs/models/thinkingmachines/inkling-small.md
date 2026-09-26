@@ -64,7 +64,7 @@ entries. New shapes or changed code may compile again, and changing the image
 reference selects a separate cache directory. This does not add a kernel warmup.
 
 [`scripts/run_inkling_small_sft.py`](https://github.com/radixark/miles/blob/main/scripts/run_inkling_small_sft.py)
-targets **one node of 8 B300s**, text LoRA SFT, 10 epochs by default, with
+targets **one or two nodes of 8 B300s each**, text LoRA SFT, 10 epochs by default, with
 Miles' standard `adam` distributed optimizer. The BF16 base is frozen;
 only adapters are trained. Fresh SFT runs explicitly start at rollout 0; the release
 base checkpoint's iteration 0 does not count as a completed training rollout.
@@ -85,9 +85,8 @@ stay in GPU memory; CPU and NVMe optimizer
 offloading are disabled. LoRA reduces gradient/optimizer memory, but the full
 base weights and long-context activations still require GPU memory.
 An out-of-memory error fails the run without an offload fallback. No context
-parallelism is used in this experimental profile. The current Modal launcher is
-single-node; scaling to additional nodes requires a clustered launcher and an
-updated parallelism layout.
+parallelism is used in this experimental profile. The default remains one node;
+two-node training uses the same Miles training loop on an external Ray cluster.
 
 The provisional peak LR is `1e-5`. Linear warmup starts at zero and spans 10%
 of the samples in **one epoch**, followed by cosine decay over the rest of the
@@ -230,7 +229,8 @@ optimizer/scheduler state under `iter_XXXXXXX/adapter`, saved every 100 steps an
 at the end, plus a launch configuration. The base model is not saved again at
 each step. The backend also attempts an HF adapter export; native shards remain
 the training-resume format. Resume reloads the original converted base and the
-latest adapter directory containing all eight adapter and training-state shards.
+latest adapter directory containing all 8 or 16 adapter and training-state shards,
+according to the saved node count.
 The synchronous training loop saves the matching dataset cursor; resume requires
 that cursor and reads it from the adapter run rather than the frozen base directory.
 Use `--lora-adapter-path` to select a specific adapter directory; local `execute`
@@ -239,6 +239,54 @@ mode identical to the saved run. Existing full-parameter runs cannot be resumed
 as LoRA runs; use a new run ID. The launcher does not prune checkpoints.
 Persistent data and checkpoints use the Volume. Completed files are committed when a job exits; a
 hard container failure may lose work after the last persisted checkpoint.
+
+### Two-node training
+
+`--num-nodes 2` allocates two 8-B300 containers together using Modal's clustered
+function API with RDMA enabled. Both GPU nodes and a small CPU coordinator belong
+to the same Modal app instance. Only the head submits the Miles training job;
+the worker joins its Ray cluster. Data preparation and base-checkpoint conversion
+still use their existing single-node paths.
+
+The default TP4/PP2/EP4 layout becomes **DP2** on 16 GPUs. This increases training
+replicas without reducing model memory per GPU. For more model memory headroom,
+select PP4 and explicitly assign its uneven layers:
+
+```bash
+# Two training replicas, with the existing model layout.
+python -m scripts.run_inkling_small_sft modal --mode train \
+  --num-nodes 2 --run-id sft-dp2
+
+# One model spread over both nodes: stages have 10/10/10/12 layers.
+python -m scripts.run_inkling_small_sft modal --mode train \
+  --num-nodes 2 --pipeline-model-parallel-size 4 \
+  --decoder-last-pipeline-num-layers 12 --run-id sft-pp4
+```
+
+Use `--mode smoke` and a separate run ID to validate either layout first. These
+two-node SFT layouts have not yet been validated on live GPUs. TP and EP are also
+configurable via `--tensor-model-parallel-size` and `--expert-model-parallel-size`;
+expert TP and CP remain 1. DP is inferred as `8 * num_nodes / (TP * PP)`. The
+launcher checks GPU divisibility, the 42-layer allocation, expert partitioning,
+and global-batch divisibility by DP. Keep all parallelism and stage-layer settings
+unchanged when resuming; one-node checkpoints cannot resume onto two nodes.
+
+On completion or a handled cancellation/failure, the nodes stop Ray and each
+commits its own checkpoint shards. The head waits for the worker's commit before
+reporting success. Heartbeats detect an unresponsive peer; all waits are bounded.
+The coordinator terminates the GPU containers when the clustered call ends.
+
+The CLI launches detached, so closing it or pressing Ctrl+C locally does not stop
+the remote job. To terminate both training nodes, stop the specific app instance
+using its `ap-...` ID from the launch output:
+
+```bash
+MODAL_PROFILE=proximal modal app stop --env main <app-id>
+```
+
+A hard app stop can interrupt cleanup or a checkpoint write. Resume uses the
+latest fully persisted checkpoint with every rank's shards and the matching
+dataset cursor; cancellation does not promise a new final checkpoint.
 
 ### Proximal environment evaluation
 
