@@ -182,6 +182,12 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             )
             for attempt, sample in zip(attempts, prompt_group, strict=True)
         ]
+        if (sample_done := self._scheduler.sample_done_callback) is not None:
+            # Miles's contract (generate_and_rm_group): each sample frees its submission
+            # slot when it finishes, so the next group starts without waiting for this
+            # group's slowest rollout.
+            for task in tasks:
+                task.add_done_callback(lambda _task: sample_done())
         try:
             result = await asyncio.gather(*tasks)
         except (IneligibleAttempt, httpx.HTTPError) as exc:
@@ -195,9 +201,6 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            if self._scheduler.sample_done_callback is not None:
-                for _ in prompt_group:
-                    self._scheduler.sample_done_callback()
         return DataBufferInput(prompt_group=prompt_group, group=[sample for sample in result])
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:

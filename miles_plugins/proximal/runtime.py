@@ -34,7 +34,7 @@ def training_argv(path: str) -> list[str]:
         "max-weight-staleness": config.research.max_policy_lag,
         "async-unused-samples-handler": config.research.unused_groups,
         "async-max-concurrent-samples": config.max_in_flight_samples,
-        "rollout-submission-granularity": "group",
+        "rollout-submission-granularity": "sample",
         "rollout-temperature": config.research.sampling.temperature,
         "rollout-top-p": config.research.sampling.top_p,
         "rollout-top-k": config.research.sampling.top_k,
