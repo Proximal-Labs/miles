@@ -29,7 +29,7 @@ Args:
   --image: Modal container image; runtime preflight checks CUDA and GPUs.
   --model-dir / --data-dir / --output-dir: Paths inside the Modal Volume.
   --eval-config: JSON named environment sets and Proximal/Modal evaluation settings.
-  --eval-every-n-epochs: Evaluate before training and every N epochs (default 1).
+  --eval-every-n-epochs: Evaluate the pre-training snapshot and every N epochs (default 1).
     Zero disables all evaluation. Smoke mode never runs environment evaluations.
   --eval-rollouts-per-env: Override the config's rollout count for every environment.
 
@@ -44,6 +44,11 @@ Examples (local host, Modal credentials for proximal already configured):
 Inside a prepared container, use `execute` or `prepare` instead of `modal`.
 Multi-node `execute` requires an already joined Ray cluster and
 MILES_SCRIPT_EXTERNAL_RAY=1. Modal configures this automatically.
+
+Modal submission returns a durable FunctionCall ID and exits; use Modal app logs
+to monitor progress separately. Baseline evaluation runs concurrently with training
+after exporting its immutable snapshot. The next evaluation boundary waits for
+pending results, and evaluation failures still fail the training job visibly.
 """
 
 import json

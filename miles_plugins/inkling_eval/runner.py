@@ -1,4 +1,9 @@
-"""Durable evaluation orchestration; only snapshot export blocks training."""
+"""Durable evaluation orchestration with an asynchronous baseline.
+
+Training can proceed after exporting the immutable baseline snapshot. At the next
+evaluation boundary (or training completion), wait for pending evaluation results
+and propagate failures before submitting another snapshot.
+"""
 
 import asyncio
 import concurrent.futures
@@ -50,7 +55,7 @@ class EvaluationRunner:
             baseline = self.root / "step_00000000" / "point.json"
             if not baseline.exists():
                 await self._submit(0)
-            await self._settle()
+            logger.info("Baseline snapshot submitted; training may proceed while evaluation runs")
         elif not (self.root / "step_00000000" / "point.json").exists():
             raise ValueError("No baseline evaluation exists for this resumed run")
 
@@ -111,6 +116,7 @@ class EvaluationRunner:
         if self.pending is None:
             return
         future, self.pending = self.pending, None
+        logger.info("Waiting for pending evaluation before continuing")
         point = await asyncio.wrap_future(future)
         self._log(point)
 
@@ -138,6 +144,7 @@ class EvaluationRunner:
         try:
             deployment = point.get("deployment")
             if deployment is None:
+                logger.info("Evaluation step %s: deploying inference server", point["step"])
                 deployment = serving.deploy(
                     {
                         "base": self.args.hf_checkpoint,
@@ -154,7 +161,9 @@ class EvaluationRunner:
                 )
                 point["deployment"] = deployment
                 write_json(path, point)
+            logger.info("Evaluation step %s: waiting for inference app %s", point["step"], deployment["app_id"])
             serving.wait_ready(deployment["url"])
+            logger.info("Evaluation step %s: inference ready; starting rollouts", point["step"])
             platform.endpoint(name, {"mode": "dedicated", "baseURL": deployment["url"] + "/v1", "model": serving.WIRE_MODEL})
             self._run_suite(platform, point, path, identity, name)
             point["status"] = "complete"

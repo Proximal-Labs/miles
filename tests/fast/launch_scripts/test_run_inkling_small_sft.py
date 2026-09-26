@@ -23,7 +23,7 @@ def test_prepare_checks_volume_before_gpu_submission(monkeypatch, marker, expect
         yield marker
 
     monkeypatch.setattr(launcher, "volume", SimpleNamespace(read_file=read_file))
-    monkeypatch.setattr(launcher, "train", SimpleNamespace(remote=lambda config: events.append(("gpu", config))))
+    monkeypatch.setattr(launcher, "train", SimpleNamespace(spawn=lambda config: events.append(("gpu", config)) or SimpleNamespace(object_id="fc-test")))
     launcher.main(json.dumps({"mode": "prepare", "model_dir": "/mnt/inkling/custom-models"}))
     assert events[0] == ("read", "custom-models/Inkling-Small_torch_dist/latest_checkpointed_iteration.txt")
     assert len(events) == 1 + expected_calls
@@ -38,10 +38,44 @@ def test_prepare_volume_error_does_not_allocate_gpus(monkeypatch):
 
     monkeypatch.setattr(launcher, "volume", SimpleNamespace(read_file=read_file))
     monkeypatch.setattr(
-        launcher, "train", SimpleNamespace(remote=lambda config: pytest.fail("Unexpected GPU allocation"))
+        launcher, "train", SimpleNamespace(spawn=lambda config: pytest.fail("Unexpected GPU allocation"))
     )
     with pytest.raises(ConnectionError, match="Volume unavailable"):
         launcher.main('{"mode":"prepare"}')
+
+
+@pytest.mark.parametrize("mode,nodes,target", [("data", 1, "prepare_data"), ("train", 1, "train"), ("train", 2, "run_cluster")])
+def test_submission_returns_without_waiting_for_remote_work(monkeypatch, capsys, mode, nodes, target):
+    pytest.importorskip("modal")
+    import tools.modal_inkling_sft as launcher
+
+    submitted = []
+
+    def spawn(config):
+        submitted.append(json.loads(config))
+        # Deliberately no get() or remote(): the caller must not wait for work.
+        return SimpleNamespace(object_id="fc-durable")
+
+    monkeypatch.setattr(launcher, target, SimpleNamespace(spawn=spawn))
+    launcher.main(json.dumps({"mode": mode, "num_nodes": nodes, "run_id": "durable"}))
+    assert len(submitted) == 1
+    assert "FunctionCall fc-durable" in capsys.readouterr().out
+
+
+def test_ambiguous_submission_is_not_retried(monkeypatch):
+    pytest.importorskip("modal")
+    import tools.modal_inkling_sft as launcher
+
+    calls = []
+
+    def spawn(config):
+        calls.append(config)
+        raise ConnectionError("Submission acknowledgement lost")
+
+    monkeypatch.setattr(launcher, "run_cluster", SimpleNamespace(spawn=spawn))
+    with pytest.raises(ConnectionError, match="acknowledgement lost"):
+        launcher.main('{"mode":"train","num_nodes":2}')
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("cuda_version", ["13.0", "13.1", "12.9", None])
@@ -235,8 +269,8 @@ def test_two_nodes_only_allocated_for_training(monkeypatch, mode, expected):
 
     calls = []
     monkeypatch.setattr(launcher, "_prepared_checkpoint_cached", lambda config: False)
-    monkeypatch.setattr(launcher, "train", SimpleNamespace(remote=lambda config: calls.append("single")))
-    monkeypatch.setattr(launcher, "run_cluster", SimpleNamespace(remote=lambda config: calls.append("cluster")))
+    monkeypatch.setattr(launcher, "train", SimpleNamespace(spawn=lambda config: calls.append("single") or SimpleNamespace(object_id="fc-single")))
+    monkeypatch.setattr(launcher, "run_cluster", SimpleNamespace(spawn=lambda config: calls.append("cluster") or SimpleNamespace(object_id="fc-cluster")))
     launcher.main(json.dumps({"mode": mode, "num_nodes": 2}))
     assert calls == [expected]
 
@@ -260,7 +294,7 @@ def test_remote_coordinator_releases_both_containers(monkeypatch, failure):
         with pytest.raises(RuntimeError, match="cancelled"):
             launcher.run_cluster.local("{}")
         assert state["error"]
-        assert events[-2] == ("get", {"timeout": 180})
+        assert events[-2] == ("get", {"timeout": 15})
     else:
         launcher.run_cluster.local("{}")
     assert events[-1] == ("cancel", {"terminate_containers": True})

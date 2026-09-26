@@ -175,7 +175,17 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
 
     async def exercise():
         runner = EvaluationRunner(args, Actor(), 5)
-        await runner.start()
+        # Baseline rollouts may take many minutes. Neither start nor an ordinary
+        # training step should wait for them after the immutable export finishes.
+        baseline_blocked = threading.Event()
+        platform_server["blocked"] = baseline_blocked
+        try:
+            await asyncio.wait_for(runner.start(), timeout=2)
+            assert runner.pending is not None
+            await asyncio.wait_for(runner.after_step(1), timeout=2)
+        finally:
+            baseline_blocked.set()
+        await runner._settle()
         assert exports == [-1]
         assert len(platform_server["runs"]) == 2 * (rollouts or 1)
         assert definitions == [("eval/coding", "eval/coding/checkpoint_step"), ("eval/heldout", "eval/heldout/checkpoint_step")]

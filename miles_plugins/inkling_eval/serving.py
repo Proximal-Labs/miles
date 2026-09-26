@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 import httpx
 
 WIRE_MODEL = "thinkingmachines/Inkling-Small:snapshot"
+logger = logging.getLogger(__name__)
 
 
 def server_command(settings):
@@ -143,7 +145,11 @@ def deploy(settings, *, name, image, environment, gpu):
 def wait_ready(url, timeout=2100):
     key = os.environ["MODAL_INFERENCE_API_KEY"]
     deadline = time.monotonic() + timeout
+    next_log = time.monotonic()
     while time.monotonic() < deadline:
+        if time.monotonic() >= next_log:
+            logger.info("Waiting for evaluation inference startup (%.0fs remaining)", deadline - time.monotonic())
+            next_log = time.monotonic() + 60
         try:
             response = httpx.get(url + "/v1/models", headers={"Authorization": f"Bearer {key}"}, timeout=60)
             response.raise_for_status()

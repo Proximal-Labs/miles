@@ -1,4 +1,9 @@
-"""Modal transport for scripts/run_inkling_small_sft.py; no work runs on import."""
+"""Modal transport with durable asynchronous submission; no work runs on import.
+
+Launch with ``modal run --detach``. The local entrypoint prints a FunctionCall ID
+and exits after submission; inspect logs or retrieve that call's result separately.
+Do not retry an ambiguous submission automatically: check the app before resubmitting.
+"""
 
 import hashlib
 import json
@@ -224,13 +229,17 @@ def run_cluster(config_json: str):
         call = train_two_nodes.spawn(config_json, state)
         try:
             call.get()
-        except BaseException:
-            state["error"] = "Cluster coordinator cancelled or failed"
+        except BaseException as exc:
+            # Modal allows only 30 seconds for cancellation cleanup. Preserve the
+            # original failure even if the coordination service is unavailable.
             with suppress(Exception):
-                call.get(timeout=180)
+                state["error"] = f"Cluster coordinator: {type(exc).__name__}: {exc}"
+            with suppress(Exception):
+                call.get(timeout=15)
             raise
         finally:
-            call.cancel(terminate_containers=True)
+            with suppress(Exception):
+                call.cancel(terminate_containers=True)
 
 
 def _prepared_checkpoint_cached(config):
@@ -255,10 +264,15 @@ def main(config_json: str):
     config["image"] = os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE)
     config_json = json.dumps(config)
     if config["mode"] == "data":
-        prepare_data.remote(config_json)
+        target = prepare_data
     elif config["mode"] == "prepare" and _prepared_checkpoint_cached(config):
         print("Converted Inkling-Small checkpoint is cached on inkling-small-rft; skipping GPU allocation.")
+        return
     elif config["mode"] in {"smoke", "train"} and config.get("num_nodes", 1) == 2:
-        run_cluster.remote(config_json)
+        target = run_cluster
     else:
-        train.remote(config_json)
+        target = train
+    # A detached App alone does not make a synchronous .remote() call durable.
+    # Keep the only long-lived wait on Modal, inside the spawned coordinator.
+    call = target.spawn(config_json)
+    print(f"Submitted run {config.get('run_id', '(unspecified)')}: FunctionCall {call.object_id}", flush=True)
