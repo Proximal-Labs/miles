@@ -100,3 +100,23 @@ def test_bridge_builds_mtp_only_when_requested(
 
     assert provider.mtp_num_layers == requested
     assert provider.mtp_detach_heads is False
+
+
+def test_every_bridge_provider_site_applies_the_mtp_rule() -> None:
+    # Each function that builds a Bridge provider must apply the MTP rule. The LoRA path once
+    # built its own provider and silently kept the HF config's MTP layer.
+    root = Path(__file__).resolve().parents[4] / "miles"
+    sites = []
+    for path in root.rglob("*.py"):
+        for function in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            called = {
+                node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+            }
+            if "to_megatron_provider" in called:
+                sites.append(f"{path.relative_to(root)}:{function.name}")
+                assert called & {"apply_mtp_args", "_apply_bridge_runtime_config"}, sites[-1]
+    assert sites, "no Bridge provider sites found; the guard is not looking at the code"
