@@ -55,7 +55,10 @@
     ]
   },
   "rollouts_per_environment": 1,
-  "max_concurrent_rollouts": 4,
+  "max_concurrent_rollouts": 200,
+  "serving_max_running_requests": 128,
+  "serving_tokenizer_workers": 8,
+  "serving_cpu": 32,
   "modal_secret": "inkling-eval",
   "platform_ui_url": "https://platform.proximal.so"
 }
