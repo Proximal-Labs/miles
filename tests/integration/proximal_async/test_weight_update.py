@@ -54,10 +54,16 @@ def current_version(config):
     return asyncio.run(read())
 
 
-def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
+class NonFiniteAdapterIterator(CpuAdapterIterator):
+    def iter_hf_weights(self, weights, **kwargs):
+        for bucket in super().iter_hf_weights(weights, **kwargs):
+            yield [(name, tensor.fill_(float("nan")) if ".lora_B." in name else tensor) for name, tensor in bucket]
+
+
+def transfer_args(config, tmp_path):
     path = tmp_path / "config.json"
     path.write_text(config.model_dump_json())
-    args = Namespace(
+    return Namespace(
         proximal_config=str(path),
         proximal_yes_rollouts=True,
         proximal_yes_publish=True,
@@ -68,10 +74,31 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         update_weight_transfer_mode="broadcast",
         check_lora_weight_equal=False,
     )
+
+
+def single_rank():
     group = GroupInfo(rank=0, size=1, group=None)
-    parallel = ParallelState(
+    return ParallelState(
         **{key: group for key in ("intra_dp", "intra_dp_cp", "cp", "tp", "pp", "ep", "etp", "indep_dp")}
     )
+
+
+def make_updater(args, iterator_factory):
+    return WeightUpdater(
+        args,
+        [],
+        weights_getter=lambda: {},
+        model_name="qwen3",
+        quantization_config=None,
+        iterator_factory=iterator_factory,
+        parallel_state=single_rank(),
+        is_lora=True,
+        lora_sync_config={"peft_type": "LORA", "r": 2, "lora_alpha": 4, "target_modules": ["q_proj"]},
+    )
+
+
+def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
+    args = transfer_args(config, tmp_path)
     events = []
     fail = [False]
 
@@ -107,21 +134,8 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
     dist.init_process_group("gloo", init_method=f"file://{tmp_path}/rendezvous", rank=0, world_size=1)
     monkeypatch.setattr(distributed_utils, "GLOO_GROUP", dist.group.WORLD)
 
-    def make_updater():
-        return WeightUpdater(
-            args,
-            [],
-            weights_getter=lambda: {},
-            model_name="qwen3",
-            quantization_config=None,
-            iterator_factory=CpuAdapterIterator,
-            parallel_state=parallel,
-            is_lora=True,
-            lora_sync_config={"peft_type": "LORA", "r": 2, "lora_alpha": 4, "target_modules": ["q_proj"]},
-        )
-
     try:
-        updater = make_updater()
+        updater = make_updater(args, CpuAdapterIterator)
         updater.connect_rollout_engines([])
         updater.update_weights()
         assert updater.weight_version == 1
@@ -135,10 +149,28 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         assert len([e for e in events if e[0] == "prepare"]) == 2
         assert current_version(config) == 2
         # A restart from step 0 republishes version 1 and abandons version 2.
-        restarted = make_updater()
+        restarted = make_updater(args, CpuAdapterIterator)
         restarted.connect_rollout_engines([])
         restarted.update_weights()
         assert restarted.weight_version == 1
         assert current_version(config) == 1
+    finally:
+        dist.destroy_process_group()
+
+
+def test_weight_update_refuses_a_non_finite_adapter(config, tmp_path, monkeypatch):
+    """A policy with NaN weights never reaches the Volume, serving or the store."""
+    uploads = []
+    monkeypatch.setattr(weight_update, "modal_publish_snapshot", lambda authorization, snapshot: uploads.append(1))
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path}/rendezvous", rank=0, world_size=1)
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", dist.group.WORLD)
+
+    try:
+        updater = make_updater(transfer_args(config, tmp_path), NonFiniteAdapterIterator)
+        updater.connect_rollout_engines([])
+        with pytest.raises(RuntimeError, match="lora_B.weight is not finite"):
+            updater.update_weights()
+        assert uploads == []
+        assert current_version(config) is None
     finally:
         dist.destroy_process_group()

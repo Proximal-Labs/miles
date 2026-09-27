@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+import torch
 
 
 class FakeModelChunk:
@@ -120,3 +121,37 @@ class TestTrainOneStepStructuredLog:
             )
 
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
+
+
+class TestRequireFiniteUpdate:
+    """A non-finite update must stop training before it is checkpointed or synced."""
+
+    @staticmethod
+    def _chunk(value: float, *, trainable: bool = True) -> torch.nn.Module:
+        chunk = torch.nn.Linear(2, 2)
+        with torch.no_grad():
+            chunk.weight.fill_(value)
+        return chunk.requires_grad_(trainable)
+
+    def test_a_finite_update_passes(self):
+        from miles.backends.megatron_utils.model import _require_finite_update
+
+        _require_finite_update([self._chunk(1.0)], 0.5)
+
+    def test_a_non_finite_grad_norm_stops_training(self):
+        from miles.backends.megatron_utils.model import _require_finite_update
+
+        with pytest.raises(RuntimeError, match="grad norm nan"):
+            _require_finite_update([self._chunk(1.0)], float("nan"))
+
+    def test_non_finite_weights_stop_training_even_with_a_finite_grad_norm(self):
+        """An optimizer resumed without its moments turns finite gradients into NaN weights."""
+        from miles.backends.megatron_utils.model import _require_finite_update
+
+        with pytest.raises(RuntimeError, match="Non-finite optimizer update"):
+            _require_finite_update([self._chunk(float("inf"))], 0.01)
+
+    def test_frozen_weights_are_not_checked(self):
+        from miles.backends.megatron_utils.model import _require_finite_update
+
+        _require_finite_update([self._chunk(1.0), self._chunk(float("nan"), trainable=False)], 0.5)
