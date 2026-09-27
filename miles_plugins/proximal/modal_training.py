@@ -210,15 +210,19 @@ def _snapshot_loop(dsn: str, pg_bin: Path, stop: threading.Event, taken: int | N
         if not steps:
             continue
         step = steps[-1]
-        snapshots.take(
-            step,
-            checkpoints=STATE / "checkpoints",
-            artifacts=Path(RUN.artifact_directory),
-            dsn=dsn,
-            snapshot_root=SNAPSHOT,
-            pg_bin=pg_bin,
-        )
-        state_volume.commit()
+        try:
+            snapshots.take(
+                step,
+                checkpoints=STATE / "checkpoints",
+                artifacts=Path(RUN.artifact_directory),
+                dsn=dsn,
+                snapshot_root=SNAPSHOT,
+                pg_bin=pg_bin,
+            )
+            state_volume.commit()
+        except Exception as exc:  # A failed snapshot is retried next tick; a dead thread never snapshots again.
+            print(f"[training] snapshot of step {step} failed ({type(exc).__name__}: {exc}); retrying", flush=True)
+            continue
         taken = step
         print(f"[training] snapshot of step {step} committed", flush=True)
 
