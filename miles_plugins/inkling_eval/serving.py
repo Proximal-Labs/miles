@@ -60,6 +60,8 @@ def server_command(settings):
         "1",
         "--max-running-requests",
         str(settings["concurrency"]),
+        "--tokenizer-worker-num",
+        str(settings.get("tokenizer_workers", 1)),
         "--mem-fraction-static",
         "0.8",
         "--reasoning-parser",
@@ -115,6 +117,7 @@ def deploy(settings, *, name, image, environment, gpu):
     @app.server(
         image=container_image,
         gpu=gpu,
+        cpu=settings.get("cpu", 32),
         volumes={"/mnt/inkling": volume},
         serialized=True,
         min_containers=0,

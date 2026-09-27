@@ -83,7 +83,13 @@ async def train(args):
             await actor_model.clear_memory()
 
     async def save(rollout_id, force_sync=False):
-        force_sync = force_sync or rollout_id == args.num_rollout - 1
+        modal_environment = os.environ.get("MILES_INKLING_MODAL_ENVIRONMENT")
+        force_sync = force_sync or rollout_id == args.num_rollout - 1 or modal_environment is not None
+        if modal_environment is not None:
+            # Optional Modal transport; ordinary Miles jobs do not import its SDK.
+            from tools.inkling_checkpoint_recovery import invalidate_checkpoint, publish_checkpoint
+
+            await asyncio.to_thread(invalidate_checkpoint, args.save, rollout_id, modal_environment)
 
         async def save_training_model(model):
             if args.use_critic and args.offload_train:
@@ -97,6 +103,11 @@ async def train(args):
         if args.use_critic:
             await save_training_model(critic_model)
         await rollout_executor.save.remote(rollout_id)
+        if modal_environment is not None:
+            await asyncio.to_thread(
+                publish_checkpoint, args.save, rollout_id,
+                args.actor_num_nodes * args.actor_num_gpus_per_node, modal_environment,
+            )
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()

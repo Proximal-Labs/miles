@@ -58,6 +58,12 @@ class EvaluationRunner:
             logger.info("Baseline snapshot submitted; training may proceed while evaluation runs")
         elif not (self.root / "step_00000000" / "point.json").exists():
             raise ValueError("No baseline evaluation exists for this resumed run")
+        elif self.due(self.args.start_rollout_id) and not (
+            self.root / f"step_{self.args.start_rollout_id:08d}" / "point.json"
+        ).exists():
+            # Preemption may land between committing the training checkpoint and
+            # submitting its evaluation. Export the just-restored weights now.
+            await self._submit(self.args.start_rollout_id)
 
     def _resolve(self):
         path = self.root / "suite.json"
@@ -151,7 +157,9 @@ class EvaluationRunner:
                         "rank": self.args.lora_rank,
                         "tp": self.config.serving_tp,
                         "context_length": self.config.context_length,
-                        "concurrency": self.config.max_concurrent_rollouts,
+                        "concurrency": self.config.serving_max_running_requests or self.config.max_concurrent_rollouts,
+                        "tokenizer_workers": self.config.serving_tokenizer_workers,
+                        "cpu": self.config.serving_cpu,
                     },
                     name=name,
                     image=self.args.inkling_eval_image,

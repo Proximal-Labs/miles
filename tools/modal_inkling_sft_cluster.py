@@ -19,6 +19,23 @@ _PEER_TIMEOUT_SECONDS = 120
 _CLEANUP_SECONDS = 180
 
 
+class ClusterState:
+    """Namespace coordination keys by the Modal cluster allocation, including retries."""
+
+    def __init__(self, state, cluster_id):
+        self.state = state
+        self.prefix = cluster_id
+
+    def __setitem__(self, key, value):
+        self.state[f"{self.prefix}:{key}"] = value
+
+    def __getitem__(self, key):
+        return self.state[f"{self.prefix}:{key}"]
+
+    def get(self, key):
+        return self.state.get(f"{self.prefix}:{key}")
+
+
 def _wait(predicate, timeout, description):
     deadline = time.monotonic() + timeout
     while not predicate():

@@ -104,11 +104,23 @@ def test_platform_pins_images_routes_endpoint_and_keeps_zero_reward(platform_ser
     client.close()
 
 
-def test_serving_always_selects_fixed_adapter_and_bf16():
-    argv = server_command({"base": "/base", "tp": 8, "context_length": 262144, "rank": 32, "adapter": "/snapshots/step1", "concurrency": 4})
+@pytest.mark.parametrize("concurrency,workers", [(4, 1), (128, 8), (200, 8)])
+def test_serving_always_selects_fixed_adapter_and_bf16(concurrency, workers):
+    argv = server_command(
+        {"base": "/base", "tp": 8, "context_length": 262144, "rank": 32, "adapter": "/snapshots/step1", "concurrency": concurrency, "tokenizer_workers": workers}
+    )
     assert argv[argv.index("--lora-paths") + 1] == "snapshot=/snapshots/step1"
     assert argv[argv.index("--dtype") + 1] == "bfloat16"
     assert "--quantization" not in argv
+    assert argv[argv.index("--max-running-requests") + 1] == str(concurrency)
+    assert argv[argv.index("--tokenizer-worker-num") + 1] == str(workers)
+
+
+@pytest.mark.parametrize("field", ["serving_max_running_requests", "serving_tokenizer_workers", "serving_cpu"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_invalid_serving_limits(field, value):
+    with pytest.raises(ValueError, match=field):
+        EvalConfig(platform_url="https://api.example.com", sets={"coding": [1]}, **{field: value})
 
 
 def test_adapter_snapshot_roundtrip_and_integrity(tmp_path):
@@ -149,12 +161,30 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
     metrics, definitions, exports = [], [], []
     monkeypatch.setattr(tracking, "log", lambda args, values, step_key: metrics.append((values, step_key)))
     monkeypatch.setattr(tracking, "define_step_key_metric_group", lambda *args: definitions.append(args))
-    monkeypatch.setattr(serving, "deploy", lambda *args, **kwargs: {"app_id": "test", "url": "https://eval.modal.direct"})
+
+    def deploy(settings, **kwargs):
+        assert settings["concurrency"] == 128
+        assert settings["tokenizer_workers"] == 8
+        assert settings["cpu"] == 32
+        return {"app_id": "test", "url": "https://eval.modal.direct"}
+
+    monkeypatch.setattr(serving, "deploy", deploy)
     monkeypatch.setattr(serving, "wait_ready", lambda *args: None)
     monkeypatch.setattr(serving, "stop", lambda *args: None)
     monkeypatch.setattr(serving, "commit_volume", lambda *args: None)
     config = tmp_path / "eval.json"
-    config.write_text(json.dumps({"platform_url": "https://api.example.com", "sets": {"coding": [1], "heldout": [2]}}))
+    config.write_text(
+        json.dumps(
+            {
+                "platform_url": "https://api.example.com",
+                "sets": {"coding": [1], "heldout": [2]},
+                "max_concurrent_rollouts": 200,
+                "serving_max_running_requests": 128,
+                "serving_tokenizer_workers": 8,
+                "serving_cpu": 32,
+            }
+        )
+    )
     args = SimpleNamespace(
         inkling_eval_config=str(config),
         save=str(tmp_path / "run"),
@@ -223,5 +253,14 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         assert resumed.suite["environments"]["1"]["imageId"] == 11
         assert len(platform_server["runs"]) == 8 * (rollouts or 1)
         assert exports == [-1, 9, 19, 29]
+
+        # A committed epoch checkpoint can precede its snapshot submission when
+        # the training process is interrupted at the boundary.
+        args.start_rollout_id = 40
+        recovered = EvaluationRunner(args, Actor(), 5)
+        await recovered.start()
+        await recovered.finish()
+        assert exports == [-1, 9, 19, 29, 39]
+        assert len(platform_server["runs"]) == 10 * (rollouts or 1)
 
     asyncio.run(exercise())

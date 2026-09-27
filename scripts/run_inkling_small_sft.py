@@ -17,6 +17,7 @@ Args:
   --max-length: Total token cap, including reasoning and tool results.
   --num-epoch: Passes over the prepared dataset (default 10).
   --global-batch-size: Conversations per optimizer step (default 32).
+  --save-interval: Save a checkpoint every N training steps (default 1).
   --lr: Initial experimental Adam learning rate; no validated Inkling SFT LR.
   --min-lr: Cosine decay floor (default 1e-6).
   --warmup-epoch-fraction: Linear warmup up to one full epoch (default 0.1).
@@ -26,6 +27,7 @@ Args:
   --lora-adapter-path: Explicit native adapter checkpoint for resume; Modal can
     select the latest complete adapter checkpoint in the run directory.
   --run-id: Stable identifier; reuse with --resume to restore training state.
+  --auto-resume: Automatically recover an existing Modal run (default true).
   --image: Modal container image; runtime preflight checks CUDA and GPUs.
   --model-dir / --data-dir / --output-dir: Paths inside the Modal Volume.
   --eval-config: JSON named environment sets and Proximal/Modal evaluation settings.
@@ -53,6 +55,7 @@ queue, and evaluation failures still fail the training job visibly.
 """
 
 import json
+import os
 import shlex
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -90,8 +93,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 32
     lora_alpha: int = 32
     lora_adapter_path: str | None = None
-    save_interval: int = 100
+    save_interval: int = 1
     resume: bool = False
+    auto_resume: bool = True
     wandb_entity: str = "evan-proximal-proximal"
     wandb_project: str = "inkling-small-rft"
     profile: str = "proximal"
@@ -249,6 +253,8 @@ def execute(args: ScriptArgs):
             "WANDB_ENTITY": args.wandb_entity,
             "MILES_INKLING_ATTN_BACKEND": "flex",
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            **({"MILES_INKLING_MODAL_ENVIRONMENT": os.environ["MILES_INKLING_MODAL_ENVIRONMENT"]}
+               if "MILES_INKLING_MODAL_ENVIRONMENT" in os.environ else {}),
         },
     )
 

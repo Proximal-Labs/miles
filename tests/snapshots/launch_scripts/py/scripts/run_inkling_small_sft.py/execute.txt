@@ -55,7 +55,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --megatron-to-hf-mode raw
   --load /mnt/inkling/models/Inkling-Small_torch_dist
   --save /mnt/inkling/checkpoints/260101-000000-000
-  --save-interval 100
+  --save-interval 1
   --no-load-optim
   --no-load-rng
   --start-rollout-id 0

@@ -225,8 +225,8 @@ python -m scripts.run_inkling_small_sft modal --mode train --run-id sft-001 --re
 Each submission is detached. A smoke run measures the longest *actual* record;
 short data does not validate the configured 262K cap. Optional Proximal environment
 evaluation is described below. Output is native per-rank adapter checkpoints with
-optimizer/scheduler state under `iter_XXXXXXX/adapter`, saved every 100 steps and
-at the end, plus a launch configuration. The base model is not saved again at
+optimizer/scheduler state under `iter_XXXXXXX/adapter`, saved every training step
+by default (`--save-interval 1`), plus a launch configuration. The base model is not saved again at
 each step. The backend also attempts an HF adapter export; native shards remain
 the training-resume format. Resume reloads the original converted base and the
 latest adapter directory containing all 8 or 16 adapter and training-state shards,
@@ -237,8 +237,35 @@ Use `--lora-adapter-path` to select a specific adapter directory; local `execute
 requires that path explicitly when resuming. Keep rank, alpha, topology, LR and
 mode identical to the saved run. Existing full-parameter runs cannot be resumed
 as LoRA runs; use a new run ID. The launcher does not prune checkpoints.
-Persistent data and checkpoints use the Volume. Completed files are committed when a job exits; a
-hard container failure may lose work after the last persisted checkpoint.
+
+Modal launches automatically resume an existing compatible run from the latest
+complete checkpoint (`--auto-resume`, enabled by default). `--no-auto-resume`
+retains the explicit `--resume` requirement. Keep the same run ID for recovery;
+use a new ID for a separate experiment. A restarted new run with no published
+checkpoint repeats from the base model. Legacy runs use the complete native
+shards and matching dataset cursor for their first recovery.
+
+Each Modal checkpoint save waits for model and dataset writes, commits the Volume
+from every training node, verifies persisted files, then commits an
+`iter_XXXXXXX/complete.json` marker. New-format checkpoints without a valid marker
+are ignored during recovery. Preemption can repeat work since the last completed
+checkpoint; it cannot publish a checkpoint missing a rank or dataset cursor.
+The CPU coordinator uses `nonpreemptible=True` (Modal charges 3x CPU/memory rates
+for that function); GPU nodes remain preemptible. Coordination keys are isolated
+by cluster allocation so retries do not inherit a previous cluster's stop flags.
+
+Pending evaluations retain their immutable snapshots and recorded rollout results.
+Recovery also submits an epoch evaluation if interruption occurred between its
+training checkpoint and snapshot submission. Evaluation deployment or platform
+failures still surface as errors; checkpoint recovery does not add retries for
+those services. New native checkpoints include the distributed optimizer's FP32
+master weights and Adam moments as well as its metadata. Older checkpoints such
+as run 009 omitted those tensors: recovery logs a warning and retains fresh
+optimizer moments while restoring adapter weights, step, scheduler and dataset
+cursor. Those missing moments cannot be reconstructed. Checkpoints with complete
+optimizer tensors are larger than the old adapter-only files. RNG state is not
+yet saved by this LoRA checkpoint path, so bitwise-identical continuation is not
+guaranteed.
 
 ### Two-node training
 
@@ -373,6 +400,31 @@ The existing shared NVFP4 endpoint is not modified. Each new endpoint is registe
 under a unique name and removed after its runs finish, then its Modal app is stopped.
 Snapshots are retained for audit. Failed orchestration retains its endpoint and
 state so existing rollouts can finish and a resume can recover it.
+
+Concurrency has separate controls:
+
+- `max_concurrent_rollouts` limits active Proximal environment rollouts (default 4).
+- `serving_max_running_requests` caps SGLang's concurrent running requests. When
+  omitted, it follows `max_concurrent_rollouts` for compatibility.
+- `serving_tokenizer_workers` sets SGLang's tokenizer worker count (default 1).
+- `serving_cpu` reserves CPU cores for the serving container (default 32).
+
+The checked-in `eval-configs/inkling-eval-project-519-test-set-50.json` allows 200
+concurrent rollouts, with 128 running SGLang requests, 8 tokenizer workers, and
+32 CPU cores on the existing single 8-B300 replica. With one rollout per environment,
+the 50-task suite launches at most 50 rollouts; four rollouts per environment can
+fill all 200 slots. The four-task smoke config retains its concurrency of 4.
+Modal Servers already accept concurrent HTTP requests; `max_containers=1` limits
+replicas, not requests. Rollouts spend time executing tools, so their concurrency
+need not equal the number of requests decoding on the GPUs.
+
+These settings follow the Proximal Inkling-Small serving recipe's separation of
+rollout concurrency, decode concurrency, and CPU tokenization. That recipe serves
+NVFP4 weights; this evaluator serves BF16 plus a static LoRA snapshot. The higher
+limits need a load test on this evaluator: watch throughput, latency, KV-cache
+pressure, and GPU memory during graph capture before assuming 200-rollout capacity.
+Changing these settings requires a new run ID because resume freezes the eval
+configuration. Already launched trainers keep their uploaded configuration.
 
 This integration requires live validation of full Inkling adapter loading,
 trainer/serving numerical agreement, and a real environment rollout before treating

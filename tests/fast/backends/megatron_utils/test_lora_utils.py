@@ -4,6 +4,7 @@ Tests cover module name conversion, LoRA detection helpers, parameter identifica
 exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
+import copy
 import sys
 import types
 from argparse import Namespace
@@ -533,6 +534,7 @@ class TestLoadTrainingStateOptimizerGate:
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
+
     def test_load_lora_adapter_forwards_the_flag(self, tmp_path, monkeypatch):
         rank0 = SimpleNamespace(rank=0)
         monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: SimpleNamespace(tp=rank0, pp=rank0))
@@ -554,3 +556,80 @@ class TestLoadTrainingStateOptimizerGate:
         assert (loaded, iteration) == (True, 11)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
+
+
+class _DistributedAdamForResume:
+    """CPU Adam with the split metadata/tensor API used by Megatron."""
+
+    def __init__(self, model_param):
+        self.model_param = model_param
+        self.master = torch.nn.Parameter(model_param.detach().float().clone())
+        self.inner = torch.optim.Adam([self.master], lr=0.01)
+
+    def reload_model_params(self):
+        self.master.data.copy_(self.model_param.float())
+
+    def state_dict(self):
+        return {"metadata": "tensor state deliberately excluded"}
+
+    def get_parameter_state_dp_zero(self):
+        return {"master": self.master.detach().clone(), "adam": copy.deepcopy(self.inner.state_dict())}
+
+    def load_state_dict(self, state):
+        assert state["param_state_sharding_type"] == "dp_zero_gather_scatter"
+        self.master.data.copy_(state["param_state"]["master"])
+        self.inner.load_state_dict(state["param_state"]["adam"])
+
+    def step(self, gradient):
+        self.master.grad = torch.full_like(self.master, gradient)
+        self.inner.step()
+        self.inner.zero_grad()
+        self.model_param.data.copy_(self.master.to(self.model_param.dtype))
+
+
+def test_distributed_lora_resume_matches_next_adam_update(tmp_path, monkeypatch):
+    rank = SimpleNamespace(rank=0)
+    monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: SimpleNamespace(effective_dp=rank, cp=rank, tp=rank, pp=rank))
+    monkeypatch.setattr(lora_utils.os, "sync", lambda: None)
+    name = "layers.0.self_attention.lora_A.weight"
+    parameter = torch.nn.Parameter(torch.tensor([0.75, -0.25], dtype=torch.bfloat16))
+    original = _DistributedAdamForResume(parameter)
+    for gradient in (0.2, -0.3, 0.7):
+        original.step(gradient)
+    args = Namespace(megatron_to_hf_mode="raw", target_modules=["linear_qkv"], lora_rank=8,
+                     lora_alpha=16, lora_dropout=0.0, experts_shared_outer_loras=False, no_save_optim=False)
+    model = [SimpleNamespace(named_parameters=lambda: [(name, parameter)])]
+    save_lora_checkpoint(model, args, str(tmp_path), optimizer=original, iteration=2)
+    restored_parameter = torch.nn.Parameter(torch.zeros_like(parameter))
+    restored = _DistributedAdamForResume(restored_parameter)
+    restored_model = [SimpleNamespace(named_parameters=lambda: [(name, restored_parameter)])]
+    assert load_lora_adapter(restored_model, str(tmp_path), optimizer=restored) == (True, 2)
+    original.step(-0.4)
+    restored.step(-0.4)
+    torch.testing.assert_close(restored.master, original.master, rtol=0, atol=0)
+    torch.testing.assert_close(restored_parameter, parameter, rtol=0, atol=0)
+
+
+def test_legacy_distributed_state_keeps_fresh_moments_and_loaded_master(tmp_path, monkeypatch, caplog):
+    rank = SimpleNamespace(rank=0)
+    monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: SimpleNamespace(tp=rank, pp=rank))
+    name = "layers.0.self_attention.lora_A.weight"
+    torch.save({name: torch.tensor([2.0])}, tmp_path / "adapter_megatron_rank0.pt")
+    torch.save({"iteration": 5, "optimizer": {"metadata": "legacy"}}, tmp_path / "training_state_rank0.pt")
+    parameter = torch.nn.Parameter(torch.zeros(1))
+    optimizer = _DistributedAdamForResume(parameter)
+    model = [SimpleNamespace(named_parameters=lambda: [(name, parameter)])]
+    assert load_lora_adapter(model, str(tmp_path), optimizer=optimizer) == (True, 5)
+    assert optimizer.master.item() == 2.0
+    assert not optimizer.inner.state
+    assert "not an exact optimizer resume" in caplog.text
+
+
+def test_chained_distributed_optimizer_gathers_every_child():
+    children = [_DistributedAdamForResume(torch.nn.Parameter(torch.ones(1))) for _ in range(2)]
+    for child in children:
+        child.step(0.5)
+    chain = SimpleNamespace(chained_optimizers=children, state_dict=lambda: [child.state_dict() for child in children])
+    state = lora_utils._optimizer_checkpoint_state(chain)
+    assert len(state) == 2
+    assert all(item["param_state"]["adam"]["state"] for item in state)

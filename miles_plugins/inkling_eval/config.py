@@ -21,6 +21,9 @@ class EvalConfig:
     modal_secret: str = "inkling-eval"
     serving_gpu: str = "B300:8"
     serving_tp: int = 8
+    serving_max_running_requests: int | None = None
+    serving_tokenizer_workers: int = 1
+    serving_cpu: int = 32
     context_length: int = 1048576
     deployment_config: dict = field(default_factory=lambda: {"modal": {}})
 
@@ -42,10 +45,16 @@ class EvalConfig:
             "timeout_seconds",
             "poll_seconds",
             "serving_tp",
+            "serving_tokenizer_workers",
+            "serving_cpu",
             "context_length",
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.serving_max_running_requests is not None and (
+            type(self.serving_max_running_requests) is not int or self.serving_max_running_requests <= 0
+        ):
+            raise ValueError("serving_max_running_requests must be a positive integer")
         if self.reasoning_effort not in {"NONE", "MINIMAL", "LOW", "MEDIUM", "HIGH", "XHIGH", "MAX"}:
             raise ValueError("Unsupported reasoning_effort")
 

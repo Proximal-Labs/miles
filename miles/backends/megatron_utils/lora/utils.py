@@ -531,7 +531,7 @@ def save_lora_checkpoint(
         torch.save(
             {
                 "iteration": iteration,
-                "optimizer": optimizer.state_dict() if save_optimizer else None,
+                "optimizer": _optimizer_checkpoint_state(optimizer) if save_optimizer else None,
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             },
             save_path / f"training_state_rank{rank}.pt",
@@ -616,6 +616,10 @@ def load_lora_adapter(
             param.data.copy_(state_dict[name].to(device=param.device))
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
+        if optimizer is not None and callable(getattr(optimizer, "reload_model_params", None)):
+            # Mixed-precision optimizers own separate master parameters. Refresh
+            # them before loading any saved full-precision optimizer state.
+            optimizer.reload_model_params()
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer)
         return True, iteration
 
@@ -631,6 +635,30 @@ def load_lora_adapter(
 
     logger.warning(f"No adapter checkpoint found at {adapter_dir}")
     return False, None
+
+
+def _optimizer_parts(optimizer, state):
+    children = getattr(optimizer, "chained_optimizers", None)
+    if children is None:
+        return [(optimizer, state)]
+    states = state if isinstance(state, list) else [state]
+    if len(children) != len(states):
+        raise ValueError("Checkpoint optimizer chain does not match the current optimizer")
+    return [part for child, child_state in zip(children, states, strict=True)
+            for part in _optimizer_parts(child, child_state)]
+
+
+def _optimizer_checkpoint_state(optimizer):
+    state = optimizer.state_dict()
+    for child, child_state in _optimizer_parts(optimizer, state):
+        gather = getattr(child, "get_parameter_state_dp_zero", None)
+        if callable(gather):
+            # DistributedOptimizer.state_dict omits master weights and Adam
+            # moments. This collective gathers them onto each DP group's rank 0;
+            # the matching Megatron load_state_dict path scatters them on resume.
+            child_state["param_state"] = gather()
+            child_state["param_state_sharding_type"] = "dp_zero_gather_scatter"
+    return state
 
 
 def _load_training_state(
@@ -655,8 +683,18 @@ def _load_training_state(
     if not load_optimizer:
         logger.info("--no-load-optim: keeping the freshly initialized optimizer")
     elif training_state.get("optimizer") is not None:
-        optimizer.load_state_dict(training_state["optimizer"])
-        logger.info("Restored optimizer state from LoRA checkpoint")
+        state = training_state["optimizer"]
+        incomplete = any(
+            callable(getattr(child, "get_parameter_state_dp_zero", None)) and "param_state" not in child_state
+            for child, child_state in _optimizer_parts(optimizer, state)
+        )
+        if incomplete:
+            # Loading metadata alone allocates uninitialized moment tensors in
+            # Megatron. Legacy checkpoints cannot reconstruct the missing data.
+            logger.warning("Legacy LoRA checkpoint has no distributed optimizer tensors; keeping fresh optimizer moments and restored adapter weights. This is not an exact optimizer resume.")
+        else:
+            optimizer.load_state_dict(state)
+            logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])

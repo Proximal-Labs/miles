@@ -205,6 +205,7 @@ def test_modal_resume_skips_incomplete_newer_adapter(tmp_path, num_nodes):
     incomplete = tmp_path / "iter_0000020" / "adapter"
     for directory in (complete, incomplete):
         directory.mkdir(parents=True)
+        (directory / "adapter_config.json").write_text("{}")
         for rank in range(8 * num_nodes):
             (directory / f"adapter_megatron_rank{rank}.pt").write_bytes(b"shard")
             if directory == complete or rank < 8 * num_nodes - 1:

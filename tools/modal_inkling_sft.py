@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 import modal
 import modal.experimental
 
+from tools.inkling_checkpoint_recovery import PROTOCOL_FILE, checkpoint_complete, write_json
+
 _ROOT = Path(__file__).resolve().parents[1]
 _REMOTE_ROOT = "/opt/inkling-miles"
 app = modal.App("inkling-small-sft")
@@ -24,10 +26,10 @@ volume = modal.Volume.from_name("inkling-small-rft")
 _DEFAULT_IMAGE = "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d"
 _IMAGE_REF = os.environ.get("INKLING_MODAL_IMAGE", _DEFAULT_IMAGE)
 _CACHE_ROOT = f"/mnt/inkling/compile-cache/{hashlib.sha256(_IMAGE_REF.encode()).hexdigest()[:16]}"
-image = modal.Image.from_registry(_IMAGE_REF)
+image = modal.Image.from_registry(_IMAGE_REF).pip_install("modal==1.5.5")
 _EVAL_SECRET = os.environ.get("INKLING_EVAL_SECRET")
 if _EVAL_SECRET:
-    image = image.pip_install("modal==1.5.5", "httpx==0.28.1").env({"INKLING_EVAL_SECRET": _EVAL_SECRET})
+    image = image.pip_install("httpx==0.28.1").env({"INKLING_EVAL_SECRET": _EVAL_SECRET})
 # Set these before importing torch or starting Ray so every worker inherits them.
 # The existing final volume.commit() also preserves caches after failed jobs.
 image = image.entrypoint([]).env(
@@ -82,12 +84,47 @@ def _gpu_preflight():
 def _resume_adapter(args):
     candidates = [Path(args.lora_adapter_path)] if args.lora_adapter_path else sorted(Path(args.save_dir).glob("iter_[0-9]*/adapter"), reverse=True)
     for candidate in candidates:
-        required = [candidate / f"{prefix}{rank}.pt" for rank in range(args.num_nodes * args.num_gpus_per_node) for prefix in ("adapter_megatron_rank", "training_state_rank")]
         iteration = int(candidate.parent.name.removeprefix("iter_"))
-        required.append(candidate.parents[1] / f"rollout/global_dataset_state_dict_{iteration}.pt")
-        if all(path.is_file() and path.stat().st_size > 0 for path in required):
+        if checkpoint_complete(candidate.parents[1], iteration, args.num_nodes * args.num_gpus_per_node):
             return str(candidate)
     raise FileNotFoundError("No complete native LoRA checkpoint found with all training ranks and the matching dataset cursor")
+
+
+def _recover_run(args):
+    destination = Path(args.save_dir)
+    if not destination.exists():
+        if args.resume:
+            raise FileNotFoundError(f"Cannot resume missing run {destination}")
+        return args
+    if not (args.resume or args.auto_resume):
+        raise FileExistsError("Run directory already exists; use --resume or a new --run-id")
+    launch_path = destination / "launch.json"
+    if not launch_path.exists() and not args.resume:
+        # Preemption can land between creating the directory and atomically
+        # writing launch metadata. Only an untouched initialization may restart.
+        initial_files = {"launch.tmp", "evaluation-config.json", PROTOCOL_FILE}
+        if all(path.is_file() and path.name in initial_files for path in destination.iterdir()):
+            return args
+    saved = json.loads(launch_path.read_text())
+    saved = {"tensor_model_parallel_size": 4, "pipeline_model_parallel_size": 2, "expert_model_parallel_size": 4,
+             "decoder_first_pipeline_num_layers": None, "decoder_last_pipeline_num_layers": None, **saved}
+    fields = ("lora_rank", "lora_alpha", "num_nodes", "num_gpus_per_node", "lr", "min_lr", "warmup_epoch_fraction",
+              "mode", "tensor_model_parallel_size", "pipeline_model_parallel_size", "expert_model_parallel_size",
+              "decoder_first_pipeline_num_layers", "decoder_last_pipeline_num_layers", "global_batch_size",
+              "data_dir", "model_dir", "max_length", "num_epoch", "image")
+    for field in fields:
+        if saved.get(field) != getattr(args, field):
+            raise ValueError(f"Cannot resume with changed {field}; retain the saved LoRA configuration")
+    try:
+        adapter = _resume_adapter(args)
+    except FileNotFoundError:
+        if args.resume or (not (destination / PROTOCOL_FILE).exists() and any(destination.glob("iter_*"))):
+            raise
+        # An interrupted first attempt has no completed update to restore.
+        print("No published checkpoint yet; restarting from the base model", flush=True)
+        return args
+    print(f"Resuming from {adapter}", flush=True)
+    return replace(args, resume=True, lora_adapter_path=adapter)
 
 
 @app.function(
@@ -144,6 +181,8 @@ def train(config_json: str):
     import miles.utils.external_utils.command_utils as U
 
     args = _config(config_json)
+    if args.num_nodes == 1:
+        volume.reload()
     _gpu_preflight()
     if args.mode == "prepare":
         if not (Path(args.hf_checkpoint) / "model.safetensors.index.json").is_file():
@@ -158,16 +197,7 @@ def train(config_json: str):
     if not (Path(args.torch_dist) / "latest_checkpointed_iteration.txt").is_file():
         raise FileNotFoundError("Run --mode prepare first")
     destination = Path(args.save_dir)
-    if args.resume:
-        saved_config = json.loads((destination / "launch.json").read_text())
-        # Older one-node runs predate configurable parallelism.
-        saved_config = {"tensor_model_parallel_size": 4, "pipeline_model_parallel_size": 2, "expert_model_parallel_size": 4, "decoder_first_pipeline_num_layers": None, "decoder_last_pipeline_num_layers": None, **saved_config}
-        for field in ("lora_rank", "lora_alpha", "num_nodes", "num_gpus_per_node", "lr", "mode", "tensor_model_parallel_size", "pipeline_model_parallel_size", "expert_model_parallel_size", "decoder_first_pipeline_num_layers", "decoder_last_pipeline_num_layers"):
-            if saved_config.get(field) != getattr(args, field):
-                raise ValueError(f"Cannot resume with changed {field}; retain the saved LoRA configuration")
-        args = replace(args, lora_adapter_path=_resume_adapter(args))
-    if not args.resume and destination.exists():
-        raise FileExistsError("Run directory already exists; use --resume or a new --run-id")
+    args = _recover_run(args)
     destination.mkdir(parents=True, exist_ok=True)
     if args.eval_enabled:
         evaluation = json.loads(config_json).get("_eval_config")
@@ -179,14 +209,18 @@ def train(config_json: str):
             raise ValueError("Evaluation configuration changed on resume")
         config_path.write_text(encoded)
         args = replace(args, eval_config=str(config_path))
-    (destination / "launch.json").write_text(json.dumps(asdict(args), indent=2) + "\n")
+    write_json(destination / "launch.json", asdict(args))
+    if not (destination / PROTOCOL_FILE).exists():
+        legacy = int(Path(args.lora_adapter_path).parent.name.removeprefix("iter_")) if args.lora_adapter_path else None
+        write_json(destination / PROTOCOL_FILE, {"version": 1, "legacy_iteration": legacy})
+    volume.commit()
     print(f"EXPERIMENTAL: LoRA rank {args.lora_rank} / {args.num_nodes} x 8 B300 / TP{args.tensor_model_parallel_size} PP{args.pipeline_model_parallel_size} EP{args.expert_model_parallel_size} DP{args.data_parallel_size} / cap {args.max_length}; fit is unvalidated")
     try:
         # Bound subprocess time independently of Modal's outer 24-hour timeout,
         # leaving time to commit completed checkpoints after a failure.
         config_path = destination / "launch.json"
         U.exec_command_cpu(
-            shlex.join(
+            f"MILES_INKLING_MODAL_ENVIRONMENT={shlex.quote(args.environment)} " + shlex.join(
                 [
                     "timeout",
                     "--signal=TERM",
@@ -212,16 +246,18 @@ def train(config_json: str):
 @modal.experimental.clustered(size=2, rdma=True)
 def train_two_nodes(config_json: str, state: modal.Dict):
     # GPU/Ray dependencies are supplied by the remote image.
-    from tools.modal_inkling_sft_cluster import training_cluster
+    from tools.modal_inkling_sft_cluster import ClusterState, training_cluster
 
     args = _config(config_json)
     info = modal.experimental.get_cluster_info()
+    volume.reload()
+    state = ClusterState(state, f"{info.cluster_id}:{','.join(info.container_ips)}")
     with training_cluster(args, state, info.rank, info.container_ipv4_ips, volume, _gpu_preflight):
         if info.rank == 0:
             train.local(config_json)
 
 
-@app.function(image=image, timeout=86400, retries=0, max_containers=1)
+@app.function(image=image, timeout=86400, retries=0, max_containers=1, nonpreemptible=True)
 def run_cluster(config_json: str):
     # Own the coordination resource remotely so detaching the local CLI cannot
     # delete it underneath a running training job. All containers share this App.
