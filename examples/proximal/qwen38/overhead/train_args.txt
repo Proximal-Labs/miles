@@ -35,6 +35,9 @@
 --optimizer adam
 --lr 1e-5
 --lr-decay-style constant
+# The learning rate is constant, so the scheduler follows these arguments rather than a
+# checkpoint written at another batch size (its total-iteration count scales with the batch).
+--override-opt_param-scheduler
 --weight-decay 0.1
 --adam-beta1 0.9
 --adam-beta2 0.98
