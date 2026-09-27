@@ -101,6 +101,10 @@ class ModalVolumeTransfer(WeightTransferProtocol):
                     raise ValueError(f"Expected a single HF adapter tensor, got {name!r}")
                 if hf_name in self._tensors:
                     raise ValueError(f"Duplicate gathered adapter tensor: {hf_name}")
+                if not torch.isfinite(tensor).all():
+                    # A policy with NaN/inf weights must never become selectable.
+                    self._error = f"Adapter tensor {hf_name} is not finite; refusing to publish it"
+                    return
                 self._tensors[hf_name] = tensor.detach().to("cpu").contiguous().clone()
         except Exception as exc:
             self._error = f"{type(exc).__name__}: adapter staging failed"
