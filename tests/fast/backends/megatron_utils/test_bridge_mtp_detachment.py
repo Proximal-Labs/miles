@@ -76,9 +76,27 @@ def test_bridge_mtp_detachment(
     # A missing flag covers callers that only register Megatron's arguments.
     if enabled is not None:
         runtime_args.enable_mtp_training = enabled
+    runtime_args.mtp_num_layers = 1  # MTP requested, as --enable-mtp-training requires.
     provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
 
     apply_bridge_runtime_config(provider, runtime_args)
 
     assert provider.mtp_detach_heads is expected_detach
     assert provider.mtp_num_layers == 1
+
+
+@pytest.mark.parametrize("requested", [None, 1])
+def test_bridge_builds_mtp_only_when_requested(
+    apply_bridge_runtime_config: Callable,
+    runtime_args: argparse.Namespace,
+    requested: int | None,
+) -> None:
+    # The HF config brings an MTP layer. Unless --mtp-num-layers asks for it, the model gets
+    # none, so no undetached MTP loss trains the policy on its own sampled tokens.
+    runtime_args.mtp_num_layers = requested
+    provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=False)
+
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert provider.mtp_num_layers == requested
+    assert provider.mtp_detach_heads is False

@@ -49,6 +49,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
 
+    # Match the non-bridge path: the model has MTP layers only when --mtp-num-layers asks for
+    # them. Inherited from the HF config, they add an MTP loss to every training forward, and
+    # without detachment that loss trains the policy on its own sampled tokens.
+    provider.mtp_num_layers = getattr(args, "mtp_num_layers", None)
     # Match the non-bridge path: MTP must only train its own draft parameters.
     if getattr(args, "enable_mtp_training", False):
         provider.mtp_detach_heads = True
