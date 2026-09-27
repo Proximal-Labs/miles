@@ -28,6 +28,8 @@ async def test_completed_transport_is_not_enough_for_training(config, authorizat
 
 
 def handler(config, attempt, mutation="", calls=None):
+    polls = []
+
     def handle(request):
         assert request.headers["x-api-key"] == "platform-secret"
         method = request.url.path.rsplit("/", 1)[-1]
@@ -58,6 +60,15 @@ def handler(config, attempt, mutation="", calls=None):
                 "p2pEnforce": config.harness.p2p_enforce,
             }
             body = {"runId": attempt.attempt_id, "instancesStarted": 1}
+        elif method == "GetEnvironmentRunContainers" and mutation == "launching" and not polls:
+            # Proto JSON omits the agent while the container is still launching.
+            polls.append(method)
+            body = {
+                "runId": attempt.attempt_id,
+                "containers": [{"id": "rollout-1", "status": "ROLLOUT_CONTAINER_STATUS_LAUNCHING"}],
+            }
+        elif method == "GetEnvironmentRunContainers" and mutation == "malformed":
+            body = {"runId": attempt.attempt_id, "containers": [{"id": "rollout-1", "status": 3}]}
         elif method == "GetEnvironmentRunContainers" and mutation in ("launch_failed", "container_error"):
             error = (
                 "Launch failed: [resource_exhausted] container-lease admission queue wait exceeded 75000ms"
@@ -107,6 +118,19 @@ async def test_a_rollout_that_never_launched_is_told_apart_from_one_that_failed(
         with pytest.raises(IneligibleAttempt) as failed:
             await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
         assert not isinstance(failed.value, LaunchFailed)
+
+
+async def test_a_launching_container_without_an_agent_is_still_polled(config, authorization, attempt):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "launching"))) as client:
+        grade = await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
+    assert grade.status == "success"
+
+
+async def test_a_malformed_platform_reply_fails_the_attempt_not_the_run(config, authorization, attempt):
+    """Only IneligibleAttempt is contained to its group; any other error stops the rollout worker."""
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "malformed"))) as client:
+        with pytest.raises(IneligibleAttempt, match="Containers reply broke the wire contract at containers.0.status"):
+            await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
 
 
 @pytest.mark.parametrize(
