@@ -176,7 +176,8 @@ def training_command(resume_step: int | None) -> list[str]:
         token for line in lines if line.strip() and not line.lstrip().startswith("#") for token in shlex.split(line)
     ]
     model_args = shlex.split(load_model_args(TRAINING.model_args, model_script_dir=FORK / "scripts/models"))
-    args += ["--wandb-run-id", RUN.run_id]
+    # One W&B run per training run, named for it: a restart continues its history.
+    args += ["--wandb-run-id", RUN.run_id, "--wandb-group", RUN.run_id, "--disable-wandb-random-suffix"]
     if resume_step is not None:
         # LoRA resume: the base from the HF checkpoint, the adapter (with optimizer and
         # step) from the restored checkpoint; the task source restores its cursor.
