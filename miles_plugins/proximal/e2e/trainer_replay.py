@@ -193,7 +193,7 @@ def _write_fla_configs() -> list[str]:
     """After a tuning replay: every kernel Triton tuned, as FLA configs on the kernel volume."""
     # Only in the training image.
     import tilelang  # type: ignore[import-not-found]
-    import triton  # type: ignore[import-not-found]
+    import triton  # type: ignore[import-not-found,import-untyped,unused-ignore]
     from fla.ops.utils.cache import AutotuneKey  # type: ignore[import-not-found]
 
     from miles_plugins.proximal.kernel_tune import fla_configs, fla_key_hash, write_fla_configs
