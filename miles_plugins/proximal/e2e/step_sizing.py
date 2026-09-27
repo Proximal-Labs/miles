@@ -41,7 +41,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import modal
@@ -60,6 +60,7 @@ PROMPT_TOKENS, MODEL_SPAN, TOOL_SPAN = 2_000, 330, 1_900  # As trainer_replay: a
 LIBFABRIC, OFI_NCCL = "1.22.0", "1.19.0"
 # The container imports this module too: it must select the same profile and cluster size.
 _SIZING_ENV = {"SIZING_PROFILE": PROFILE, "SIZING_NODES": str(NODES)}
+Volumes = dict[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]
 
 # Modal injects the RDMA NCCL environment in EFA regions only when the image carries the
 # AWS OFI plugin at /opt/amazon (RoCE regions need nothing). Built only if absent.
@@ -116,14 +117,14 @@ def _batch_flags(argv: list[str], *, directory: Path, nodes: int, samples: int, 
 if PROFILE == "qwen38":
     from miles_plugins.proximal import modal_training as node
     from miles_plugins.proximal.e2e.trainer_replay import replay_command
-    from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, with_configs
+    from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume, with_configs
 
     assert RUN.research.group_size == GROUP_SIZE, "sizing assumes the production group size"
     KERNEL_SEED = Path("/kernels-seed")
     APP_NAME = f"{node.TRAINING.app_name}-sizing"
     # 1 TiB host memory: the first 8-node attempt had a container SIGKILLed (137) at
     # 768 GiB while eight ranks loaded weights; peak host RAM is recorded per node.
-    RESOURCES = {"gpu": node.TRAINING.gpu, "cpu": float(node.TRAINING.cpu), "memory": 1024 * 1024}
+    GPU, CPU, MEMORY = node.TRAINING.gpu, float(node.TRAINING.cpu), 1024 * 1024
     image = (
         add_fork_sources(
             with_configs(
@@ -141,7 +142,7 @@ if PROFILE == "qwen38":
         .add_local_dir(REPO / "scripts/models", str(FORK / "scripts/models"))
         .add_local_file(REPO / node.TRAINING.train_args, str(FORK / "train_args.txt"))
     )
-    VOLUMES: dict[str, modal.Volume] = {str(DEPLOYMENT.base_mount): node.base_volume.read_only()}
+    VOLUMES: Volumes = {str(DEPLOYMENT.base_mount): base_volume.read_only()}
     if node.kernel_volume is not None:
         VOLUMES[str(KERNEL_SEED)] = node.kernel_volume.read_only()
 
@@ -170,7 +171,7 @@ elif PROFILE == "inkling-small":
     WEIGHTS = Path("/mnt/inkling")
     HF, TORCH_DIST = WEIGHTS / "models/Inkling-Small", WEIGHTS / "models/Inkling-Small_torch_dist"
     APP_NAME = "miles-inkling-small-sizing"
-    RESOURCES = {"gpu": "B300:8", "cpu": 32.0, "memory": 1024 * 1024}
+    GPU, CPU, MEMORY = "B300:8", 32.0, 1024 * 1024
     ENV = {
         "PYTHONPATH": f"/root/Megatron-LM:{FORK}",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
@@ -334,7 +335,9 @@ def _dump_trainer_stacks(tag: str) -> str:
     """All threads (Python and native frames) of every trainer rank on this node, plus GPU
     utilization: what an idle rank is doing while its peers wait in a collective."""
     spy = next((p for p in _PY_SPY if shutil.which(p) or Path(p).exists()), None)
-    util = _sh("nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits").replace("\n", "; ")
+    util = _sh("nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits").replace(
+        "\n", "; "
+    )
     parts = [f"[dump {tag}] gpu idx,util%,MiB: {util}"]
     pids = _sh("pgrep -f '^ray::MegatronTrain'").split()
     full = []
@@ -361,7 +364,9 @@ def _fabric() -> dict[str, Any]:
         "verbs_devices": len(_sh("ls /sys/class/infiniband 2>/dev/null").split()),
         "efa_pci": _sh("lspci 2>/dev/null").lower().count(" efa"),
         "nccl_env": {
-            k: v for k, v in os.environ.items() if k.startswith(("NCCL_NET", "NCCL_IB_HCA", "FI_PROVIDER", "OFI_NCCL_FORCE"))
+            k: v
+            for k, v in os.environ.items()
+            if k.startswith(("NCCL_NET", "NCCL_IB_HCA", "FI_PROVIDER", "OFI_NCCL_FORCE"))
         },
     }
 
@@ -401,7 +406,8 @@ class _MemorySampler:
     node per phase label from the shared state."""
 
     def __init__(self, state: "_State", rank: int) -> None:
-        self.state, self.rank, self.peaks, self.stop = state, rank, {}, threading.Event()
+        self.state, self.rank, self.stop = state, rank, threading.Event()
+        self.peaks: dict[str, dict[str, float]] = {}
         self.dumped: set[str] = set()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -453,7 +459,11 @@ def _start_ray(state: "_State", rank: int, ips: list[str]) -> None:
         ray.init(address=f"{head}:6379")
         try:
             _wait(
-                lambda: {n["NodeManagerAddress"] for n in ray.nodes() if n["Alive"] and n["Resources"].get("GPU") == GPUS_PER_NODE}
+                lambda: {
+                    n["NodeManagerAddress"]
+                    for n in ray.nodes()
+                    if n["Alive"] and n["Resources"].get("GPU") == GPUS_PER_NODE
+                }
                 == set(ips),
                 900,
                 f"all {nodes * GPUS_PER_NODE} GPUs in Ray",
@@ -477,12 +487,18 @@ def _data_parallel_size(command: list[str], nodes: int) -> int:
     def size(flag: str) -> int:
         return int(command[command.index(flag) + 1]) if flag in command else 1
 
-    model_parallel = size("--tensor-model-parallel-size") * size("--pipeline-model-parallel-size") * size("--context-parallel-size")
+    model_parallel = (
+        size("--tensor-model-parallel-size") * size("--pipeline-model-parallel-size") * size("--context-parallel-size")
+    )
     return max(1, nodes * GPUS_PER_NODE // model_parallel)
+
+
 _NET = ("Using network", "NET/OFI Selected", "NET/OFI Initializing", "NET/IB : Using", "via NET/")
 
 
-def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, extra: list[str], state: "_State") -> dict[str, Any]:
+def _run_phase(
+    label: str, nodes: int, samples: int, steps: int, length: int, extra: list[str], state: "_State"
+) -> dict[str, Any]:
     started = time.monotonic()
     directory = write_phase(label, samples=samples, steps=steps, length=length)
     data_s = round(time.monotonic() - started)
@@ -494,7 +510,10 @@ def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, ex
     print(f"[sizing] phase {label}: mock data written in {data_s}s", flush=True)
     t0 = time.monotonic()
     per_group = -(-samples // _data_parallel_size(command, nodes))
-    dump_after, kill_after = DUMP_AFTER_S + PER_GROUP_SAMPLE_S * per_group, KILL_AFTER_S + 2 * PER_GROUP_SAMPLE_S * per_group
+    dump_after, kill_after = (
+        DUMP_AFTER_S + PER_GROUP_SAMPLE_S * per_group,
+        KILL_AFTER_S + 2 * PER_GROUP_SAMPLE_S * per_group,
+    )
     progress = {"last": t0, "seen": False}
     stall: dict[str, Any] = {"dumps": [], "killed": False}
     done = threading.Event()
@@ -520,10 +539,14 @@ def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, ex
                 process.terminate()
                 return
 
-    live = re.compile(r"perf \d+:|Timer (log_probs|actor_train) (start|end)|OutOfMemory|out of memory|Traceback|Using network|NET/OFI Selected")
+    live = re.compile(
+        r"perf \d+:|Timer (log_probs|actor_train) (start|end)|OutOfMemory|out of memory|Traceback|Using network|NET/OFI Selected"
+    )
     shown: set[str] = set()
     with log.open("w") as out:
-        process = subprocess.Popen(command, cwd=FORK, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        process = subprocess.Popen(
+            command, cwd=FORK, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+        )
         assert process.stdout is not None
         watcher = threading.Thread(target=monitor, args=(process,), daemon=True)
         watcher.start()
@@ -547,12 +570,19 @@ def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, ex
             perf.append({"rollout": int(m.group(1)), **ast.literal_eval(m.group(2))})
         except (ValueError, SyntaxError):
             pass
-    net = list(dict.fromkeys(line.split("NCCL INFO ")[-1][:120] for line in text.splitlines() if any(k in line for k in _NET)))[:8]
+    net = list(
+        dict.fromkeys(line.split("NCCL INFO ")[-1][:120] for line in text.splitlines() if any(k in line for k in _NET))
+    )[:8]
     errors = [
-        line[-300:] for line in text.splitlines() if re.search(r"OutOfMemory|out of memory|Traceback|NCCL WARN|Watchdog caught|Error:", line)
+        line[-300:]
+        for line in text.splitlines()
+        if re.search(r"OutOfMemory|out of memory|Traceback|NCCL WARN|Watchdog caught|Error:", line)
     ][:15]
     tail = "\n".join(line[:300] for line in text.splitlines()[-60:])
-    print(f"[sizing] phase {label}: exit {code} in {wall}s; perf rows {len(perf)}; net {net}; errors {errors[:4]}\n{tail}", flush=True)
+    print(
+        f"[sizing] phase {label}: exit {code} in {wall}s; perf rows {len(perf)}; net {net}; errors {errors[:4]}\n{tail}",
+        flush=True,
+    )
     return {
         "label": label, "samples_per_step": samples, "steps": steps, "length": length,
         "tokens_per_step": samples * length, "exit_code": code, "wall_s": wall, "mock_data_s": data_s,
@@ -561,8 +591,8 @@ def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, ex
     }  # fmt: skip
 
 
-@app.function(image=image, volumes=VOLUMES, timeout=4 * 3600, **RESOURCES)
-@modal.experimental.clustered(size=NODES, rdma=True)
+@app.function(image=image, volumes=VOLUMES, timeout=4 * 3600, gpu=GPU, cpu=CPU, memory=MEMORY)
+@modal.experimental.clustered(size=NODES, rdma=True)  # type: ignore[untyped-decorator]
 def sizing(plan: dict[str, Any], store: modal.Dict) -> dict[str, Any]:
     info = modal.experimental.get_cluster_info()
     state = _State(store, info.cluster_id)
@@ -578,7 +608,9 @@ def sizing(plan: dict[str, Any], store: modal.Dict) -> dict[str, Any]:
         _wait(lambda: all(state.get(f"fabric-{r}") for r in range(nodes)), 900, "every node's fabric report", state)
         fabrics = [state[f"fabric-{r}"] for r in range(nodes)]
         if not all(_fabric_ok(f) for f in fabrics) and not plan.get("allow_tcp"):
-            raise RuntimeError(f"no RDMA fabric on some node: {[(r, f['region'], f['verbs_devices'], f['efa_pci']) for r, f in enumerate(fabrics)]}")
+            raise RuntimeError(
+                f"no RDMA fabric on some node: {[(r, f['region'], f['verbs_devices'], f['efa_pci']) for r, f in enumerate(fabrics)]}"
+            )
         subprocess.run(["ray", "stop", "--force"], check=False, capture_output=True)
         _start_ray(state, rank, ips)
         sampler.thread.start()
@@ -588,14 +620,25 @@ def sizing(plan: dict[str, Any], store: modal.Dict) -> dict[str, Any]:
             return {"rank": rank}
         phases = []
         for p in plan["phases"]:
-            phases.append(_run_phase(f"s{p['samples']}", nodes, p["samples"], p["steps"], plan["length"], plan["extra_args"], state))
+            phases.append(
+                _run_phase(
+                    f"s{p['samples']}", nodes, p["samples"], p["steps"], plan["length"], plan["extra_args"], state
+                )
+            )
             if phases[-1]["exit_code"] != 0 and not plan.get("continue_on_failure"):
                 break
         state["phase"] = "done"
         state["stop"] = True
         _wait(lambda: all(state.get(f"memory-{r}") for r in range(1, nodes)), 300, "workers' memory reports", state)
         memory = {"0": sampler.peaks, **{str(r): state[f"memory-{r}"] for r in range(1, nodes)}}
-        return {"profile": PROFILE, "nodes": nodes, "cluster_id": info.cluster_id, "fabric": fabrics, "phases": phases, "peak_memory_mib": memory}
+        return {
+            "profile": PROFILE,
+            "nodes": nodes,
+            "cluster_id": info.cluster_id,
+            "fabric": fabrics,
+            "phases": phases,
+            "peak_memory_mib": memory,
+        }
     except BaseException as exc:
         state["error"] = f"rank {rank}: {type(exc).__name__}: {exc}"
         raise
@@ -605,19 +648,23 @@ def sizing(plan: dict[str, Any], store: modal.Dict) -> dict[str, Any]:
 
 
 @app.local_entrypoint()
-def main(phases: str = "8x2", length: int = 258_000, out: str = "step_sizing.json", extra: str = "", allow_tcp: bool = False) -> None:
+def main(
+    phases: str = "8x2", length: int = 258_000, out: str = "step_sizing.json", extra: str = "", allow_tcp: bool = False
+) -> None:
     plan = {
         "length": length,
         "phases": [{"samples": int(s), "steps": int(n)} for s, n in (p.split("x") for p in phases.split(","))],
         "extra_args": shlex.split(extra),
         "allow_tcp": allow_tcp,
     }
-    print(f"[sizing] {PROFILE} on {NODES} x {RESOURCES['gpu']}: {json.dumps(plan)}", flush=True)
+    print(f"[sizing] {PROFILE} on {NODES} x {GPU}: {json.dumps(plan)}", flush=True)
     with modal.Dict.ephemeral() as state:
         result = sizing.remote(plan, state)
     Path(out).write_text(json.dumps(result, indent=2, default=str))
     keys = ("rollout", "perf/step_time", "perf/log_probs_time", "perf/actor_train_time", "perf/actor_train_tok_per_s")
     for ph in result.get("phases", []):
-        rows = [{k: (round(v, 1) if isinstance(v, float) else v) for k, v in r.items() if k in keys} for r in ph["perf"]]
+        rows = [
+            {k: (round(v, 1) if isinstance(v, float) else v) for k, v in r.items() if k in keys} for r in ph["perf"]
+        ]
         print(f"[sizing] {ph['label']} exit {ph['exit_code']} wall {ph['wall_s']}s: {rows}", flush=True)
     print(f"[sizing] details in {out}", flush=True)
