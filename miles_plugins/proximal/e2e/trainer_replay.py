@@ -21,8 +21,10 @@ import json
 import os
 import random
 import shlex
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -134,7 +136,14 @@ app = modal.App(f"{node.TRAINING.app_name}-replay")
     volumes={str(DEPLOYMENT.base_mount): base_volume, **node.kernel_mounts},
     timeout=3 * 3600,
 )
-def replay(steps: list[list[int]], rollout_batch_size: int, tune: bool = False) -> dict[str, Any]:
+def replay(
+    steps: list[list[int]],
+    rollout_batch_size: int,
+    tune: bool = False,
+    env: dict[str, str] | None = None,
+    fresh_kernel_caches: bool = False,
+    stall_seconds: int = 0,
+) -> dict[str, Any]:
     step_bounds = tuple((low, high) for low, high in steps)
     write_mock_rollouts(step_bounds, groups=rollout_batch_size, group_size=RUN.research.group_size)
     # py-spy, for stack dumps of every rank while a step hangs (ray stack / py-spy dump).
@@ -151,6 +160,11 @@ def replay(steps: list[list[int]], rollout_batch_size: int, tune: bool = False) 
     if tune:
         # Tuning must autotune whatever the deployment's cache mode (kernel_tune).
         os.environ["FLA_CACHE_MODE"] = "disabled"
+    if fresh_kernel_caches:
+        # Empty local caches: every rank compiles every kernel, the cold start a new process can hit.
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = tempfile.mkdtemp(prefix="inductor-")
+        os.environ["TRITON_CACHE_DIR"] = tempfile.mkdtemp(prefix="triton-")
+    os.environ.update(env or {})  # Set before `ray start`: every rank inherits it.
     subprocess.run(["ray", "stop", "--force"], check=False, capture_output=True)
     subprocess.run(
         ["ray", "start", "--head", "--num-gpus", str(node.TRAINING.num_gpus), "--disable-usage-stats"], check=True
@@ -158,11 +172,14 @@ def replay(steps: list[list[int]], rollout_batch_size: int, tune: bool = False) 
     started = time.monotonic()
     log = Path("/tmp/replay.log")
     with log.open("w") as out:
-        code = subprocess.run(replay_command(len(step_bounds)), stdout=out, stderr=subprocess.STDOUT).returncode
+        trainer = subprocess.Popen(
+            replay_command(len(step_bounds)), stdout=out, stderr=subprocess.STDOUT, start_new_session=True
+        )
+        code, stall = _wait_or_stall(trainer, log, stall_seconds)
     text = log.read_text(errors="replace")
     print(text[-20000:], flush=True)
     tuned = _write_fla_configs() if tune else []
-    if node.kernel_volume is not None:
+    if node.kernel_volume is not None and not fresh_kernel_caches:
         node.kernel_volume.commit()
     wanted = (
         "train/",
@@ -186,7 +203,46 @@ def replay(steps: list[list[int]], rollout_batch_size: int, tune: bool = False) 
         "seconds": round(time.monotonic() - started),
         "lines": [line[:400] for line in text.splitlines() if any(w in line for w in wanted)][-200:],
         "fla_configs": tuned,
+        "stalled": stall is not None,
+        "stall_stacks": stall,
     }
+
+
+def _wait_or_stall(trainer: subprocess.Popen[bytes], log: Path, stall_seconds: int) -> tuple[int, str | None]:
+    """The trainer's exit code, or, when its log stops growing for ``stall_seconds``,
+    every rank's stacks (and their Inductor compile workers') before stopping it."""
+    last_size, last_change = -1, time.monotonic()
+    while (code := trainer.poll()) is None:
+        time.sleep(10)
+        size = log.stat().st_size
+        if size != last_size:
+            last_size, last_change = size, time.monotonic()
+        elif stall_seconds and time.monotonic() - last_change > stall_seconds:
+            stacks = _rank_stacks()
+            os.killpg(trainer.pid, signal.SIGKILL)
+            trainer.wait()
+            return -1, stacks
+    return code, None
+
+
+def _rank_stacks() -> str:
+    ranks = subprocess.run(
+        ["pgrep", "-f", "ray::MegatronTrainRayActor"], capture_output=True, text=True
+    ).stdout.split()
+    dumps = []
+    for pid in ranks:
+        workers = subprocess.run(["pgrep", "-P", pid], capture_output=True, text=True).stdout.split()
+        children = [
+            c
+            for w in workers
+            for c in subprocess.run(["pgrep", "-P", w], capture_output=True, text=True).stdout.split()
+        ]
+        for target in (pid, *children):
+            dump = subprocess.run(
+                ["py-spy", "dump", "--pid", target], capture_output=True, text=True, timeout=60
+            ).stdout
+            dumps.append(f"===== rank {pid} process {target}\n{dump}")
+    return "\n".join(dumps)[-200_000:]
 
 
 def _write_fla_configs() -> list[str]:
@@ -210,10 +266,19 @@ def _write_fla_configs() -> list[str]:
 
 
 @app.local_entrypoint()
-def main(steps: str = "", out: str = "trainer_replay.json", tune: bool = False) -> None:
+def main(
+    steps: str = "",
+    out: str = "trainer_replay.json",
+    tune: bool = False,
+    env: str = "",
+    fresh_kernel_caches: bool = False,
+    stall_seconds: int = 0,
+) -> None:
+    """``env`` is KEY=VALUE pairs, comma separated, for every rank (e.g. TORCHINDUCTOR_COMPILE_THREADS=1)."""
     bounds = [list(map(int, s.split("-"))) for s in steps.split(",")] if steps else [list(s) for s in DEFAULT_STEPS]
     lines = (node.REPO / node.TRAINING.train_args).read_text()
     batch = int(shlex.split(lines[lines.index("--rollout-batch-size") :])[1])
-    result = replay.remote(bounds, batch, tune)
+    overrides = dict(pair.split("=", 1) for pair in env.split(",") if pair)
+    result = replay.remote(bounds, batch, tune, overrides, fresh_kernel_caches, stall_seconds)
     Path(out).write_text(json.dumps(result, indent=2))
     print(f"[replay] exit {result['exit_code']} after {result['seconds']} s; details in {out}", flush=True)
