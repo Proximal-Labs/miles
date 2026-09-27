@@ -2,9 +2,9 @@
 # platform rollouts every step, 20 steps, sequences up to 256k tokens. 8 B300 at TP 4 with two
 # data-parallel ranks: a 262k-token micro-batch needs about 155 GB on one GPU (it ran out of
 # memory on H200's 141 GB), which B300's 288 GB holds.
-# No context parallelism: Megatron-Bridge's Qwen3-VL model (which Qwen3.8
-# uses) needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's
-# text-only path does not provide them. Log-probs are computed in 4,096-token fp32 chunks from
+# No context parallelism: it works (Miles's Qwen3-VL patch passes the rank-local MRoPE position
+# ids Megatron-Bridge 0.7 requires), but TP 1 x CP 2 ran out of memory at 256k on B300; see
+# ../README.md. Log-probs are computed in 4,096-token fp32 chunks from
 # the bf16 logits (~30 GiB at TP 4) and the loss recomputed, so no full-vocabulary fp32 tensor
 # exists; the trainer builds no MTP head (see ../README.md). Otherwise matches ../train_args.txt.
 --actor-num-nodes 1
