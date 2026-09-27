@@ -28,6 +28,11 @@ kernel cache is copied to local disk) and checkpoint saving is disabled.
     PROXIMAL_SERVING_CONFIG=examples/proximal/qwen38/overhead/serving.json \\
     PROXIMAL_TRAINING_CONFIG=examples/proximal/qwen38/overhead/training.json \\
       modal run --env main -m miles_plugins.proximal.e2e.step_sizing --phases 16x2,64x2,128x2
+
+``--extra`` overrides production arguments for every phase; ``--layouts`` gives one override
+per phase, ``;``-separated (empty keeps the production layout), to compare layouts on one
+cluster, e.g. ``--phases 64x3,128x3 --layouts ";--tensor-model-parallel-size 1
+--context-parallel-size 2 --max-tokens-per-gpu 131072"``.
 """
 
 import ast
@@ -623,12 +628,9 @@ def sizing(plan: dict[str, Any], store: modal.Dict) -> dict[str, Any]:
             state[f"memory-{rank}"] = sampler.peaks or {"none": {}}
             return {"rank": rank}
         phases = []
-        for p in plan["phases"]:
-            phases.append(
-                _run_phase(
-                    f"s{p['samples']}", nodes, p["samples"], p["steps"], plan["length"], plan["extra_args"], state
-                )
-            )
+        for index, p in enumerate(plan["phases"]):
+            label = f"p{index}-s{p['samples']}"
+            phases.append(_run_phase(label, nodes, p["samples"], p["steps"], plan["length"], p["extra_args"], state))
             if phases[-1]["exit_code"] != 0 and not plan.get("continue_on_failure"):
                 break
         state["phase"] = "done"
@@ -653,13 +655,26 @@ def sizing(plan: dict[str, Any], store: modal.Dict) -> dict[str, Any]:
 
 @app.local_entrypoint()
 def main(
-    phases: str = "8x2", length: int = 258_000, out: str = "step_sizing.json", extra: str = "", allow_tcp: bool = False
+    phases: str = "8x2",
+    length: int = 258_000,
+    out: str = "step_sizing.json",
+    extra: str = "",
+    layouts: str = "",
+    allow_tcp: bool = False,
+    continue_on_failure: bool = False,
 ) -> None:
+    specs = [p.split("x") for p in phases.split(",")]
+    per_phase = layouts.split(";") if layouts else [""] * len(specs)
+    if len(per_phase) != len(specs):
+        raise ValueError(f"--layouts has {len(per_phase)} entries for {len(specs)} phases")
     plan = {
         "length": length,
-        "phases": [{"samples": int(s), "steps": int(n)} for s, n in (p.split("x") for p in phases.split(","))],
-        "extra_args": shlex.split(extra),
+        "phases": [
+            {"samples": int(s), "steps": int(n), "extra_args": shlex.split(extra) + shlex.split(layout)}
+            for (s, n), layout in zip(specs, per_phase, strict=True)
+        ],
         "allow_tcp": allow_tcp,
+        "continue_on_failure": continue_on_failure,
     }
     print(f"[sizing] {PROFILE} on {NODES} x {GPU}: {json.dumps(plan)}", flush=True)
     with modal.Dict.ephemeral() as state:
