@@ -35,7 +35,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import modal
 
@@ -67,6 +67,21 @@ state_volume = modal.Volume.from_name(
     environment_name=TRAINING.state_volume.environment_name,
     create_if_missing=False,
 )
+# Kernel compilation and tuning shared across runs (training.KernelCache).
+kernel_volume = (
+    modal.Volume.from_name(
+        TRAINING.kernel_cache.volume.volume_name,
+        environment_name=TRAINING.kernel_cache.volume.environment_name,
+        create_if_missing=False,
+    )
+    if TRAINING.kernel_cache is not None
+    else None
+)
+kernel_mounts: dict[str | PurePosixPath, modal.Volume | modal.CloudBucketMount] = (
+    {str(TRAINING.kernel_cache.mount): kernel_volume}
+    if TRAINING.kernel_cache is not None and kernel_volume is not None
+    else {}
+)
 # One snapshot namespace per run: a new run must never resume another run's state.
 SNAPSHOT = SNAPSHOT_MOUNT / RUN.run_id
 FORK = Path("/fork")  # This fork's files that are not Python packages.
@@ -88,6 +103,7 @@ MEGATRON_ENV = {
         if TRAINING.cuda_allocator == "expandable_segments"
         else {}
     ),
+    **(TRAINING.kernel_cache.env() if TRAINING.kernel_cache is not None else {}),
 }
 
 image = add_fork_sources(
@@ -293,7 +309,7 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     # function otherwise gets about one core and they starve.
     cpu=float(TRAINING.cpu),
     memory=TRAINING.memory_mib,
-    volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume},
+    volumes={str(DEPLOYMENT.base_mount): base_volume, str(SNAPSHOT_MOUNT): state_volume, **kernel_mounts},
     retries=modal.Retries(max_retries=TRAINING.max_retries, initial_delay=30.0) if TRAINING.max_retries else None,
     secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
     timeout=24 * 3600,
@@ -369,6 +385,12 @@ def train() -> int:
                     process.wait(timeout=20)
                 except subprocess.TimeoutExpired:
                     process.kill()
+            # Compiled kernels this attempt built, for the next run; losing them costs only time.
+            if kernel_volume is not None:
+                try:
+                    kernel_volume.commit()
+                except Exception as exc:
+                    print(f"[training] kernel cache commit failed ({type(exc).__name__})", flush=True)
 
 
 @app.local_entrypoint()

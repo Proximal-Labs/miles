@@ -13,6 +13,7 @@
     "volume_name": "miles-qwen38-state",
     "environment_name": "main"
   },
+  "kernel_cache": null,
   "secrets": [
     "miles-qwen38-gateway",
     "miles-gsm8k-proxy",

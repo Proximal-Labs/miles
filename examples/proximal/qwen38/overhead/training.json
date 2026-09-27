@@ -13,6 +13,11 @@
     "volume_name": "miles-qwen38-state",
     "environment_name": "main"
   },
+  "kernel_cache": {
+    "volume": {"volume_name": "miles-qwen38-kernels", "environment_name": "main"},
+    "mount": "/kernels",
+    "fla_cache_mode": "fuzzy"
+  },
   "secrets": [
     "miles-qwen38-gateway",
     "miles-gsm8k-proxy",

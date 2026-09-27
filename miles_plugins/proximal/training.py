@@ -19,10 +19,10 @@ This module has no Modal dependency, so the registry checks are testable offline
 
 import json
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from miles_plugins.proximal.contracts import Contract, Positive, RunConfig
 from miles_plugins.proximal.modal_volume import VolumeDestination
@@ -41,6 +41,48 @@ class RealPlatform(Contract):
     kind: Literal["real"]
     # How long a start waits for the operator to register its tunnel.
     registration_timeout_seconds: Positive
+
+
+class KernelCache(Contract):
+    """Kernel compilation and tuning results kept on a Volume, shared by runs.
+
+    The GDN layers' flash-linear-attention kernels autotune on first use, and some
+    key their tuning on the packed sequence length. Our microbatches hold up to a whole
+    rollout (262k tokens, variable), so nearly every microbatch was a new shape: ranks
+    re-tuned on the CPU with GPUs idle, unevenly, until a peer outwaited the NCCL
+    timeout (run 007). ``fuzzy`` loads configs tuned once (``kernel_tune``) and reuses
+    them at every length (FLA_CACHE_MODE); ``disabled`` autotunes, as FLA does by default.
+    The Triton, TileLang and Inductor caches live here too, so no run recompiles what
+    an earlier one already built.
+    """
+
+    volume: VolumeDestination
+    mount: PurePosixPath
+    fla_cache_mode: Literal["disabled", "fuzzy"]
+
+    @model_validator(mode="after")
+    def _absolute(self) -> "KernelCache":
+        if not self.mount.is_absolute():
+            raise ValueError("kernel_cache.mount must be an absolute container path")
+        return self
+
+    @property
+    def fla_config_dir(self) -> PurePosixPath:
+        return self.mount / "fla-configs"
+
+    @property
+    def triton_cache_dir(self) -> PurePosixPath:
+        return self.mount / "triton"
+
+    def env(self) -> dict[str, str]:
+        """The environment every trainer rank starts with."""
+        return {
+            "TRITON_CACHE_DIR": str(self.triton_cache_dir),
+            "TILELANG_CACHE_DIR": str(self.mount / "tilelang"),
+            "TORCHINDUCTOR_CACHE_DIR": str(self.mount / "inductor"),
+            "FLA_CONFIG_DIR": str(self.fla_config_dir),
+            "FLA_CACHE_MODE": self.fla_cache_mode,
+        }
 
 
 class TrainingDeployment(Contract):
@@ -70,6 +112,7 @@ class TrainingDeployment(Contract):
     # Miles training arguments file, relative to the repository root.
     train_args: Nonempty
     state_volume: VolumeDestination
+    kernel_cache: KernelCache | None
     secrets: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
     platform: Annotated[Gsm8kPlatform | RealPlatform, Field(discriminator="kind")]
 
