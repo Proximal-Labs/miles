@@ -532,6 +532,7 @@ def save_lora_checkpoint(
             {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
+                "optimizer_parameter_state": _parameter_state(optimizer) if save_optimizer else None,
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             },
             save_path / f"training_state_rank{rank}.pt",
@@ -614,6 +615,10 @@ def load_lora_adapter(
             )
         for name, param in adapter_params.items():
             param.data.copy_(state_dict[name].to(device=param.device))
+        if optimizer is not None:
+            # The optimizer copied its fp32 main params before this load; without a
+            # refresh, the first step() writes those pre-load values over the adapter.
+            optimizer.reload_model_params()
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer)
@@ -655,7 +660,10 @@ def _load_training_state(
     if not load_optimizer:
         logger.info("--no-load-optim: keeping the freshly initialized optimizer")
     elif training_state.get("optimizer") is not None:
+        parameter_states = _checked_parameter_states(optimizer, training_state, state_path)
         optimizer.load_state_dict(training_state["optimizer"])
+        for part, parameter_state in zip(_distributed_optimizers(optimizer), parameter_states, strict=True):
+            part.load_parameter_state_from_dp_reshardable(parameter_state)
         logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
@@ -666,6 +674,45 @@ def _load_training_state(
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
     return iteration
+
+
+def _distributed_optimizers(optimizer: Any) -> list[Any]:
+    """The Megatron DistributedOptimizers inside ``optimizer``.
+
+    Their ``state_dict()`` carries no parameter state: the fp32 main params and the
+    Adam moments are saved separately, and ``load_state_dict()`` leaves them as
+    ``torch.empty`` placeholders until that state is loaded.
+    """
+    parts = getattr(optimizer, "chained_optimizers", None) or [optimizer]
+    return [part for part in parts if hasattr(part, "get_parameter_state_dp_reshardable")]
+
+
+def _parameter_state(optimizer: Any) -> list[Any]:
+    """This rank's shard of each distributed optimizer's parameter state, on CPU."""
+    return [_to_cpu(part.get_parameter_state_dp_reshardable()) for part in _distributed_optimizers(optimizer)]
+
+
+def _checked_parameter_states(optimizer: Any, training_state: dict[str, Any], state_path: Path) -> list[Any]:
+    parts = _distributed_optimizers(optimizer)
+    parameter_states = training_state.get("optimizer_parameter_state") or []
+    if len(parameter_states) != len(parts):
+        raise RuntimeError(
+            f"{state_path} holds parameter state for {len(parameter_states)} distributed optimizers, "
+            f"this run has {len(parts)}; its Adam moments would start as uninitialized memory. "
+            "Resume with --no-load-optim to keep a fresh optimizer instead."
+        )
+    return parameter_states
+
+
+def _to_cpu(state: Any) -> Any:
+    # Copy, so a view does not serialize the whole buffer it points into.
+    if isinstance(state, torch.Tensor):
+        return state.detach().to("cpu", copy=True)
+    if isinstance(state, dict):
+        return {key: _to_cpu(value) for key, value in state.items()}
+    if isinstance(state, list):
+        return [_to_cpu(value) for value in state]
+    return state
 
 
 # ---------------------------------------------------------------------------

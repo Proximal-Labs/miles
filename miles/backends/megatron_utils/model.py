@@ -410,6 +410,27 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _require_finite_update(model: Sequence[DDP], grad_norm: float | torch.Tensor | None) -> None:
+    """Stop every rank before a non-finite update reaches a checkpoint or a weight sync.
+
+    The weights are checked too: an optimizer whose state was never restored turns
+    finite gradients into non-finite weights.
+    """
+    trainable = [param for model_chunk in model for param in model_chunk.parameters() if param.requires_grad]
+    device = trainable[0].device if trainable else torch.device("cuda", torch.cuda.current_device())
+    finite = torch.ones((), dtype=torch.int32, device=device)
+    if grad_norm is not None and not math.isfinite(float(grad_norm)):
+        finite.zero_()
+    if trainable:
+        finite &= torch.stack([torch.isfinite(param).all() for param in trainable]).all().int()
+    if torch.distributed.is_initialized():
+        torch.distributed.all_reduce(finite, op=torch.distributed.ReduceOp.MIN)
+    if not finite.item():
+        raise RuntimeError(
+            f"Non-finite optimizer update (grad norm {grad_norm}); stopping before it is saved or synced"
+        )
+
+
 def run_forward_backward_pass(
     args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
 ):
@@ -605,6 +626,8 @@ def train_one_step(
     if not disable_optimizer and valid_step:
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
         assert update_successful
+        if getattr(args, "check_for_nan_in_loss_and_grad", True):
+            _require_finite_update(model, grad_norm)
         opt_param_scheduler.step(increment=num_rollouts)
 
     _zero_grads(model, optimizer, disable_optimizer)

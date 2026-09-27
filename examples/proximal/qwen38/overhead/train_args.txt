@@ -10,8 +10,8 @@
 --actor-num-nodes 1
 --actor-num-gpus-per-node 8
 --calculate-per-token-loss
---rollout-batch-size 4
---global-batch-size 32
+--rollout-batch-size 8
+--global-batch-size 64
 --num-rollout 20
 --tensor-model-parallel-size 4
 --sequence-parallel
@@ -36,6 +36,9 @@
 --optimizer adam
 --lr 1e-5
 --lr-decay-style constant
+# The learning rate is constant, so the scheduler follows these arguments rather than a
+# checkpoint written at another batch size (its total-iteration count scales with the batch).
+--override-opt_param-scheduler
 --weight-decay 0.1
 --adam-beta1 0.9
 --adam-beta2 0.98

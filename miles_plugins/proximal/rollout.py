@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from dataclasses import replace
@@ -16,10 +17,11 @@ from miles.rollout.session.samples.codec import decode_samples_and_merge_input_s
 from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
-from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
+from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, LaunchFailed, PlatformClient
 from miles_plugins.proximal.contracts import (
     AcceptedAttempt,
     Attempt,
+    LaunchRetry,
     SessionHandle,
     Task,
     canonical_bytes,
@@ -89,6 +91,38 @@ async def execute_attempt(
         task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
         _releases.add(task)
         task.add_done_callback(_releases.discard)
+
+
+async def execute_with_launch_retry(
+    attempt: Attempt,
+    sample: Sample,
+    *,
+    capture: CaptureClient,
+    platform: PlatformClient,
+    artifact_root: Path,
+    retry: LaunchRetry,
+    rng: random.Random | None = None,
+) -> Sample:
+    """``execute_attempt``, relaunching under a new attempt identity when the platform could
+    not start the rollout (LaunchFailed). Each launch is its own platform run and capture
+    session; the group, sample, task and policy stay the same."""
+    rng = rng or random.Random()
+    await asyncio.sleep(rng.uniform(0, retry.stagger_seconds))
+    for launch in range(retry.attempts):
+        try:
+            return await execute_attempt(
+                attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root
+            )
+        except LaunchFailed as exc:
+            if launch == retry.attempts - 1:
+                raise
+            delay = rng.uniform(0, min(retry.max_backoff_seconds, retry.backoff_seconds * 2**launch))
+            logger.warning(
+                "Launch %d of attempt %s failed (%s); relaunching in %.0fs", launch + 1, attempt.attempt_id, exc, delay
+            )
+            await asyncio.sleep(delay)
+            attempt = Attempt.model_validate({**attempt.model_dump(), "attempt_id": uuid.uuid4().hex})
+    raise AssertionError("unreachable")
 
 
 def _sample_index(sample: Sample) -> int:
@@ -172,12 +206,13 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         ]
         tasks = [
             asyncio.create_task(
-                execute_attempt(
+                execute_with_launch_retry(
                     attempt,
                     sample,
                     capture=self._capture,
                     platform=self._platform,
                     artifact_root=self.config.artifact_directory / self.config.run_id / "accepted",
+                    retry=self.config.launch_retry,
                 )
             )
             for attempt, sample in zip(attempts, prompt_group, strict=True)

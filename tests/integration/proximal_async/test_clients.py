@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from miles_plugins.proximal.authorization import authorize_run
-from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
+from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, LaunchFailed, PlatformClient
 from miles_plugins.proximal.contracts import RunConfig, SessionHandle, digest
 
 
@@ -50,12 +50,26 @@ def handler(config, attempt, mutation="", calls=None):
                 "reasoningEffort": "AGENT_REASONING_EFFORT_HIGH",
             }
             assert submitted["autoTriggerAnalysis"] is False
+            # The run config's rollout sandbox: Kata + Cloud Hypervisor on Kubernetes.
+            assert submitted["deploymentConfig"] == {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}}
             assert submitted["config"]["harborOptions"] == {
                 "maxTurns": config.harness.max_turns,
                 "maxSessionTokens": attempt.sampling.max_sequence_tokens,
                 "p2pEnforce": config.harness.p2p_enforce,
             }
             body = {"runId": attempt.attempt_id, "instancesStarted": 1}
+        elif method == "GetEnvironmentRunContainers" and mutation in ("launch_failed", "container_error"):
+            error = (
+                "Launch failed: [resource_exhausted] container-lease admission queue wait exceeded 75000ms"
+                if mutation == "launch_failed"
+                else "sandbox exited with code 137"
+            )
+            body = {
+                "runId": attempt.attempt_id,
+                "containers": [
+                    {"id": "rollout-1", "status": "ROLLOUT_CONTAINER_STATUS_ERROR", "agentType": "x", "error": error}
+                ],
+            }
         elif method == "GetEnvironmentRunContainers":
             body = {
                 "runId": attempt.attempt_id,
@@ -82,6 +96,33 @@ def handler(config, attempt, mutation="", calls=None):
         return httpx.Response(200, json=body)
 
     return handle
+
+
+async def test_a_rollout_that_never_launched_is_told_apart_from_one_that_failed(config, authorization, attempt):
+    """Only the platform's launch failure is retryable (rollout.execute_with_launch_retry)."""
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "launch_failed"))) as client:
+        with pytest.raises(LaunchFailed, match="admission queue"):
+            await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "container_error"))) as client:
+        with pytest.raises(IneligibleAttempt) as failed:
+            await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
+        assert not isinstance(failed.value, LaunchFailed)
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "deployment"),
+    [
+        ("ecs-fargate", None),
+        ("gvisor", {"nexusExact": {"runtime": "SANDBOX_RUNTIME_GVISOR"}}),
+        ("kata-clh", {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}}),
+        ("kata-qemu", {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_QEMU"}}),
+    ],
+)
+def test_the_rollout_sandbox_is_the_run_configs(config, attempt, sandbox, deployment):
+    """ECS on Fargate is the platform's default placement; Kubernetes sandboxes name their runtime."""
+    chosen = config.model_copy(update={"rollout_sandbox": sandbox})
+    request = PlatformClient(authorize_run(chosen, yes_rollouts=True, yes_publish=True), None).run_request(attempt)
+    assert request.get("deploymentConfig") == deployment
 
 
 async def test_zero_reward_and_ordering(config, authorization, attempt):
