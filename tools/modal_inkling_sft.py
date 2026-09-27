@@ -176,13 +176,16 @@ _GPU_OPTIONS = dict(
 
 @app.function(**_GPU_OPTIONS)
 def train(config_json: str):
+    # GPU imports can keep compiler-cache files on the Volume open. Reload first;
+    # the two-node wrapper already did this before importing training helpers.
+    if json.loads(config_json).get("num_nodes", 1) == 1:
+        volume.reload()
+
     from scripts.run_inkling_small_sft import prepare
 
     import miles.utils.external_utils.command_utils as U
 
     args = _config(config_json)
-    if args.num_nodes == 1:
-        volume.reload()
     _gpu_preflight()
     if args.mode == "prepare":
         if not (Path(args.hf_checkpoint) / "model.safetensors.index.json").is_file():
@@ -245,12 +248,13 @@ def train(config_json: str):
 @app.function(**{**_GPU_OPTIONS, "max_containers": 2})
 @modal.experimental.clustered(size=2, rdma=True)
 def train_two_nodes(config_json: str, state: modal.Dict):
+    # Reload before imports initialize GPU libraries and open persistent caches.
+    volume.reload()
     # GPU/Ray dependencies are supplied by the remote image.
     from tools.modal_inkling_sft_cluster import ClusterState, training_cluster
 
     args = _config(config_json)
     info = modal.experimental.get_cluster_info()
-    volume.reload()
     state = ClusterState(state, f"{info.cluster_id}:{','.join(info.container_ips)}")
     with training_cluster(args, state, info.rank, info.container_ipv4_ips, volume, _gpu_preflight):
         if info.rank == 0:

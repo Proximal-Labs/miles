@@ -189,3 +189,55 @@ def test_same_modal_input_recovers_across_multiple_interruptions(monkeypatch, tm
     assert not launches[0]["resume"]
     assert launches[1]["lora_adapter_path"] == str(root / "iter_0000000/adapter")
     assert launches[2]["lora_adapter_path"] == str(root / "iter_0000001/adapter")
+
+
+@pytest.mark.parametrize("nodes", [1, 2])
+def test_volume_reload_precedes_training_imports(monkeypatch, nodes):
+    pytest.importorskip("modal")
+    import builtins
+    from tools import modal_inkling_sft as launcher
+
+    events = []
+    original_import = builtins.__import__
+
+    class StopBeforeTraining(Exception):
+        pass
+
+    def reload():
+        assert not events, "GPU imports already opened compiler-cache files"
+        events.append("reload")
+
+    def guarded_import(name, *args, **kwargs):
+        if name in {"scripts.run_inkling_small_sft", "tools.modal_inkling_sft_cluster"}:
+            assert events == ["reload"]
+            events.append("training-import")
+            raise StopBeforeTraining
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(launcher, "volume", SimpleNamespace(reload=reload))
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    with pytest.raises(StopBeforeTraining):
+        if nodes == 1:
+            launcher.train.local(json.dumps({"num_nodes": 1}))
+        else:
+            launcher.train_two_nodes.local(json.dumps({"num_nodes": 2}), {})
+    assert events == ["reload", "training-import"]
+
+
+def test_cluster_head_does_not_reload_after_gpu_imports(monkeypatch):
+    pytest.importorskip("modal")
+    from tools import modal_inkling_sft as launcher
+
+    class StopBeforeTraining(Exception):
+        pass
+
+    def unexpected_reload():
+        pytest.fail("Cluster head must not reload the Volume again after GPU imports")
+
+    def stop(config):
+        raise StopBeforeTraining
+
+    monkeypatch.setattr(launcher, "volume", SimpleNamespace(reload=unexpected_reload))
+    monkeypatch.setattr(launcher, "_config", stop)
+    with pytest.raises(StopBeforeTraining):
+        launcher.train.local(json.dumps({"num_nodes": 2}))
