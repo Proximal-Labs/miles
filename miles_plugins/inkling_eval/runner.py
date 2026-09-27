@@ -158,6 +158,7 @@ class EvaluationRunner:
                         "adapter": point["adapter"],
                         "rank": self.args.lora_rank,
                         "tp": self.config.serving_tp,
+                        "replicas": self.config.serving_replicas,
                         "context_length": self.config.context_length,
                         "concurrency": self.config.serving_max_running_requests or self.config.max_concurrent_rollouts,
                         "tokenizer_workers": self.config.serving_tokenizer_workers,

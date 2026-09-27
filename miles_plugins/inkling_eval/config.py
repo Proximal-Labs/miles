@@ -21,6 +21,7 @@ class EvalConfig:
     api_key_env: str = "PROXIMAL_API_KEY"
     modal_secret: str = "inkling-eval"
     serving_gpu: str = "B300:8"
+    serving_replicas: int = 2
     serving_tp: int = 8
     serving_max_running_requests: int | None = None
     serving_tokenizer_workers: int = 1
@@ -46,6 +47,7 @@ class EvalConfig:
             "max_concurrent_rollouts",
             "timeout_seconds",
             "poll_seconds",
+            "serving_replicas",
             "serving_tp",
             "serving_tokenizer_workers",
             "serving_cpu",

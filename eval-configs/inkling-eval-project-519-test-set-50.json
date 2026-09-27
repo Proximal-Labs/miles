@@ -59,6 +59,7 @@
   "serving_max_running_requests": 128,
   "serving_tokenizer_workers": 8,
   "serving_cpu": 32,
+  "serving_replicas": 2,
   "modal_secret": "inkling-eval",
   "platform_ui_url": "https://platform.proximal.so"
 }

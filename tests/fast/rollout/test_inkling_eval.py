@@ -116,7 +116,7 @@ def test_serving_always_selects_fixed_adapter_and_bf16(concurrency, workers):
     assert argv[argv.index("--tokenizer-worker-num") + 1] == str(workers)
 
 
-@pytest.mark.parametrize("field", ["serving_max_running_requests", "serving_tokenizer_workers", "serving_cpu"])
+@pytest.mark.parametrize("field", ["serving_max_running_requests", "serving_tokenizer_workers", "serving_cpu", "serving_replicas"])
 @pytest.mark.parametrize("value", [0, -1, True, 1.5])
 def test_invalid_serving_limits(field, value):
     with pytest.raises(ValueError, match=field):
@@ -166,6 +166,7 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         assert settings["concurrency"] == 128
         assert settings["tokenizer_workers"] == 8
         assert settings["cpu"] == 32
+        assert settings["replicas"] == 2
         return {"app_id": "test", "url": "https://eval.modal.direct"}
 
     monkeypatch.setattr(serving, "deploy", deploy)

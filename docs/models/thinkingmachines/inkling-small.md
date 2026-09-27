@@ -392,7 +392,7 @@ Create the named Modal secret in the selected environment with:
 Secrets are inherited by the trainer; they are not stored in the JSON config.
 `api_key_env` can override the Proximal key's environment variable name.
 
-Evaluation defaults to one separate `B300:8` BF16 inference replica (TP8), a
+Evaluation defaults to two separate `B300:8` BF16 inference replicas (TP8 each), a
 1,048,576-token context (matching the platform's Inkling context budget), `default`
 harness, `MAX` reasoning effort, and Modal
 sandboxes. The config supports `serving_gpu`, `serving_tp`, `context_length`,
@@ -408,8 +408,12 @@ Concurrency has separate controls:
 
 - `max_concurrent_evaluations` limits simultaneous evaluation points (default 2);
   set it to 1 for sequential evaluation. Each active point uses a separate serving
-  replica, so two points with `B300:8` require 16 inference GPUs in addition to training.
+  pool, so two points with two `B300:8` replicas each require 32 inference GPUs
+  in addition to training.
 - `max_concurrent_rollouts` limits active Proximal environment rollouts per evaluation point (default 4).
+- `serving_replicas` fixes the inference pool size per evaluation point (default 2).
+  Both replicas load the same snapshot and share one Modal endpoint; Modal distributes
+  requests across the pool. The whole deployment is stopped after evaluation.
 - `serving_max_running_requests` caps SGLang's concurrent running requests. When
   omitted, it follows `max_concurrent_rollouts` for compatibility.
 - `serving_tokenizer_workers` sets SGLang's tokenizer worker count (default 1).
@@ -417,11 +421,11 @@ Concurrency has separate controls:
 
 The checked-in `eval-configs/inkling-eval-project-519-test-set-50.json` allows 200
 concurrent rollouts, with 128 running SGLang requests, 8 tokenizer workers, and
-32 CPU cores per evaluation point’s 8-B300 replica. With one rollout per environment,
+32 CPU cores per replica, with two 8-B300 replicas per evaluation point. With one rollout per environment,
 the 50-task suite launches at most 50 rollouts; four rollouts per environment can
 fill all 200 slots. The four-task smoke config retains its concurrency of 4.
-Modal Servers already accept concurrent HTTP requests; `max_containers=1` limits
-replicas, not requests. Rollouts spend time executing tools, so their concurrency
+Modal Servers already accept concurrent HTTP requests; matching `min_containers`
+and `max_containers` to `serving_replicas` provisions the fixed replica pool. Rollouts spend time executing tools, so their concurrency
 need not equal the number of requests decoding on the GPUs.
 
 These settings follow the Proximal Inkling-Small serving recipe's separation of
