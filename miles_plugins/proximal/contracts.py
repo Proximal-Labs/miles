@@ -208,6 +208,29 @@ class ModalVolumeArtifacts(Contract):
 ArtifactStorage = Annotated[SharedDiskArtifacts | ModalVolumeArtifacts, Field(discriminator="kind")]
 
 
+class LaunchRetry(Contract):
+    """How a rollout the platform failed to launch is retried, and how launches are spread.
+
+    A launch failure (the platform could not get a container, e.g. its container-lease
+    admission queue timed out) happens before the agent runs, so retrying cannot bias
+    what is trained; without a retry one such failure drops the whole group. Retries
+    wait ``backoff_seconds * 2**n`` (capped at ``max_backoff_seconds``) with full jitter,
+    and each rollout's first launch waits up to ``stagger_seconds`` so a group's launches
+    do not arrive at once.
+    """
+
+    attempts: Positive
+    backoff_seconds: Annotated[FiniteFloat, Field(gt=0)]
+    max_backoff_seconds: Annotated[FiniteFloat, Field(gt=0)]
+    stagger_seconds: Annotated[FiniteFloat, Field(ge=0)]
+
+    @model_validator(mode="after")
+    def _bounded(self) -> "LaunchRetry":
+        if self.max_backoff_seconds < self.backoff_seconds:
+            raise ValueError("max_backoff_seconds must be at least backoff_seconds")
+        return self
+
+
 class RunConfig(Contract):
     run_id: SafeId
     base_model: BaseModelIdentity
@@ -232,6 +255,7 @@ class RunConfig(Contract):
     model_protocol: ModelProtocol
     max_in_flight_samples: Positive
     completed_group_capacity: Positive
+    launch_retry: LaunchRetry
     request_timeout_seconds: Positive = 1800
     poll_interval_seconds: Annotated[FiniteFloat, Field(gt=0)] = 2.0
 
