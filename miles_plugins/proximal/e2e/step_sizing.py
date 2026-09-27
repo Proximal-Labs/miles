@@ -191,7 +191,11 @@ elif PROFILE == "inkling-small":
         .add_local_file(REPO / "train.py", str(FORK / "train.py"))
         .add_local_dir(REPO / "scripts/models", str(FORK / "scripts/models"))
     )
-    VOLUMES = {str(WEIGHTS): modal.Volume.from_name("inkling-small-rft", environment_name="main").read_only()}
+    VOLUMES = {
+        str(WEIGHTS): modal.Volume.from_name(
+            "inkling-small-rft", environment_name="main", create_if_missing=False
+        ).read_only()
+    }
 
     def build_command(directory: Path, *, nodes: int, samples: int, steps: int, extra: list[str]) -> list[str]:
         from miles.utils.external_utils.model_args_utils import load_model_args
