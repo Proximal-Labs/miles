@@ -352,12 +352,15 @@ configuration loading, snapshot exports and platform submissions. Omitting
 When omitted, the configuration value is used (default 1). For two sets of 20
 environments, `--eval-rollouts-per-env 3` produces 120 rollouts per evaluation point.
 
-With evaluation enabled, the baseline finishes before the first optimizer update.
+With evaluation enabled, the baseline snapshot is exported before the first optimizer
+update; baseline evaluation runs in the background alongside training.
 After the first optimizer step reaching each scheduled dataset epoch boundary, the trainer saves a resumable
 checkpoint and exports an immutable adapter. Training then continues while a
 separate Modal inference deployment and Proximal sandboxes evaluate that adapter.
-One evaluation point runs at a time; if it is still running at the next scheduled
-point, training waits there. Shutdown drains the pending evaluation. There is no
+Up to two evaluation points run concurrently by default, each with its own immutable
+snapshot, inference deployment, and rollout IDs. Additional points queue without
+blocking training beyond snapshot export and persistence. Shutdown drains all
+pending evaluations. There is no
 extra off-cadence final evaluation.
 For 190 examples and batch size 32, the first evaluation is after step 6
 (192 examples consumed, epoch 1.0105); at batch size 1 it is after step 190.
@@ -403,7 +406,10 @@ state so existing rollouts can finish and a resume can recover it.
 
 Concurrency has separate controls:
 
-- `max_concurrent_rollouts` limits active Proximal environment rollouts (default 4).
+- `max_concurrent_evaluations` limits simultaneous evaluation points (default 2);
+  set it to 1 for sequential evaluation. Each active point uses a separate serving
+  replica, so two points with `B300:8` require 16 inference GPUs in addition to training.
+- `max_concurrent_rollouts` limits active Proximal environment rollouts per evaluation point (default 4).
 - `serving_max_running_requests` caps SGLang's concurrent running requests. When
   omitted, it follows `max_concurrent_rollouts` for compatibility.
 - `serving_tokenizer_workers` sets SGLang's tokenizer worker count (default 1).
@@ -411,7 +417,7 @@ Concurrency has separate controls:
 
 The checked-in `eval-configs/inkling-eval-project-519-test-set-50.json` allows 200
 concurrent rollouts, with 128 running SGLang requests, 8 tokenizer workers, and
-32 CPU cores on the existing single 8-B300 replica. With one rollout per environment,
+32 CPU cores per evaluation point’s 8-B300 replica. With one rollout per environment,
 the 50-task suite launches at most 50 rollouts; four rollouts per environment can
 fill all 200 slots. The four-task smoke config retains its concurrency of 4.
 Modal Servers already accept concurrent HTTP requests; `max_containers=1` limits

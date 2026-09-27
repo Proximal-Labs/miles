@@ -1,7 +1,7 @@
 """Durable evaluation orchestration with queued immutable snapshots.
 
 Training only waits for snapshot export and persistence at epoch boundaries.
-Evaluations run sequentially in the background; completed results and failures
+Evaluations run concurrently in a bounded background pool; results and failures
 are collected between training steps. Training completion drains the queue.
 """
 
@@ -30,7 +30,7 @@ class EvaluationRunner:
         if getattr(args, "inkling_eval_rollouts_per_env", None) is not None:
             self.config = replace(self.config, rollouts_per_environment=args.inkling_eval_rollouts_per_env)
         self.root = Path(args.save) / "evaluation"
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.config.max_concurrent_evaluations)
         self.pending = deque()
         self.suite = None
 
@@ -78,6 +78,8 @@ class EvaluationRunner:
         }
         if path.exists():
             self.suite = json.loads(path.read_text())
+            # Fill newly added defaults when resuming older evaluation records.
+            self.suite["contract"]["config"] = EvalConfig(**self.suite["contract"]["config"]).to_dict()
             if self.suite["contract"] != contract:
                 raise ValueError("Evaluation configuration changed on resume; use a new run ID")
         else:

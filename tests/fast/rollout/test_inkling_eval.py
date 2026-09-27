@@ -246,6 +246,11 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         assert all(not name.endswith("/epoch") for values, _ in metrics for name in values)
         # Changing the platform's latest image cannot change a resumed suite.
         platform_server["images"] = [{"id": 99, "digest": "sha256:two", "commitHash": "def", "pushedAt": "200"}]
+        # Older runs lack the newly added concurrency field in their contract.
+        suite_path = runner.root / "suite.json"
+        suite = json.loads(suite_path.read_text())
+        suite["contract"]["config"].pop("max_concurrent_evaluations")
+        suite_path.write_text(json.dumps(suite))
         args.start_rollout_id = 30
         resumed = EvaluationRunner(args, Actor(), 5)
         await resumed.start()
@@ -264,3 +269,64 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         assert len(platform_server["runs"]) == 10 * (rollouts or 1)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_epoch_evaluations_overlap_with_bounded_concurrency(tmp_path, monkeypatch, limit):
+    from miles_plugins.inkling_eval import serving
+    from miles_plugins.inkling_eval.runner import EvaluationRunner
+
+    config = tmp_path / "eval.json"
+    config.write_text(json.dumps({
+        "platform_url": "https://api.example.com",
+        "sets": {"coding": [1]},
+        "max_concurrent_evaluations": limit,
+    }))
+    args = SimpleNamespace(inkling_eval_config=str(config), save=str(tmp_path / "run"),
+                           inkling_eval_environment="main", rollout_batch_size=1,
+                           inkling_eval_every_n_epochs=1)
+    exports = []
+    started = {step: threading.Event() for step in (0, 1, 2)}
+    release = threading.Event()
+
+    class Actor:
+        async def export_hf(self, step, path, adapter_only):
+            exports.append(path)
+
+    def evaluate(point):
+        started[point["step"]].set()
+        assert release.wait(10), "test did not release evaluations"
+        return point
+
+    monkeypatch.setattr(serving, "commit_volume", lambda *args: None)
+
+    async def exercise():
+        runner = EvaluationRunner(args, Actor(), 1)
+        monkeypatch.setattr(runner, "_evaluate", evaluate)
+        monkeypatch.setattr(runner, "_log", lambda point: None)
+        try:
+            await runner._submit(0)
+            assert await asyncio.to_thread(started[0].wait, 2)
+            await asyncio.wait_for(runner.after_step(1), 2)
+            if limit == 2:
+                assert await asyncio.to_thread(started[1].wait, 2)
+            else:
+                assert not started[1].is_set()
+            await asyncio.wait_for(runner.after_step(2), 2)
+            assert not started[2].is_set()
+            assert len(set(exports)) == 3
+            assert len(runner.pending) == 3
+        finally:
+            release.set()
+            await runner.finish()
+        assert all(event.is_set() for event in started.values())
+        assert not runner.pending
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_invalid_evaluation_concurrency(value):
+    with pytest.raises(ValueError, match="max_concurrent_evaluations"):
+        EvalConfig(platform_url="https://api.example.com", sets={"coding": [1]},
+                   max_concurrent_evaluations=value)

@@ -12,6 +12,7 @@ class EvalConfig:
     sets: dict[str, list[int]]
     platform_ui_url: str | None = None
     rollouts_per_environment: int = 1
+    max_concurrent_evaluations: int = 2
     max_concurrent_rollouts: int = 4
     timeout_seconds: int = 14400
     poll_seconds: int = 15
@@ -41,6 +42,7 @@ class EvalConfig:
                 raise ValueError(f"{name}: provide distinct positive environment IDs")
         for name in (
             "rollouts_per_environment",
+            "max_concurrent_evaluations",
             "max_concurrent_rollouts",
             "timeout_seconds",
             "poll_seconds",
