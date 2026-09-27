@@ -465,8 +465,20 @@ def _start_ray(state: "_State", rank: int, ips: list[str]) -> None:
 
 
 _PERF = re.compile(r"perf (\d+): (\{.*\})")
-# Stall handling (seconds without a Miles timer line). The first line follows model loading.
+# Stall handling: seconds without a Miles timer line, before dumping every node's stacks and
+# before ending the phase. The first line follows model loading. One timer spans every
+# micro-batch of a step, so both budgets grow with the samples each data-parallel group runs
+# (measured ~16 s recompute + ~48 s train per 258k-token sample per group).
 FIRST_PROGRESS_S, DUMP_AFTER_S, KILL_AFTER_S = 1800, 600, 1500
+PER_GROUP_SAMPLE_S = 60
+
+
+def _data_parallel_size(command: list[str], nodes: int) -> int:
+    def size(flag: str) -> int:
+        return int(command[command.index(flag) + 1]) if flag in command else 1
+
+    model_parallel = size("--tensor-model-parallel-size") * size("--pipeline-model-parallel-size") * size("--context-parallel-size")
+    return max(1, nodes * GPUS_PER_NODE // model_parallel)
 _NET = ("Using network", "NET/OFI Selected", "NET/OFI Initializing", "NET/IB : Using", "via NET/")
 
 
@@ -479,7 +491,10 @@ def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, ex
     env = {**os.environ, "NCCL_DEBUG": "INFO", "NCCL_DEBUG_SUBSYS": "INIT,NET"}
     log = Path(f"/tmp/sizing-{label}.log")
     print(f"[sizing] phase {label}: {samples} x {length} tokens, {steps} steps\n  {shlex.join(command)}", flush=True)
+    print(f"[sizing] phase {label}: mock data written in {data_s}s", flush=True)
     t0 = time.monotonic()
+    per_group = -(-samples // _data_parallel_size(command, nodes))
+    dump_after, kill_after = DUMP_AFTER_S + PER_GROUP_SAMPLE_S * per_group, KILL_AFTER_S + 2 * PER_GROUP_SAMPLE_S * per_group
     progress = {"last": t0, "seen": False}
     stall: dict[str, Any] = {"dumps": [], "killed": False}
     done = threading.Event()
@@ -491,12 +506,12 @@ def _run_phase(label: str, nodes: int, samples: int, steps: int, length: int, ex
         while not done.wait(15):
             quiet = time.monotonic() - progress["last"]
             grace = FIRST_PROGRESS_S if not progress["seen"] else 0
-            if quiet > grace + DUMP_AFTER_S and episode == 0:
+            if quiet > grace + dump_after and episode == 0:
                 episode = 1
                 tag = f"{label}-stall-{round(time.monotonic() - t0)}s"
                 stall["dumps"].append(tag)
                 state["dump"] = tag
-            if quiet > grace + KILL_AFTER_S:
+            if quiet > grace + kill_after:
                 tag = f"{label}-kill-{round(time.monotonic() - t0)}s"
                 stall["dumps"].append(tag)
                 state["dump"] = tag
