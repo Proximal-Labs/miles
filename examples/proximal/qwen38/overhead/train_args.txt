@@ -4,8 +4,9 @@
 # memory on H200's 141 GB), which B300's 288 GB holds.
 # No context parallelism: Megatron-Bridge's Qwen3-VL model (which Qwen3.8
 # uses) needs explicit rank-local 3D MRoPE position ids for pre-sharded CP inputs, and Miles's
-# text-only path does not provide them. Log-probs are chunked and the loss recomputed, so the
-# 256k x vocabulary logits never exist at once. Otherwise matches ../train_args.txt.
+# text-only path does not provide them. Log-probs are computed in 4,096-token fp32 chunks from
+# the bf16 logits (~30 GiB at TP 4) and the loss recomputed, so no full-vocabulary fp32 tensor
+# exists; the trainer builds no MTP head (see ../README.md). Otherwise matches ../train_args.txt.
 --actor-num-nodes 1
 --actor-num-gpus-per-node 8
 --calculate-per-token-loss
