@@ -2883,6 +2883,12 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     return bool(args.ft_components) and args.api_server_port != 0
 
 
+def resumes_lora_adapter(args) -> bool:
+    """Whether --lora-adapter-path is a checkpoint this run saved: it carries training state."""
+    adapter = getattr(args, "lora_adapter_path", None)
+    return adapter is not None and os.path.exists(os.path.join(adapter, "training_state_rank0.pt"))
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3096,7 +3102,12 @@ def miles_validate_args(args):
             or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
         ):
             args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+            # A LoRA resume loads the base from HF and the adapter, with the iteration it
+            # was saved at, from --lora-adapter-path. That iteration is the only record of
+            # how far the run got, so the start is left to the actor, which derives it from
+            # the adapter (placement_group); a fresh run starts at 0.
+            if not resumes_lora_adapter(args):
+                args.start_rollout_id = 0
     else:
         if (
             args.load is None
