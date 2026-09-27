@@ -9,8 +9,8 @@
 --actor-num-nodes 1
 --actor-num-gpus-per-node 8
 --calculate-per-token-loss
---rollout-batch-size 4
---global-batch-size 32
+--rollout-batch-size 8
+--global-batch-size 64
 --num-rollout 20
 --tensor-model-parallel-size 4
 --sequence-parallel

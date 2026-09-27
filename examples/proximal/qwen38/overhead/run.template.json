@@ -80,8 +80,8 @@
     "tool_call_parser": "qwen3_coder",
     "reasoning_effort": "xhigh"
   },
-  "max_in_flight_samples": 64,
-  "completed_group_capacity": 8,
+  "max_in_flight_samples": 96,
+  "completed_group_capacity": 16,
   "launch_retry": {
     "attempts": 4,
     "backoff_seconds": 30.0,
