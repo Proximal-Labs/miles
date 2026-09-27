@@ -208,6 +208,12 @@ class ModalVolumeArtifacts(Contract):
 ArtifactStorage = Annotated[SharedDiskArtifacts | ModalVolumeArtifacts, Field(discriminator="kind")]
 
 
+# Where the platform runs each rollout's sandbox, in the platform's own vocabulary
+# (proximal-mono EnvForgeRolloutSandbox): ECS on Fargate, or a Kubernetes (Nexus-exact)
+# sandbox under gVisor, Kata + Cloud Hypervisor, or Kata + QEMU.
+RolloutSandbox = Literal["ecs-fargate", "gvisor", "kata-clh", "kata-qemu"]
+
+
 class LaunchRetry(Contract):
     """How a rollout the platform failed to launch is retried, and how launches are spread.
 
@@ -256,6 +262,7 @@ class RunConfig(Contract):
     max_in_flight_samples: Positive
     completed_group_capacity: Positive
     launch_retry: LaunchRetry
+    rollout_sandbox: RolloutSandbox
     request_timeout_seconds: Positive = 1800
     poll_interval_seconds: Annotated[FiniteFloat, Field(gt=0)] = 2.0
 

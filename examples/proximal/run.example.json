@@ -78,6 +78,7 @@
   "enable_thinking": true,
   "max_in_flight_samples": 32,
   "completed_group_capacity": 16,
+  "rollout_sandbox": "kata-clh",
   "launch_retry": {
     "attempts": 4,
     "backoff_seconds": 30.0,
