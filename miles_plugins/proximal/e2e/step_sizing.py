@@ -470,7 +470,7 @@ def _start_ray(state: "_State", rank: int, ips: list[str]) -> None:
             _wait(
                 lambda: {
                     n["NodeManagerAddress"]
-                    for n in ray.nodes()
+                    for n in ray.nodes()  # type: ignore[no-untyped-call,unused-ignore]
                     if n["Alive"] and n["Resources"].get("GPU") == GPUS_PER_NODE
                 }
                 == set(ips),
