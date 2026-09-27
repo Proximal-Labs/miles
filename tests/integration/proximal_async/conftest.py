@@ -94,6 +94,7 @@ def config(tmp_path, monkeypatch, store_dsn):
         "model_protocol": {"reasoning_parser": "qwen3", "tool_call_parser": "qwen25", "reasoning_effort": "high"},
         "max_in_flight_samples": 4,
         "completed_group_capacity": 2,
+        "rollout_sandbox": "kata-clh",
         "launch_retry": {"attempts": 3, "backoff_seconds": 0.01, "max_backoff_seconds": 0.02, "stagger_seconds": 0},
         "request_timeout_seconds": 10,
         "poll_interval_seconds": 0.01,

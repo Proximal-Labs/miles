@@ -65,6 +65,17 @@ class Summary(Wire):
     source_commit_sha: str
 
 
+# CreateEnvironmentRun's deployment_config per rollout sandbox (the platform CLI's
+# `--deployment nexus-exact --sandbox-runtime ...`). ECS on Fargate is the platform's
+# default placement, so it sends none.
+SANDBOX_DEPLOYMENT: dict[str, dict[str, object] | None] = {
+    "ecs-fargate": None,
+    "gvisor": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_GVISOR"}},
+    "kata-clh": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}},
+    "kata-qemu": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_QEMU"}},
+}
+
+
 class IneligibleAttempt(RuntimeError):
     """An execution failure, never a fabricated zero-reward training example."""
 
@@ -221,10 +232,13 @@ class PlatformClient:
 
         The run ID is the attempt ID: retries are idempotent, and it is the key the
         registry puts in the capture rollout route. Routing to capture is the
-        platform route's endpoint name; no credential or session URL is sent.
+        platform route's endpoint name; no credential or session URL is sent. The
+        sandbox the rollout runs in is the run config's ``rollout_sandbox``.
         """
         route = self.config.platform_route
+        deployment = SANDBOX_DEPLOYMENT[self.config.rollout_sandbox]
         return {
+            **({} if deployment is None else {"deploymentConfig": deployment}),
             "runId": attempt.attempt_id,
             "environmentId": attempt.task.environment_id,
             "imageId": attempt.task.image_id,

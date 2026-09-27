@@ -50,6 +50,8 @@ def handler(config, attempt, mutation="", calls=None):
                 "reasoningEffort": "AGENT_REASONING_EFFORT_HIGH",
             }
             assert submitted["autoTriggerAnalysis"] is False
+            # The run config's rollout sandbox: Kata + Cloud Hypervisor on Kubernetes.
+            assert submitted["deploymentConfig"] == {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}}
             assert submitted["config"]["harborOptions"] == {
                 "maxTurns": config.harness.max_turns,
                 "maxSessionTokens": attempt.sampling.max_sequence_tokens,
@@ -105,6 +107,22 @@ async def test_a_rollout_that_never_launched_is_told_apart_from_one_that_failed(
         with pytest.raises(IneligibleAttempt) as failed:
             await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
         assert not isinstance(failed.value, LaunchFailed)
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "deployment"),
+    [
+        ("ecs-fargate", None),
+        ("gvisor", {"nexusExact": {"runtime": "SANDBOX_RUNTIME_GVISOR"}}),
+        ("kata-clh", {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}}),
+        ("kata-qemu", {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_QEMU"}}),
+    ],
+)
+def test_the_rollout_sandbox_is_the_run_configs(config, attempt, sandbox, deployment):
+    """ECS on Fargate is the platform's default placement; Kubernetes sandboxes name their runtime."""
+    chosen = config.model_copy(update={"rollout_sandbox": sandbox})
+    request = PlatformClient(authorize_run(chosen, yes_rollouts=True, yes_publish=True), None).run_request(attempt)
+    assert request.get("deploymentConfig") == deployment
 
 
 async def test_zero_reward_and_ordering(config, authorization, attempt):
