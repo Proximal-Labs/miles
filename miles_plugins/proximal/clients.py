@@ -103,14 +103,30 @@ class LaunchFailed(IneligibleAttempt):
 LAUNCH_FAILED_PREFIX = "Launch failed:"
 
 
+# Statuses that describe the path to the service, not the request: gateways, rate limits,
+# Cloudflare's origin errors (52x), and 500s such as an exhausted database pool.
+TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
+REQUEST_ATTEMPTS = 4
+# How long a status read may keep failing before the rollout is given up. A failed read
+# says nothing about the rollout, which keeps running on the platform.
+STATUS_OUTAGE_SECONDS = 300.0
+
+
+def transient(exc: Exception) -> bool:
+    return isinstance(exc, httpx.TransportError) or (
+        isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in TRANSIENT_STATUSES
+    )
+
+
 async def request(
     client: httpx.AsyncClient, method: str, url: str, *, headers: dict[str, str], body: object = None
 ) -> httpx.Response:
     """Bounded retries for idempotent calls; identities are stable across retries."""
-    for attempt in range(3):
+    last = REQUEST_ATTEMPTS - 1
+    for attempt in range(REQUEST_ATTEMPTS):
         try:
             response = await client.request(method, url, headers=headers, json=body, follow_redirects=False)
-            if response.status_code not in (429, 502, 503, 504) or attempt == 2:
+            if response.status_code not in TRANSIENT_STATUSES or attempt == last:
                 if response.is_error:
                     # Keep the service's stated reason (our capture's or the platform's
                     # error text); never headers.
@@ -121,9 +137,9 @@ async def request(
                     )
                 return response
         except httpx.TransportError:
-            if attempt == 2:
+            if attempt == last:
                 raise
-        await asyncio.sleep(0.2 * (2**attempt))
+        await asyncio.sleep(0.5 * (2**attempt))
     raise AssertionError("unreachable")
 
 
@@ -224,6 +240,21 @@ class PlatformClient:
     async def _rpc(self, name: str, body: object) -> httpx.Response:
         return await request(self.client, "POST", f"{self.url}/{name}", headers=self.headers, body=body)
 
+    async def _read_through_outage(self, name: str, body: object) -> httpx.Response:
+        """A status read that rides out a platform outage of up to STATUS_OUTAGE_SECONDS.
+
+        Giving up on the first failed read would drop the rollout's whole group while the
+        rollout itself kept running.
+        """
+        deadline = time.monotonic() + STATUS_OUTAGE_SECONDS
+        while True:
+            try:
+                return await self._rpc(name, body)
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if not transient(exc) or time.monotonic() >= deadline:
+                    raise
+            await asyncio.sleep(self.config.poll_interval_seconds)
+
     async def preflight(self) -> None:
         """Free check before the first paid run: the pinned tasks are still project members."""
         if self._membership_checked:
@@ -299,7 +330,7 @@ class PlatformClient:
         deadline = time.monotonic() + attempt.harness.timeout_seconds + self.config.request_timeout_seconds
         while time.monotonic() < deadline:
             reply = _platform_reply(
-                Containers, await self._rpc("GetEnvironmentRunContainers", {"runId": created.run_id})
+                Containers, await self._read_through_outage("GetEnvironmentRunContainers", {"runId": created.run_id})
             )
             if reply.run_id != created.run_id or len(reply.containers) > 1:
                 raise IneligibleAttempt("Platform returned a different run or multiple rollouts")
@@ -321,7 +352,9 @@ class PlatformClient:
         raise IneligibleAttempt("Platform rollout exceeded its declared deadline")
 
     async def _grade(self, attempt: Attempt, container: Container) -> Grade:
-        summary = _platform_reply(Summary, await self._rpc("GetRunSummary", {"runId": attempt.attempt_id}))
+        summary = _platform_reply(
+            Summary, await self._read_through_outage("GetRunSummary", {"runId": attempt.attempt_id})
+        )
         if (summary.run_id, summary.image_id, summary.source_commit_sha) != (
             attempt.attempt_id,
             attempt.task.image_id,
