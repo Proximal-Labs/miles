@@ -48,9 +48,14 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if method == "remote" and name in {
                 "e2e/stage_base.py",
                 "e2e/stage_gsm8k.py",
+                "e2e/step_sizing.py",
                 "e2e/trainer_replay.py",
                 "modal_training.py",
             }:
+                mutations.append((name, method))
+                continue
+            # Step sizing's cross-node coordination state, deleted when the run's block exits.
+            if method == "ephemeral" and name == "e2e/step_sizing.py":
                 mutations.append((name, method))
                 continue
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
@@ -68,6 +73,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("e2e/math_platform.py", "post"),  # The gsm8k platform's agent calling its capture session.
         ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
         ("e2e/stage_gsm8k.py", "remote"),  # Paid gsm8k data staging, run by hand.
+        ("e2e/step_sizing.py", "ephemeral"),  # Run-scoped coordination Dict for the sizing cluster.
+        ("e2e/step_sizing.py", "remote"),  # Paid clustered trainer step sizing, run by hand.
         ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.
         ("e2e/trainer_replay.py", "remote"),  # Paid trainer replay on mock rollouts, run by hand.
         ("gateway.py", "post"),
