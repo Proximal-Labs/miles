@@ -16,6 +16,7 @@ from collections import deque
 from pathlib import Path
 
 from miles.rollout.data_source import DataSource
+from miles.utils.resume import resume_checkpoint_dir
 from miles.utils.types import Sample
 from miles_plugins.proximal.contracts import Contract, pinned_dataset, read_run_config
 from miles_plugins.proximal.storage import write_atomic
@@ -109,8 +110,11 @@ class PlatformTaskSource(DataSource):
             )
 
     def load(self, rollout_id: int | None = None) -> None:
-        restored = rollout_id if self.args.load is not None and rollout_id is not None and rollout_id >= 0 else None
-        state = None if restored is None else self._read_valid_state(restored)
+        checkpoint_dir = resume_checkpoint_dir(self.args)
+        restored = rollout_id if checkpoint_dir is not None and rollout_id is not None and rollout_id >= 0 else None
+        state = (
+            None if restored is None or checkpoint_dir is None else self._read_valid_state(checkpoint_dir, restored)
+        )
         # Only after the requested checkpoint is known good: drop state saved for later
         # steps of the abandoned timeline, before training writes any new weights.
         # Otherwise a crash after re-saving step N's weights but before re-saving its
@@ -123,9 +127,8 @@ class PlatformTaskSource(DataSource):
         self._retry = deque(state.pending_tasks)
         self.consumed.restore(state.consumed)
 
-    def _read_valid_state(self, step: int) -> Cursor:
-        assert self.args.load is not None
-        path = Path(self.args.load) / "rollout" / f"proximal_{step}.json"
+    def _read_valid_state(self, checkpoint_dir: str, step: int) -> Cursor:
+        path = Path(checkpoint_dir) / "rollout" / f"proximal_{step}.json"
         if not path.exists():
             # Miles saves weights before this state. Weights without it means the save
             # was interrupted; resuming would pair those weights with a stale ledger.

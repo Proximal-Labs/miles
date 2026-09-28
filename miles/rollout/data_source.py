@@ -9,6 +9,7 @@ import torch
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.resume import resume_checkpoint_dir
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -140,10 +141,11 @@ class RolloutDataSource(DataSource):
         if not self.args.rollout_global_dataset:
             return
 
-        if self.args.load is None:
+        checkpoint_dir = resume_checkpoint_dir(self.args)
+        if checkpoint_dir is None:
             return
 
-        path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+        path = os.path.join(checkpoint_dir, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
             logger.info(f"Checkpoint {path} does not exist.")
             return

@@ -4,7 +4,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.utils.arguments import resumes_lora_adapter
+from miles.utils.resume import resume_checkpoint_dir, resumes_lora_adapter
 
 
 def test_only_an_adapter_with_training_state_is_a_resume(tmp_path):
@@ -15,6 +15,22 @@ def test_only_an_adapter_with_training_state_is_a_resume(tmp_path):
     assert not resumes_lora_adapter(Namespace(lora_adapter_path=str(adapter)))
     (adapter / "training_state_rank0.pt").write_bytes(b"")
     assert resumes_lora_adapter(Namespace(lora_adapter_path=str(adapter)))
+
+
+def test_a_lora_resume_reads_step_state_from_the_adapters_checkpoint_root(tmp_path):
+    """Run 013: --load is the HF base on a LoRA resume; the step state sits beside the adapter."""
+    adapter = tmp_path / "checkpoints" / "iter_0000003" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "training_state_rank0.pt").write_bytes(b"")
+    args = Namespace(load="/models/base", lora_adapter_path=str(adapter) + "/")
+    assert resume_checkpoint_dir(args) == str(tmp_path / "checkpoints")
+
+
+def test_any_other_start_reads_step_state_from_load(tmp_path):
+    warm_start = tmp_path / "adapter"
+    warm_start.mkdir()
+    assert resume_checkpoint_dir(Namespace(load="/ckpt", lora_adapter_path=str(warm_start))) == "/ckpt"
+    assert resume_checkpoint_dir(Namespace(load=None, lora_adapter_path=None)) is None
 
 
 @pytest.fixture
