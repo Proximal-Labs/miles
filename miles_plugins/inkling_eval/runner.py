@@ -172,9 +172,12 @@ class EvaluationRunner:
                 point["deployment"] = deployment
                 write_json(path, point)
             logger.info("Evaluation step %s: waiting for inference app %s", point["step"], deployment["app_id"])
-            serving.wait_ready(deployment["url"])
+            if point["adapter"] is None:
+                serving.wait_ready(deployment["url"], model_id=serving.BASE_MODEL)
+            else:
+                serving.wait_ready(deployment["url"])
             logger.info("Evaluation step %s: inference ready; starting rollouts", point["step"])
-            platform.endpoint(name, {"mode": "dedicated", "baseURL": deployment["url"] + "/v1", "model": serving.WIRE_MODEL})
+            platform.endpoint(name, {"mode": "dedicated", "baseURL": deployment["url"] + "/v1", "model": serving.WIRE_MODEL if point["adapter"] is not None else serving.BASE_MODEL})
             self._run_suite(platform, point, path, identity, name)
             point["status"] = "complete"
             write_json(path, point)

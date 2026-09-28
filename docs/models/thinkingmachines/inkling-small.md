@@ -439,3 +439,43 @@ configuration. Already launched trainers keep their uploaded configuration.
 This integration requires live validation of full Inkling adapter loading,
 trainer/serving numerical agreement, and a real environment rollout before treating
 its scores as validated. CPU orchestration tests do not establish GPU memory fit.
+
+
+### Standalone checkpoint evaluation
+
+`tools/modal_inkling_checkpoint_eval.py` evaluates saved checkpoints without
+starting training. Its default preparation mode uses CPUs only: it checks the
+original pinned environment suite, validates the native-to-HF adapter mapping
+against an existing training export, and prepares immutable adapter snapshots.
+The CPU exporter currently supports the balanced two-node TP8/PP2/EP8 topology.
+
+The plan in `run-configs/inkling-checkpoint-eval-010-8rollouts.json` selects the
+unadapted base model and the checkpoints at the first complete optimizer update
+crossing epochs 2 and 5. With 190 examples and batch size 32, these are updates
+12 and 30 (`iter_0000011` and `iter_0000029`), at consumed-example epochs 2.0211
+and 5.0526. Each selection runs 50 environments with 8 rollouts each, for 1,200
+rollouts total. The plan retains two serving replicas per evaluation point and
+a limit of two active points. Results and rollout identities use a new output
+directory; original training evaluations are preserved.
+
+Prepare and validate without launching evaluation:
+
+```bash
+MODAL_PROFILE=proximal modal run --env main tools/modal_inkling_checkpoint_eval.py \
+  --plan-file run-configs/inkling-checkpoint-eval-010-8rollouts.json
+```
+
+Launch the prepared evaluation only when ready:
+
+```bash
+MODAL_PROFILE=proximal modal run --detach --env main tools/modal_inkling_checkpoint_eval.py \
+  --plan-file run-configs/inkling-checkpoint-eval-010-8rollouts.json \
+  --no-prepare-only
+```
+
+The coordinator creates a separate W&B evaluation run in the source run's
+project. Each evaluation point records incremental results in
+`<output_dir>/evaluation/step_XXXXXXXX/point.json`; the final combined record is
+`<output_dir>/results.json`. Completed points are reused on a repeat invocation
+of the same plan. An incomplete point reuses its persisted deployment and rollout
+IDs, so recovery still requires that deployment to be available.

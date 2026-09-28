@@ -11,15 +11,35 @@ from pathlib import Path
 
 import httpx
 
-WIRE_MODEL = "thinkingmachines/Inkling-Small:snapshot"
+BASE_MODEL = "thinkingmachines/Inkling-Small"
+WIRE_MODEL = BASE_MODEL + ":snapshot"
 logger = logging.getLogger(__name__)
 
 
 def server_command(settings):
+    lora_args = [
+        "--enable-lora",
+        "--lora-backend",
+        "triton",
+        "--lora-use-virtual-experts",
+        "--experts-shared-outer-loras",
+        "--lora-strict-loading",
+        "--max-loras-per-batch",
+        "1",
+        "--max-lora-rank",
+        str(settings["rank"]),
+        "--lora-target-modules",
+        "all",
+        "--lora-paths",
+        f"snapshot={settings['adapter']}",
+        "--max-loaded-loras",
+        "1",
+    ] if settings.get("adapter") is not None else []
     return [
         sys.executable,
         "-m",
         "sglang.launch_server",
+        *lora_args,
         "--host",
         "0.0.0.0",
         "--port",
@@ -35,14 +55,6 @@ def server_command(settings):
         str(settings["tp"]),
         "--context-length",
         str(settings["context_length"]),
-        "--enable-lora",
-        "--lora-backend",
-        "triton",
-        "--lora-use-virtual-experts",
-        "--experts-shared-outer-loras",
-        "--lora-strict-loading",
-        "--max-loras-per-batch",
-        "1",
         "--attention-backend",
         "fa4",
         "--moe-runner-backend",
@@ -50,14 +62,6 @@ def server_command(settings):
         "--mamba-radix-cache-strategy",
         "extra_buffer",
         "--disable-custom-all-reduce",
-        "--max-lora-rank",
-        str(settings["rank"]),
-        "--lora-target-modules",
-        "all",
-        "--lora-paths",
-        f"snapshot={settings['adapter']}",
-        "--max-loaded-loras",
-        "1",
         "--max-running-requests",
         str(settings["concurrency"]),
         "--tokenizer-worker-num",
@@ -84,7 +88,9 @@ def _verify_snapshot(path):
 
 
 def _start_server(settings):
-    _verify_snapshot(settings["adapter"])
+    model_id = "snapshot" if settings.get("adapter") is not None else BASE_MODEL
+    if settings.get("adapter") is not None:
+        _verify_snapshot(settings["adapter"])
     process = subprocess.Popen(server_command(settings))
     deadline = time.monotonic() + 1800
     while time.monotonic() < deadline:
@@ -93,7 +99,7 @@ def _start_server(settings):
         try:
             response = httpx.get("http://127.0.0.1:8000/v1/models", timeout=5)
             response.raise_for_status()
-            if "snapshot" in {m["id"] for m in response.json()["data"]}:
+            if model_id in {m["id"] for m in response.json()["data"]}:
                 return process
         except (httpx.HTTPError, KeyError):
             pass
@@ -145,7 +151,7 @@ def deploy(settings, *, name, image, environment, gpu):
     return {"app_id": app.app_id, "url": url.rstrip("/")}
 
 
-def wait_ready(url, timeout=2100):
+def wait_ready(url, timeout=2100, *, model_id="snapshot"):
     key = os.environ["MODAL_INFERENCE_API_KEY"]
     deadline = time.monotonic() + timeout
     next_log = time.monotonic()
@@ -156,7 +162,7 @@ def wait_ready(url, timeout=2100):
         try:
             response = httpx.get(url + "/v1/models", headers={"Authorization": f"Bearer {key}"}, timeout=60)
             response.raise_for_status()
-            if "snapshot" in {model["id"] for model in response.json()["data"]}:
+            if model_id in {model["id"] for model in response.json()["data"]}:
                 return
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in {401, 403}:
