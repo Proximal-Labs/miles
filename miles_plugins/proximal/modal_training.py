@@ -93,6 +93,10 @@ MEGATRON_ENV = {
     "PYTHONPATH": f"/root/Megatron-LM:{FORK}",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     "PYTHONUNBUFFERED": "1",
+    # Inductor compiles in each rank's own process. Its default pool of forked compile
+    # workers deadlocked a first backward (run 011: a worker inherited a lock held at fork,
+    # in concurrent.futures' weakref_cb), and the replay A/B showed no cost to compiling inline.
+    "TORCHINDUCTOR_COMPILE_THREADS": "1",
     **(
         {"NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8"}
         if TRAINING.deterministic_kernels
