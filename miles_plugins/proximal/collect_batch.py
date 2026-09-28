@@ -7,22 +7,47 @@ Postgres store. Does not create a trainer, publish weights or provision replicas
 import argparse
 import asyncio
 import json
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
-from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run, require_authorization
+from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run, require_authorization, secret_env
 from miles_plugins.proximal.buffer import accepted, validate_group
-from miles_plugins.proximal.contracts import Policy, RunStateArtifacts, read_run_config
+from miles_plugins.proximal.contracts import Policy, RunConfig, RunStateArtifacts, read_run_config
 from miles_plugins.proximal.data_source import PlatformTaskSource
-from miles_plugins.proximal.offline_batch import FrozenBatch, freeze_batch
+from miles_plugins.proximal.offline_batch import FrozenBatch, freeze_batch, publish_batch
 from miles_plugins.proximal.options import BUFFER
 from miles_plugins.proximal.rollout import PlatformRolloutFn
+from miles_plugins.proximal.state_artifacts import copy_verified, describe, initialize
+from miles_plugins.proximal.state_writer import StateWriter
 from miles_plugins.proximal.storage import write_atomic, write_immutable
 from miles_plugins.proximal.store import open_store
 
 
+def validate_collection_request(
+    config: RunConfig, *, samples: int, fresh: bool, policy_json: str, persist_to_volume: bool
+) -> Policy | None:
+    """Shared free validation on the local launch host and CPU worker."""
+    if not persist_to_volume:
+        raise ValueError("Detached collection requires --rollouts-persist-to-volume")
+    if samples <= 0 or samples % config.research.group_size or fresh == bool(policy_json):
+        raise ValueError("Choose complete groups and exactly one of --fresh or --policy-file")
+    policy = None if fresh else Policy.model_validate_json(policy_json)
+    if policy is not None and (policy.run_id != config.run_id or policy.base_model != config.base_model):
+        raise ValueError("Policy belongs to another run/base")
+    return policy
+
+
 async def collect_batch(
-    authorization: AuthorizedRun, *, config_path: Path, policy: Policy, num_samples: int, out: Path
+    authorization: AuthorizedRun,
+    *,
+    config_path: Path,
+    policy: Policy,
+    num_samples: int,
+    out: Path,
+    publisher: StateWriter | None = None,
+    base_policy: Path | None = None,
 ) -> FrozenBatch:
     config = require_authorization(authorization)
     if read_run_config(config_path) != config:
@@ -32,7 +57,10 @@ async def collect_batch(
     if policy.run_id != config.run_id or policy.base_model != config.base_model:
         raise ValueError("Collection policy belongs to another run/base")
     if isinstance(config.artifact_storage, RunStateArtifacts):
-        raise ValueError("Standalone collection needs shared_disk or a mounted modal_volume, not a trainer outbox")
+        if publisher is None or not publisher.thread.is_alive() or publisher.run_id != config.run_id:
+            raise ValueError("Run-state collection requires its run's active artifact publisher")
+        if publisher.artifacts != config.artifact_directory:
+            raise ValueError("Collector and publisher must use the same local artifact directory")
     if out.exists():
         raise ValueError("Use a new collection directory; freeze selection.json to recover completed work")
     args = argparse.Namespace(
@@ -83,6 +111,7 @@ async def collect_batch(
             policy=policy,
             num_samples=num_samples,
             out=out,
+            base_policy=base_policy,
         )
         await asyncio.to_thread(store.sync.commit)
         return batch
@@ -91,6 +120,74 @@ async def collect_batch(
             await rollout.close()
         finally:
             await store.close()
+
+
+async def collect_persisted(
+    authorization: AuthorizedRun,
+    *,
+    config_path: Path,
+    policy: Policy,
+    num_samples: int,
+    out: Path,
+    snapshot_root: Path,
+    collection_root: Path,
+    commit: Callable[[], None],
+    base_policy: Path | None = None,
+    train_args: tuple[str, ...] | None = None,
+) -> FrozenBatch:
+    """The CPU run owns the same publisher as training; no native checkpoint needed."""
+    config = require_authorization(authorization)
+    if not isinstance(config.artifact_storage, RunStateArtifacts):
+        raise ValueError("Persisted collection stages locally with the run-state publisher")
+    if num_samples <= 0 or num_samples % config.research.group_size:
+        raise ValueError("Sample count must be a positive multiple of group_size")
+    if (
+        read_run_config(config_path) != config
+        or policy.run_id != config.run_id
+        or policy.base_model != config.base_model
+    ):
+        raise ValueError("Collection config/policy changed after authorization")
+    if collection_root.exists() or out.exists():
+        raise ValueError("Use a new collection ID; previously persisted rollouts remain available")
+    # These small files make even interrupted collection recoverable without the DB.
+    with tempfile.TemporaryDirectory() as staging:
+        records = [("source.json", config.model_dump_json()), ("policy.json", policy.model_dump_json())]
+        if train_args is not None:
+            records.append(("training-args.json", json.dumps(train_args)))
+        for name, value in records:
+            source = Path(staging) / name
+            source.write_text(value)
+            copy_verified(source, collection_root / name, describe(source, relative=name))
+    if base_policy is not None:
+        from miles_plugins.proximal.initial_policy import copy_base_policy, verify_base_policy
+
+        copy_base_policy(verify_base_policy(config, policy, base_policy), collection_root / "base_policy")
+    await asyncio.to_thread(commit)
+    dsn = secret_env(config.store_dsn_env)
+    await asyncio.to_thread(initialize, dsn)
+    publisher = StateWriter(
+        dsn=dsn,
+        run_id=config.run_id,
+        artifacts=config.artifact_directory,
+        snapshot_root=snapshot_root,
+        commit=commit,
+    )
+    publisher.start()
+    try:
+        batch = await collect_batch(
+            authorization,
+            config_path=config_path,
+            policy=policy,
+            num_samples=num_samples,
+            out=out,
+            publisher=publisher,
+            base_policy=base_policy,
+        )
+    finally:
+        # collect_batch stops its producer first. Drain before the local DB closes.
+        await asyncio.to_thread(publisher.close)
+    await asyncio.to_thread(publish_batch, out, collection_root / "batch", commit=commit)
+    return batch
 
 
 def main() -> None:

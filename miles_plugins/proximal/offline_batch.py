@@ -7,6 +7,7 @@ to validate or train a completed bundle. See docs/proximal/offline-batches.md.
 
 import argparse
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,7 @@ from miles_plugins.proximal.contracts import (
     read_run_config,
     training_contract,
 )
+from miles_plugins.proximal.initial_policy import copy_base_policy, verify_base_policy
 from miles_plugins.proximal.state_artifacts import copy_verified, describe
 from miles_plugins.proximal.state_checkpoints import CheckpointManifest, read_manifest
 from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, decode_group
@@ -88,8 +90,49 @@ def validate_batch(bundle: Path) -> FrozenBatch:
     return batch
 
 
+def publish_batch(bundle: Path, destination: Path, *, commit: Callable[[], None]) -> FrozenBatch:
+    """Publish exact referenced bytes, commit, then publish/commit readiness last."""
+    batch = validate_batch(bundle)
+    for index in batch.groups:
+        relative = f"groups/{index.header.group_id}.bin"
+        source = bundle / relative
+        copy_verified(source, destination / relative, describe(source, relative=relative))
+    if (bundle / "base_policy").exists():
+        copy_base_policy(
+            verify_base_policy(batch.source, batch.policy, bundle / "base_policy"), destination / "base_policy"
+        )
+    commit()
+    source = bundle / "batch.json"
+    copy_verified(source, destination / "batch.json", describe(source, relative="batch.json"))
+    commit()
+    return batch
+
+
+def oldest_groups(config: RunConfig, source_root: Path, policy: Policy, num_samples: int) -> tuple[str, ...]:
+    """Explicit selection from durable indexes, independent of a live Postgres."""
+    if num_samples <= 0 or num_samples % config.research.group_size:
+        raise ValueError("Select a positive number of complete groups")
+    contract = digest(training_contract(config))
+    indexes = [GroupIndex.model_validate_json(path.read_bytes()) for path in (source_root / "groups").glob("*.json")]
+    matches = sorted(
+        (index for index in indexes if index.header.policy == policy and index.header.contract_sha256 == contract),
+        key=lambda index: (index.created_at, index.header.group_id),
+    )
+    count = num_samples // config.research.group_size
+    if len(matches) < count:
+        raise ValueError(f"Need {count} complete matching groups; only {len(matches)} are durably indexed")
+    return tuple(index.header.group_id for index in matches[:count])
+
+
 def freeze_batch(
-    *, config: RunConfig, source_root: Path, group_ids: tuple[str, ...], policy: Policy, num_samples: int, out: Path
+    *,
+    config: RunConfig,
+    source_root: Path,
+    group_ids: tuple[str, ...],
+    policy: Policy,
+    num_samples: int,
+    out: Path,
+    base_policy: Path | None = None,
 ) -> FrozenBatch:
     """Explicit ordered selection, never 'whatever files happen to be present'.
 
@@ -122,6 +165,8 @@ def freeze_batch(
             raise ValueError("Source group index/payload mismatch")
         indexes.append(index)
     batch = FrozenBatch(source=config, policy=policy, num_samples=num_samples, groups=tuple(indexes))
+    if base_policy is not None:
+        copy_base_policy(verify_base_policy(config, policy, base_policy), out / "base_policy")
     # Validate before copying; a failed selection cannot become a completed bundle.
     attempts: set[str] = set()
     for index in batch.groups:
@@ -150,7 +195,9 @@ class FrozenBatchRolloutFn(BaseRolloutFn):
     @staticmethod
     def add_arguments(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--proximal-frozen-batch", type=Path, required=True)
-        parser.add_argument("--proximal-frozen-checkpoint", type=Path, required=True)
+        initialization = parser.add_mutually_exclusive_group(required=True)
+        initialization.add_argument("--proximal-frozen-checkpoint", type=Path)
+        initialization.add_argument("--proximal-frozen-fresh", action="store_true")
 
     def __init__(self, input: RolloutFnConstructorInput) -> None:
         super().__init__(input)
@@ -211,11 +258,14 @@ def validate_input_args(args: argparse.Namespace, batch: FrozenBatch) -> None:
         raise ValueError("A frozen batch requires exactly one training iteration")
 
 
-def validate_train_args(args: argparse.Namespace, batch: FrozenBatch, checkpoint: CheckpointManifest) -> None:
+def validate_train_args(args: argparse.Namespace, batch: FrozenBatch, checkpoint: CheckpointManifest | None) -> None:
     validate_input_args(args, batch)
+    fresh = bool(getattr(args, "proximal_frozen_fresh", False))
+    if fresh != (checkpoint is None):
+        raise ValueError("Select explicit fresh initialization or a verified native checkpoint")
     required = {
-        "num_rollout": checkpoint.step + 2,
-        "start_rollout_id": checkpoint.step + 1,
+        "num_rollout": 1 if checkpoint is None else checkpoint.step + 2,
+        "start_rollout_id": 0 if checkpoint is None else checkpoint.step + 1,
         "load": str(batch.source.tokenizer_path),
         "hf_checkpoint": str(batch.source.tokenizer_path),
         "data_source_path": "miles.rollout.data_source.RolloutDataSourceWithBuffer",
@@ -256,16 +306,23 @@ def validate_train_args(args: argparse.Namespace, batch: FrozenBatch, checkpoint
         if getattr(args, name, None):
             raise ValueError(f"Unsupported frozen-batch option: --{name.replace('_', '-')}")
 
-    if args.actor_num_nodes * args.actor_num_gpus_per_node != checkpoint.native.world_size:
-        raise ValueError("Native checkpoint requires its original GPU world size")
-    tokens = checkpoint.context.train_args
-    if "--optimizer" not in tokens or tokens.index("--optimizer") + 1 == len(tokens):
-        raise ValueError("Source checkpoint must record its optimizer algorithm explicitly")
-    if args.optimizer != tokens[tokens.index("--optimizer") + 1]:
-        raise ValueError("Cannot restore native optimizer state into a different optimizer algorithm")
-    for name, value in checkpoint.native.layout.items():
-        if int(getattr(args, name, 1) or 1) != value:
-            raise ValueError(f"Native checkpoint requires original {name}={value}")
+    if checkpoint is not None:
+        if args.actor_num_nodes * args.actor_num_gpus_per_node != checkpoint.native.world_size:
+            raise ValueError("Native checkpoint requires its original GPU world size")
+        tokens = checkpoint.context.train_args
+        if "--optimizer" not in tokens or tokens.index("--optimizer") + 1 == len(tokens):
+            raise ValueError("Source checkpoint must record its optimizer algorithm explicitly")
+        if args.optimizer != tokens[tokens.index("--optimizer") + 1]:
+            raise ValueError("Cannot restore native optimizer state into a different optimizer algorithm")
+        for name, value in checkpoint.native.layout.items():
+            if int(getattr(args, name, 1) or 1) != value:
+                raise ValueError(f"Native checkpoint requires original {name}={value}")
+    else:
+        verify_base_policy(batch.source, batch.policy, Path(args.proximal_frozen_batch) / "base_policy")
+        if args.lora_adapter_path or args.lora_A_init_method != "xavier" or args.lora_B_init_method != "zero":
+            raise ValueError(
+                "Fresh training initializes a trainable LoRA from base; it never loads the serving adapter"
+            )
     targets = args.target_modules
     if isinstance(targets, str):
         targets = targets.split(",")
@@ -273,34 +330,49 @@ def validate_train_args(args: argparse.Namespace, batch: FrozenBatch, checkpoint
         raise ValueError("LoRA target modules differ from the frozen batch")
     if not args.save:
         raise ValueError("Independent training step requires an explicit --save destination")
-    source = Path(args.proximal_frozen_checkpoint).resolve()
     save = Path(args.save).resolve()
-    for protected in (source, Path(args.proximal_frozen_batch).resolve()):
+    inputs = [Path(args.proximal_frozen_batch).resolve(), Path(batch.source.tokenizer_path).resolve()]
+    if checkpoint is not None:
+        inputs.append(Path(args.proximal_frozen_checkpoint).resolve())
+    for protected in inputs:
         if save == protected or save in protected.parents or protected in save.parents:
             raise ValueError("Write the new checkpoint outside the immutable input directories")
     if save.exists() and any(save.iterdir()):
         raise ValueError("Independent step requires an empty --save destination")
-    if Path(args.lora_adapter_path).resolve() != source / "checkpoint/adapter":
+    if checkpoint is not None and Path(args.lora_adapter_path).resolve() != inputs[-1] / "checkpoint/adapter":
         raise ValueError("Training must load the verified native adapter, not a serving export")
 
 
-def train_argv(bundle: Path, batch: FrozenBatch, checkpoint_path: Path) -> list[str]:
+def train_argv(bundle: Path, batch: FrozenBatch, checkpoint_path: Path | None, *, fresh: bool = False) -> list[str]:
     """Reuse native checkpoint loading and Miles's driver for exactly one update."""
-    checkpoint = read_checkpoint(checkpoint_path, batch)
+    if fresh == (checkpoint_path is not None):
+        raise ValueError("Choose exactly one of fresh base initialization or native resume")
+    checkpoint = read_checkpoint(checkpoint_path, batch) if checkpoint_path is not None else None
+    if fresh:
+        verify_base_policy(batch.source, batch.policy, bundle / "base_policy")
+    initialization = (
+        [
+            "--proximal-frozen-checkpoint",
+            str(checkpoint_path),
+            "--lora-adapter-path",
+            str(checkpoint_path / "checkpoint/adapter"),
+        ]
+        if checkpoint_path is not None
+        else ["--proximal-frozen-fresh"]
+    )
     research = batch.source.research
     return [
         "--debug-train-only", "--disable-rollout-global-dataset",
         "--rollout-function-path", ROLLOUT,
         "--proximal-frozen-batch", str(bundle),
-        "--proximal-frozen-checkpoint", str(checkpoint_path),
+        *initialization,
         "--hf-checkpoint", str(batch.source.tokenizer_path),
         "--load", str(batch.source.tokenizer_path),
-        "--lora-adapter-path", str(checkpoint_path / "checkpoint/adapter"),
         "--lora-rank", str(research.lora.rank), "--lora-alpha", str(research.lora.alpha),
         "--lora-dropout", "0", "--target-modules", ",".join(research.lora.target_modules),
         "--train-backend", "megatron", "--megatron-to-hf-mode", "bridge",
-        "--save-interval", "1", "--rollout-num-gpus", "0", "--num-rollout", str(checkpoint.step + 2),
-        "--start-rollout-id", str(checkpoint.step + 1),
+        "--save-interval", "1", "--rollout-num-gpus", "0", "--num-rollout", str(1 if checkpoint is None else checkpoint.step + 2),
+        "--start-rollout-id", str(0 if checkpoint is None else checkpoint.step + 1),
         "--rollout-batch-size", str(len(batch.groups)), "--global-batch-size", str(batch.num_samples),
         "--n-samples-per-prompt", str(research.group_size),
         "--rollout-max-response-len", str(research.sampling.max_tokens),
@@ -318,39 +390,64 @@ def main() -> None:
     freeze = commands.add_parser("freeze")
     freeze.add_argument("--config", type=Path, required=True)
     freeze.add_argument("--source-root", type=Path, required=True)
-    freeze.add_argument("--group-ids", type=Path, required=True, help="JSON array, in requested batch order")
+    selection = freeze.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--group-ids", type=Path, help="JSON array, in requested batch order")
+    selection.add_argument("--oldest", action="store_true", help="Select the oldest complete matching groups")
     freeze.add_argument("--policy", type=Path, required=True)
     freeze.add_argument("--samples", type=int, required=True)
     freeze.add_argument("--out", type=Path, required=True)
+    freeze.add_argument("--base-policy", type=Path)
     check = commands.add_parser("check")
     check.add_argument("--bundle", type=Path, required=True)
     train = commands.add_parser("train")
     train.add_argument("--bundle", type=Path, required=True)
-    train.add_argument("--checkpoint", type=Path, required=True, help="Verified run-state checkpoint bundle")
-    train.add_argument("--optimizer-state", choices=["resume"], required=True)
+    initialization = train.add_mutually_exclusive_group(required=True)
+    initialization.add_argument("--checkpoint", type=Path, help="Verified run-state checkpoint bundle")
+    initialization.add_argument("--fresh", action="store_true", help="New LoRA and optimizer on the pinned base")
+    train.add_argument("--optimizer-state", choices=["resume"])
+    train.add_argument("--recipe", type=Path, help="Saved JSON array of explicit Miles model/optimizer arguments")
     train.add_argument("--yes-train", action="store_true", required=True)
     args, extra = parser.parse_known_args()
     if args.command != "train" and extra:
         parser.error(f"Unexpected arguments: {extra}")
     if args.command == "freeze":
+        config = read_run_config(args.config)
+        policy = Policy.model_validate_json(args.policy.read_bytes())
         batch = freeze_batch(
-            config=read_run_config(args.config),
+            config=config,
             source_root=args.source_root,
-            group_ids=tuple(json.loads(args.group_ids.read_text())),
-            policy=Policy.model_validate_json(args.policy.read_bytes()),
+            group_ids=(
+                oldest_groups(config, args.source_root, policy, args.samples)
+                if args.oldest
+                else tuple(json.loads(args.group_ids.read_text()))
+            ),
+            policy=policy,
             num_samples=args.samples,
             out=args.out,
+            base_policy=args.base_policy,
         )
     elif args.command == "check":
         batch = validate_batch(args.bundle)
     else:
         batch = validate_batch(args.bundle)  # Before Ray, GPUs, or any resource initialization.
-        argv = train_argv(args.bundle, batch, args.checkpoint)
+        extra = (TypeAdapter(list[str]).validate_json(args.recipe.read_bytes()) if args.recipe else []) + (
+            extra[1:] if extra[:1] == ["--"] else extra
+        )
+        if args.fresh:
+            if args.optimizer_state is not None or "--seed" not in extra:
+                parser.error("--fresh needs an explicit Miles --seed and no --optimizer-state")
+        elif args.optimizer_state != "resume":
+            parser.error("--checkpoint requires --optimizer-state resume")
+        argv = train_argv(args.bundle, batch, args.checkpoint, fresh=args.fresh)
         from miles.utils.arguments import parse_args
 
         sys.argv = ["train.py", *(extra[1:] if extra[:1] == ["--"] else extra), *argv]
         parsed = parse_args()  # type: ignore[no-untyped-call]
-        validate_train_args(parsed, batch, read_checkpoint(args.checkpoint, batch))
+        if args.fresh:
+            # These are Bridge's native initialization attributes, not Miles CLI
+            # options. Explicit fresh mode always starts at the base function.
+            parsed.lora_A_init_method, parsed.lora_B_init_method = "xavier", "zero"
+        validate_train_args(parsed, batch, None if args.fresh else read_checkpoint(args.checkpoint, batch))
         # Existing Miles driver owns optimizer, advantage math, partitioning and save.
         import asyncio
 

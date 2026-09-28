@@ -323,20 +323,27 @@ async def test_final_flush_publishes_last_checkpoint_without_waiting_for_timer(
 ):
     root, working = tmp_path / "volume", tmp_path / "local"
     native_save(working)
+    from miles_plugins.proximal.state_writer import checkpoint_publisher
+
     writer = StateWriter(
         dsn=store_dsn,
-        pg_bin=pg_bin,
-        checkpoints=working,
+        run_id=config.run_id,
         artifacts=config.artifact_directory,
         snapshot_root=root,
-        context=context,
-        launch_id="one",
-        parent=None,
-        taken=None,
         commit=lambda: None,
+        publish_checkpoint=checkpoint_publisher(
+            dsn=store_dsn,
+            pg_bin=pg_bin,
+            checkpoints=working,
+            snapshot_root=root,
+            context=context,
+            launch_id="one",
+            parent=None,
+            taken=None,
+            commit=lambda: None,
+        ),
     )
     writer.close()
-    assert writer.taken == 3
     assert checkpoints.read_manifest(root, (root / "LATEST").read_text()).step == 3
 
 
@@ -388,7 +395,7 @@ async def test_completed_group_before_first_checkpoint_survives_restart(
         await store.close()
 
 
-@pytest.mark.parametrize("failure", ["none", "cancel", "local_write"])
+@pytest.mark.parametrize("failure", ["none", "cancel", "local_write", "request_write"])
 async def test_capture_release_waits_for_durable_handoff(
     config,
     tmp_path,
@@ -432,11 +439,15 @@ async def test_capture_release_waits_for_durable_handoff(
         async def cancel(self, _):
             raise AssertionError("Do not cancel completed paid work on storage failure")
 
-    if failure == "local_write":
+    if failure in {"local_write", "request_write"}:
         from miles_plugins.proximal import rollout
 
-        def fail_write(*_):
-            raise OSError("local disk unavailable")
+        original_write = rollout.write_immutable
+
+        def fail_write(path, payload):
+            if failure == "request_write" or path.name != "request.json":
+                raise OSError("local disk unavailable")
+            original_write(path, payload)
 
         monkeypatch.setattr(rollout, "write_immutable", fail_write)
     store = await run_state_store(config)
@@ -451,6 +462,27 @@ async def test_capture_release_waits_for_durable_handoff(
         )
     )
     try:
+        if failure == "request_write":
+            with pytest.raises(OSError, match="local disk"):
+                await task
+            assert not calls and not released
+            return
+        # A launch must wait for its durable intent, independently of result storage.
+        for _ in range(100):
+            if calls:
+                break
+            await asyncio.to_thread(
+                state_artifacts.publish_pending,
+                dsn=store_dsn,
+                run_id=config.run_id,
+                artifacts=config.artifact_directory,
+                snapshot_root=tmp_path / "volume",
+                commit=lambda: None,
+            )
+            await asyncio.sleep(0.01)
+        assert (
+            tmp_path / "volume/artifacts" / config.run_id / "accepted" / attempt.attempt_id / "request.json"
+        ).is_file()
         if failure == "local_write":
             with pytest.raises(OSError, match="local disk"):
                 await task
@@ -466,8 +498,17 @@ async def test_capture_release_waits_for_durable_handoff(
         assert calls == [True] and not released and not task.done()
         if failure == "cancel":
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            assert not released
+            await asyncio.sleep(0)
+            task.cancel()  # Miles also cancels remaining children in group teardown.
+            await asyncio.sleep(0)
+            assert not task.done() and not released
+            with pytest.raises(asyncio.CancelledError):
+                await settle(task, config=config, store_dsn=store_dsn, root=tmp_path / "volume")
+            await wait_for_releases()
+            assert released == [True]
+            assert (
+                tmp_path / "volume/artifacts" / config.run_id / "accepted" / attempt.attempt_id / "accepted.json"
+            ).is_file()
         else:
             await settle(task, config=config, store_dsn=store_dsn, root=tmp_path / "volume")
             await wait_for_releases()

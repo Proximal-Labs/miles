@@ -463,6 +463,16 @@ class AcceptedAttempt(Contract):
     grade: Grade
 
 
+class FailedAttempt(Contract):
+    """An archived attempt outcome, never a zero-reward training example."""
+
+    attempt: Attempt
+    status: Literal["failed", "cancelled"]
+    error_type: Nonempty
+    capture: CaptureReceipt | None
+    grade: Grade | None
+
+
 class PolicyEvidence(Contract):
     snapshot: SnapshotReference
     base_model: BaseModelIdentity

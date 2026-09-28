@@ -111,6 +111,26 @@ The supported path is a single Megatron actor cell, bridge-exported LoRA, an ind
 
 ## Disjoint rollout collection and a training step
 
+P0: storage happens at the shared attempt/result and group-store seams, whether
+the producer belongs to online training or a CPU-only collection job. Each launch
+first archives its immutable request; accepted results archive the existing exact
+sample codec and grade evidence before releasing capture. Failed/cancelled attempts
+retain an explicit outcome and any sealed capture that can be recovered. A request
+without a terminal record after a crash is unknown, never a fabricated zero reward.
+Training eligibility and batch selection do not control artifact retention.
+
+The CPU collector owns an artifact-only instance of the existing state publisher.
+`modal_training --rollouts-persist-to-volume` uses the deployment's configured
+state Volume; `--collect-rollouts N` selects a CPU-only run. Online training already
+uses the same persistence path. No additional store service or manual commit is
+exposed to the operator.
+It commits results incrementally and automatically publishes a self-contained
+batch when the requested complete groups have arrived. An interrupted collection
+can select already committed groups later without the old database. The P0 format
+keeps the proven lossless codec and self-contained group/batch copies; replacing
+those copies with references is a later storage optimization, not a prerequisite
+for correct detached training.
+
 The durable data unit is the existing complete-group payload, including rewards,
 exact tokens, assistant masks, behavior logprobs and typed acceptance evidence.
 An immutable `FrozenBatch` manifest orders those groups, hashes their payloads,
@@ -133,9 +153,14 @@ in train-only mode, without Postgres, platform or serving clients. A batch of
 1,024 trajectories at group size 8 means 128 groups and global batch size 1,024
 for one optimizer update; microbatching remains Miles's responsibility.
 
-Training initialization is separate from the data artifact. The first supported
-offline launcher requires a retained, verified native recovery checkpoint from
-the source run, the same parallel layout, and explicit optimizer-state resume.
+Training initialization is separate from the data artifact. Explicit fresh mode
+loads the pinned base and initializes trainable LoRA plus a new optimizer. CPU
+collection can publish a zero-delta serving adapter, constructed from the base
+checkpoint's tensor shapes without loading its weights into a GPU. The immutable
+serving snapshot is retained with the batch; fresh training verifies its identity,
+shape and zero delta. It never loads that serving-only adapter as trainable weights.
+Native resume requires a retained, verified recovery checkpoint from the source
+run, the same parallel layout, and explicit optimizer-state resume.
 Serving PEFT exports are not training checkpoints: this fork's Megatron loader
 does not import them. The selected batch must fit the checkpoint's policy-lag
 window. A policy version number alone is not proof of equal weights across

@@ -9,9 +9,11 @@ contains the token trace and separate grade evidence, but is not a complete GRPO
 flowchart LR
   P[Published behavior LoRA] --> R[Inference replicas and platform rollouts]
   R --> C[CPU collector: existing Miles producer and buffer]
-  C --> B[Frozen batch on state Volume]
+  C --> A[Automatic rollout archive on state Volume]
+  A --> B[Select a frozen batch now or later]
   B --> F[FrozenBatchRolloutFn]
   K[Retained native training checkpoint] --> T[Miles train.py: one optimizer update]
+  Q[Pinned base: explicit fresh initialization] --> T
   F --> T
   T --> N[New native checkpoint]
 ```
@@ -21,6 +23,56 @@ does not need training GPUs; the later trainer does not need inference replicas,
 platform access, capture credentials or Postgres. This does not make the data
 automatically on-policy: choose the native checkpoint that corresponds to the
 behavior policy, or deliberately use the configured behavior correction and lag.
+
+## P0: one flag enables durable rollout storage
+
+Use the usual run, serving, and training deployment configs. The existing
+`training.json` supplies the state Volume and secrets. The base weights and
+inference fleet must already exist; this command creates **no training GPU**:
+
+```bash
+PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \
+PROXIMAL_TRAINING_CONFIG=training.json \
+  modal run --detach --env main -m miles_plugins.proximal.modal_training \
+  --collect-rollouts 1024 --rollouts-persist-to-volume --fresh \
+  --yes-rollouts --yes-publish
+```
+
+`--fresh` creates a serving-only zero-delta adapter from the pinned base checkpoint's
+tensor shapes on CPU. It publishes through the existing immutable snapshot path.
+No old training checkpoint is required. For an existing trained policy, replace
+`--fresh` with `--policy-file policy.json`; retain its native checkpoint for the
+later optimizer resume. Use one active producer/writer per run, as for online training.
+
+The CPU job starts its own local Postgres and artifact publisher. The flag uses
+the deployment's **state** Volume, not the serving adapter Volume. Online Modal
+training already uses this publisher; the same flag is accepted on its ordinary
+launch command. Persistence is independent of whether a rollout is selected for
+training. Each launch request is archived before platform execution, and each
+accepted result is committed before its replica capture is released. Failed or
+cancelled attempts retain an explicit outcome and any recoverable sealed capture;
+unrecoverable/unknown results never become fabricated training samples.
+
+The job prints a collection ID and writes:
+
+- `<run_id>/artifacts/<run_id>/accepted/<attempt_id>/`: request, exact token codec,
+  and acceptance/grade or failure evidence.
+- `<run_id>/artifacts/<run_id>/groups/`: complete training groups, preserving exact
+  tokens, masks, behavior logprobs, rewards, membership and policy provenance.
+- `<run_id>/collections/<collection_id>/`: source config, policy, explicit training
+  recipe (`training-args.json`), optional initial
+  base-policy proof, and an automatically finalized `batch/` after 1,024 accepted
+  samples. Group size comes from the run config; 1,024 is not a cap on billed attempts.
+
+Results are saved incrementally, before a batch exists. A storage failure holds
+completion until publication succeeds; a crash can still lose an unsealed capture,
+which remains explicitly unknown/failed. After an interrupted collection, committed
+groups and source metadata remain usable without its Postgres. No manual copy or
+Volume commit is needed on the supported Modal collection path.
+
+For this P0, the existing lossless sample codec is unchanged. Complete groups and
+self-contained batch exports duplicate payloads; deduplication/compression is not
+part of the correctness change.
 
 ## What the two Claude investigations established
 
@@ -39,6 +91,8 @@ behavior policy, or deliberately use the configured behavior correction and lag.
 
 ## Collect a finite batch
 
+The lower-level local collector below is useful when managing the CPU process
+yourself. For Modal, prefer the single command above, which owns persistence.
 First provision/retain the inference fleet and commit the chosen policy through
 the existing publication path. Keep the **native training checkpoint** for that
 policy as well. Pin a recovery bundle with `pins/<checkpoint-id>` under its run
@@ -47,9 +101,10 @@ root and commit the Volume before allowing the normal writer to prune it.
 Use a dedicated collection namespace/store without a concurrently publishing
 trainer. The run JSON must match the serving contract and the selected policy's
 run ID. It needs the usual platform/capture credentials and Postgres DSN.
-For this standalone command, use the existing `shared_disk` or mounted
-`modal_volume` artifact storage; `run_state` is a trainer-owned outbox and is
-rejected without its writer. Place the output on that same durable mount.
+For this lower-level command, use `shared_disk` on a persistent local filesystem.
+Do not collect directly into a Modal v1 mount: local immutable staging needs
+hardlinks. The supported Modal launcher stages locally and uses verified copy plus
+commit for Volume publication. `run_state` requires its run-owned publisher.
 
 ```bash
 python -m miles_plugins.proximal.collect_batch \
@@ -88,6 +143,11 @@ python -m miles_plugins.proximal.offline_batch freeze \
 python -m miles_plugins.proximal.offline_batch check --bundle /local/batch-001
 ```
 
+To select from committed indexes without preparing a group list, replace
+`--group-ids groups.json` with `--oldest`. Selection still requires the exact policy
+and requested number of complete groups; it fails if there are too few. For fresh
+training, also pass `--base-policy` pointing to the collection's saved `base_policy/`.
+
 The bundle contains `batch.json` and `groups/<id>.bin`. It is self-contained data:
 source paths/DSNs are provenance, not live dependencies. Freeze copies unchanged
 codec bytes one group at a time, validating checksums, complete-group membership,
@@ -103,7 +163,24 @@ See [Modal Volume visibility](https://modal.com/docs/guide/volumes#volume-commit
 
 ## Execute one separate training step
 
-Use the same pinned model/code/image and native checkpoint layout. The input is
+For a fresh Qwen run collected by the command above, mount the state Volume on the
+later training cluster at `/snapshot` and use its printed collection ID:
+
+```bash
+python -m miles_plugins.proximal.offline_batch train \
+  --bundle /snapshot/RUN_ID/collections/COLLECTION_ID/batch \
+  --recipe /snapshot/RUN_ID/collections/COLLECTION_ID/training-args.json \
+  --fresh --yes-train -- --save /output/independent-step
+```
+
+The saved recipe supplies model, optimizer, seed and parallelism arguments. The
+wrapper derives exactly one update and the batch size from the validated data.
+`--fresh` verifies the retained serving policy has zero delta, then initializes
+Megatron's **trainable** LoRA with nonzero A and zero B, plus a fresh optimizer.
+It never imports the serving adapter into the trainer. The output directory must
+be empty, separate from the input bundle and base weights.
+
+For native resume, use the same pinned model/code/image and checkpoint layout. The input is
 a verified recovery directory `checkpoints/<step>-<digest>` from this PR, not
 the adapter Volume's `snapshots/<digest>`. Mount it and the batch read-only on the
 trainer's Ray nodes. Keep the pinned base/tokenizer at the recorded container path.
@@ -147,13 +224,15 @@ out-of-core loader. Provision host RAM for actual lengths as in the sizing work.
 - The current Megatron loader cannot import the published PEFT weights. Retaining
   only an old serving version is insufficient for this training command. Keeping
   its native checkpoint solves this; it does not require changing serving.
-- A verified native checkpoint is required: the new command does not bootstrap a
-  brand-new trainer from a serving-only initial policy. Historical legacy recovery
+- Fresh mode requires the batch's verified zero-delta base-policy proof; native
+  resume requires a verified native checkpoint. An arbitrary trained PEFT adapter
+  cannot stand in for either. Historical legacy recovery
   directories lack the new proof and remain available through the existing diagnostic
   replay harness; their group payloads can still be frozen and checked here.
 - Native optimizer resharding from 8 to 64 GPUs is **not** implemented/proven here.
   Collection is independent of the trainer topology; checkpoint loading is not.
-  A 64-GPU independent step needs a compatible native checkpoint on that topology.
+  A resumed 64-GPU independent step needs a compatible native checkpoint on that topology;
+  a fresh step initializes directly on its chosen supported topology.
 - This first pass is fixed-policy collection and one optimizer update, not repeated
   offline RL over the same batch or mixed-policy historical replay.
 - The CPU tests prove real codecs, provenance validation, complete-group ordering,
@@ -161,4 +240,6 @@ out-of-core loader. Provision host RAM for actual lengths as in the sizing work.
   also trained 1,024 real saved rollouts across separate Modal containers and
   reproduced native weights, optimizer/scheduler/RNG, training data and serving
   exports exactly. That evidence is for BF16 Qwen3-0.6B, rank 32, one H100;
-  large-model and multi-GPU continuation remain separate gates.
+  large-model and multi-GPU continuation remain separate gates. The new CPU-only
+  bootstrap and persistence flag have CPU coverage; they have not yet been used
+  for a new live 1,024-rollout platform collection/GPU step.

@@ -21,6 +21,7 @@ from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, Lau
 from miles_plugins.proximal.contracts import (
     AcceptedAttempt,
     Attempt,
+    FailedAttempt,
     LaunchRetry,
     SessionHandle,
     Task,
@@ -72,10 +73,17 @@ async def execute_attempt(
     artifact_root: Path,
     store: RolloutStore | None = None,
 ) -> Sample:
-    handle = await capture.create(attempt)
+    directory = artifact_root / attempt.attempt_id
+    request_path = directory / "request.json"
+    write_immutable(request_path, canonical_bytes(attempt))
+    if store is not None:
+        await store.publish_artifact(request_path, request_path, record_id=f"request-{attempt.attempt_id}")
+    handle = None
+    grade = None
     complete = False
     accepted_locally = False
     try:
+        handle = await capture.create(attempt)
         grade = await platform.execute(attempt, handle)
         receipt, payload = await capture.collect(handle, attempt)
         decoded = decode_samples_and_merge_input_sample(payload, sample)
@@ -86,29 +94,71 @@ async def execute_attempt(
         evidence = AcceptedAttempt(attempt=attempt, capture=receipt, grade=grade)
         validate_sample(result, evidence)
         accepted_locally = True  # Validated paid work must survive a local write failure too.
-        directory = artifact_root / attempt.attempt_id
         write_immutable(directory / "samples.safetensors", payload)
         write_immutable(directory / "accepted.json", canonical_bytes(evidence))
         if store is not None:
-            await store.publish_artifact(
-                directory / "samples.safetensors",
-                directory / "accepted.json",
-                record_id=f"capture-{attempt.attempt_id}",
+            publication = asyncio.create_task(
+                store.publish_artifact(
+                    directory / "samples.safetensors",
+                    directory / "accepted.json",
+                    record_id=f"capture-{attempt.attempt_id}",
+                )
             )
+            cancelled = None
+            while True:
+                try:
+                    await asyncio.shield(publication)
+                    break
+                except asyncio.CancelledError as exc:
+                    if publication.cancelled():
+                        raise
+                    # Miles can cancel via both gather and group shutdown. Keep
+                    # the full enqueue/commit handoff alive across both signals.
+                    cancelled = exc
+            if cancelled is not None:
+                complete = True
+                raise cancelled
         result.metadata["proximal_accepted"] = evidence.model_dump_json()
         complete = True
         return result
-    finally:
+    except (Exception, asyncio.CancelledError) as exc:
         # These are logical API lifetimes. Platform alone owns physical resources.
-        # Cancellation is bounded and awaited before dropping the local session.
-        if not complete and not accepted_locally:
+        if not accepted_locally:
             try:
                 await asyncio.wait_for(platform.cancel(attempt), timeout=30)
-            except Exception as exc:
-                logger.error("Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(exc).__name__)
+            except Exception as cancel_error:
+                logger.error(
+                    "Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(cancel_error).__name__
+                )
+            receipt = None
+            payload_path = request_path
+            if handle is not None:
+                try:
+                    receipt, partial = await asyncio.wait_for(capture.collect(handle, attempt), timeout=30)
+                    payload_path = directory / "partial.safetensors"
+                    write_immutable(payload_path, partial)
+                except Exception:
+                    # A dead replica or an empty/unsealed session has no recoverable
+                    # token payload. Preserve that fact; never invent a sample.
+                    receipt = None
+                    payload_path = request_path
+            outcome = FailedAttempt(
+                attempt=attempt,
+                status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                error_type=type(exc).__name__,
+                capture=receipt,
+                grade=grade,
+            )
+            failed_path = directory / "failed.json"
+            write_immutable(failed_path, canonical_bytes(outcome))
+            if store is not None:
+                await store.publish_artifact(payload_path, failed_path, record_id=f"failed-{attempt.attempt_id}")
+            complete = True  # The outcome is durable, although it is not trainable.
+        raise
+    finally:
         # A staged accepted result whose handoff was interrupted must remain on the
         # replica. Its existing session expiry still bounds retention after a crash.
-        if complete or not accepted_locally:
+        if complete and handle is not None:
             task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
             _releases.add(task)
             task.add_done_callback(_releases.discard)

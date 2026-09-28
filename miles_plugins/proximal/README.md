@@ -2,6 +2,11 @@
 
 Miles trains a LoRA while Proximal continuously executes feature tasks against independently served immutable policy versions on Modal. Miles uses one fleet URL; replica count, placement and sandbox/container teardown belong to the platform.
 
+For detached collection, use `modal_training --collect-rollouts 1024 --rollouts-persist-to-volume --fresh`
+with the usual configs and rollout/publication consent flags. The CPU job saves
+rollouts incrementally to the configured state Volume, then returns a batch for a
+later fresh or native-resume step. See [the two-command runbook](../../docs/proximal/offline-batches.md#p0-one-flag-enables-durable-rollout-storage).
+
 Read the [architecture](../../docs/proximal/architecture.md), [investigation](../../docs/proximal/investigation.md), and exact [remaining platform changes](../../docs/proximal/platform-contract.md). The first pass supports DeepSWE/Qwen3, one Megatron actor cell, text-only linear TITO, complete prompt groups, and rollout-logprob importance ratios. It includes code and CPU tests; live numerical/Modal validation is still required.
 
 ## 1. Prepare the environment and explicit run contract

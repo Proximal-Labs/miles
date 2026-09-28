@@ -20,8 +20,8 @@ from miles_plugins.proximal import state_checkpoints
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import accepted
 from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
-from miles_plugins.proximal.collect_batch import collect_batch
-from miles_plugins.proximal.contracts import digest, training_contract
+from miles_plugins.proximal.collect_batch import collect_batch, collect_persisted
+from miles_plugins.proximal.contracts import RunStateArtifacts, digest, training_contract
 from miles_plugins.proximal.e2e.fake_pool import FakePool
 from miles_plugins.proximal.e2e.fake_trainer import Publisher
 from miles_plugins.proximal.e2e.stub_platform import StubPlatform
@@ -30,6 +30,8 @@ from miles_plugins.proximal.offline_batch import (
     FrozenBatchRolloutFn,
     freeze_batch,
     load_group,
+    oldest_groups,
+    publish_batch,
     read_checkpoint,
     train_argv,
     validate_batch,
@@ -137,6 +139,19 @@ async def test_1024_samples_survive_source_removal_and_native_miles_conversion(
     batch = freeze(config, policy, config.artifact_directory / config.run_id, bundle, count=512)
     checkpoint_path = recovery(config, context, tmp_path, store_dsn, pg_bin)
     checkpoint = read_checkpoint(checkpoint_path, batch)
+    mount, committed = tmp_path / "batch-mount", tmp_path / "batch-committed"
+    commits = []
+
+    def commit():
+        shutil.copytree(mount, committed, dirs_exist_ok=True)
+        commits.append((committed / "batch.json").exists())
+
+    publish_batch(bundle, mount, commit=commit)
+    assert commits == [False, True]
+    # Lose both the collector's working bundle and the uncommitted mount state.
+    shutil.rmtree(bundle)
+    shutil.rmtree(mount)
+    bundle = committed
     shutil.rmtree(config.artifact_directory)
     monkeypatch.delenv(config.store_dsn_env)
     for name in ("PX_TEST_KEY", "CAPTURE_TEST_KEY", "CAPTURE_PLATFORM_TEST_KEY", "FLEET_TEST_KEY"):
@@ -216,6 +231,17 @@ async def test_invalid_selection_has_no_completion(config, policy, attempt, tmp_
     assert not (tmp_path / "out/batch.json").exists()
 
 
+async def test_selection_from_volume_indexes_needs_no_database(config, policy, attempt, tmp_path, monkeypatch):
+    await populate(config, policy, attempt, 3)
+    source = config.artifact_directory / config.run_id
+    monkeypatch.delenv(config.store_dsn_env)
+    assert oldest_groups(config, source, policy, 4) == ("g0", "g1")
+    with pytest.raises(ValueError, match="only 3"):
+        oldest_groups(config, source, policy, 8)
+    with pytest.raises(ValueError, match="only 0"):
+        oldest_groups(config, source, versioned(policy, 2), 4)
+
+
 async def test_wrong_policy_and_reward_evidence_rejected(config, policy, attempt, tmp_path):
     await populate(config, policy, attempt, 2)
     with pytest.raises(ValueError, match="exact behavior policy"):
@@ -238,8 +264,17 @@ async def test_wrong_policy_and_reward_evidence_rejected(config, policy, attempt
         )
 
 
-async def test_collect_then_stop_services_and_read_batch(stage_a, tmp_path, monkeypatch):
+@pytest.mark.parametrize("persist_to_volume", [False, True])
+async def test_collect_then_stop_services_and_read_batch(stage_a, tmp_path, monkeypatch, persist_to_volume):
     run, path, ports = stage_a
+    if persist_to_volume:
+        run = run.model_copy(update={"artifact_storage": RunStateArtifacts(kind="run_state")})
+        path.write_text(run.model_dump_json())
+    mount, durable = tmp_path / "volume-mount", tmp_path / "committed-volume"
+
+    def commit():
+        shutil.copytree(mount, durable, dirs_exist_ok=True)
+
     tokenizer = capture_tokenizer(run.tokenizer_path, run.tito_model)
     authorization = authorize_run(run, yes_rollouts=True, yes_publish=True)
     store = await open_store(run)
@@ -256,12 +291,22 @@ async def test_collect_then_stop_services_and_read_batch(stage_a, tmp_path, monk
             policy = await Publisher(
                 authorization, backend, store, adapters=[tmp_path / "adapters/adapter-0"], mode="local"
             ).publish(1)
-            result = await asyncio.wait_for(
-                collect_batch(
+            if persist_to_volume:
+                collection = collect_persisted(
+                    authorization,
+                    config_path=path,
+                    policy=policy,
+                    num_samples=4,
+                    out=tmp_path / "collected",
+                    snapshot_root=mount,
+                    collection_root=mount / "collections/one",
+                    commit=commit,
+                )
+            else:
+                collection = collect_batch(
                     authorization, config_path=path, policy=policy, num_samples=4, out=tmp_path / "collected"
-                ),
-                60,
-            )
+                )
+            result = await asyncio.wait_for(collection, 60)
         finally:
             for server, task in servers:
                 server.should_exit = True
@@ -269,6 +314,15 @@ async def test_collect_then_stop_services_and_read_batch(stage_a, tmp_path, monk
             await store.close()
     shutil.rmtree(run.artifact_directory)
     monkeypatch.delenv(run.store_dsn_env)
-    assert validate_batch(tmp_path / "collected") == result
     assert len(json.loads((tmp_path / "collected/selection.json").read_text())) == 2
+    if persist_to_volume:
+        # Only committed bytes survive losing the entire original CPU container.
+        shutil.rmtree(mount)
+        shutil.rmtree(tmp_path / "collected")
+        bundle = durable / "collections/one/batch"
+        assert len(list((durable / "artifacts" / run.run_id / "accepted").glob("*/accepted.json"))) >= 4
+        assert len(list((durable / "artifacts" / run.run_id / "groups").glob("*.json"))) >= 2
+    else:
+        bundle = tmp_path / "collected"
+    assert validate_batch(bundle) == result
     assert result.num_samples == 4

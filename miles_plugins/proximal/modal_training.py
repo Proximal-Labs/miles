@@ -24,8 +24,15 @@ optimizer state). After each saved step a thread copies a self-contained snapsho
 ``e2e.snapshots``) to the deployment's state Volume. On start, the latest snapshot is
 restored before any service runs and Miles resumes from it; Modal retries the function
 after a crash, up to the deployment's ``max_retries``.
+
+Detached collection: ``--collect-rollouts N --rollouts-persist-to-volume`` runs
+the same producer and artifact publisher on CPU, without starting a trainer GPU.
+Choose ``--fresh`` or ``--policy-file`` and explicitly authorize rollout/publication.
+Completed results are saved incrementally; the selected batch is finalized on the
+state Volume for a later independent training step. See docs/proximal/offline-batches.md.
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -142,6 +149,7 @@ image = add_fork_sources(
     )
     .add_local_file(os.environ[_TRAINING_PATH], _CONTAINER_TRAINING_CONFIG)
     .add_local_file(REPO / "train_async.py", str(FORK / "train_async.py"))
+    .add_local_file(REPO / "train.py", str(FORK / "train.py"))
     .add_local_dir(REPO / "scripts/models", str(FORK / "scripts/models"))
     .add_local_file(REPO / TRAINING.train_args, str(FORK / "train_args.txt"))
 )
@@ -365,7 +373,7 @@ def train() -> int:
     from miles_plugins.proximal import state_artifacts, state_checkpoints
     from miles_plugins.proximal.e2e import snapshots
     from miles_plugins.proximal.e2e.local_postgres import local_postgres
-    from miles_plugins.proximal.state_writer import StateWriter
+    from miles_plugins.proximal.state_writer import StateWriter, checkpoint_publisher
 
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     # Only this composition root supplies run_state: its writer acknowledges the outbox.
@@ -399,15 +407,21 @@ def train() -> int:
         state_artifacts.initialize(dsn)
         writer = StateWriter(
             dsn=dsn,
-            pg_bin=pg_bin,
-            checkpoints=STATE / "checkpoints",
+            run_id=RUN.run_id,
             artifacts=RUN.artifact_directory,
             snapshot_root=SNAPSHOT,
-            context=context,
-            launch_id=launch_id,
-            parent=parent,
-            taken=resume_step,
             commit=state_volume.commit,
+            publish_checkpoint=checkpoint_publisher(
+                dsn=dsn,
+                pg_bin=pg_bin,
+                checkpoints=STATE / "checkpoints",
+                snapshot_root=SNAPSHOT,
+                context=context,
+                launch_id=launch_id,
+                parent=parent,
+                taken=resume_step,
+                commit=state_volume.commit,
+            ),
         )
         try:
             for name, command, health in _service_commands():
@@ -463,7 +477,143 @@ def train() -> int:
                         print(f"[training] kernel cache commit failed ({type(exc).__name__})", flush=True)
 
 
+@app.function(
+    image=image,
+    cpu=float(TRAINING.cpu),
+    memory=TRAINING.memory_mib,
+    volumes={
+        str(DEPLOYMENT.base_mount): base_volume.with_mount_options(read_only=True),
+        str(SNAPSHOT_MOUNT): state_volume,
+    },
+    secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
+    timeout=24 * 3600,
+    max_containers=1,
+)
+def collect(
+    samples: int,
+    fresh: bool,
+    policy_json: str,
+    yes_rollouts: bool,
+    yes_publish: bool,
+    rollouts_persist_to_volume: bool,
+) -> str:
+    """CPU-only producer; the persistence flag uses TrainingDeployment.state_volume."""
+    import httpx
+
+    from miles_plugins.proximal.authorization import authorize_run
+    from miles_plugins.proximal.clients import ServingPoolClient
+    from miles_plugins.proximal.collect_batch import collect_persisted, validate_collection_request
+    from miles_plugins.proximal.contracts import Policy
+    from miles_plugins.proximal.e2e.local_postgres import local_postgres
+    from miles_plugins.proximal.initial_policy import prepare_base_policy
+    from miles_plugins.proximal.modal_volume import authorize_volume_publication, modal_publish_snapshot
+    from miles_plugins.proximal.store import open_store
+
+    policy = validate_collection_request(
+        RUN,
+        samples=samples,
+        fresh=fresh,
+        policy_json=policy_json,
+        persist_to_volume=rollouts_persist_to_volume,
+    )
+    runtime_run = RUN.model_copy(update={"artifact_storage": RunStateArtifacts(kind="run_state")})
+    authorization = authorize_run(runtime_run, yes_rollouts=yes_rollouts, yes_publish=yes_publish)
+    state_volume.reload()
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(runtime_run.model_dump_json())
+    _set_keys()
+    collection_id = uuid.uuid4().hex
+    work = STATE / "collections" / collection_id
+    base_policy = prepare_base_policy(runtime_run, output=work / "initial-policy") if fresh else None
+    collection_root = SNAPSHOT / "collections" / collection_id
+    print(f"Rollouts persist to {TRAINING.state_volume.volume_name}:/{RUN.run_id}/artifacts/{RUN.run_id}", flush=True)
+    print(f"Collection ID: {collection_id}", flush=True)
+    processes: list[subprocess.Popen[bytes]] = []
+    logs = work / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    try:
+        for name, command, health in _service_commands():
+            with (logs / f"{name}.log").open("ab") as log:
+                process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            processes.append(process)
+            _wait_healthy(health, process, logs / f"{name}.log")
+        if isinstance(TRAINING.platform, RealPlatform):
+            _wait_for_registration(TRAINING.platform)
+        _check_serving()
+        if base_policy is not None:
+            modal_publish_snapshot(authorize_volume_publication(RUN.volume, yes_publish=yes_publish), base_policy)
+            policy = Policy(run_id=RUN.run_id, version=1, base_model=RUN.base_model, snapshot=base_policy.reference)
+        assert policy is not None
+        with local_postgres(work / "postgres") as dsn:
+            os.environ[RUN.store_dsn_env] = dsn
+
+            async def run() -> None:
+                recipe = _recovery_context()
+                store = await open_store(runtime_run)
+                try:
+                    async with httpx.AsyncClient(timeout=RUN.request_timeout_seconds) as client:
+                        await ServingPoolClient(authorization, client).prepare(policy)
+                    await store.commit_policy(policy)
+                finally:
+                    await store.close()
+                await collect_persisted(
+                    authorization,
+                    config_path=CONFIG,
+                    policy=policy,
+                    num_samples=samples,
+                    out=work / "collected",
+                    snapshot_root=SNAPSHOT,
+                    collection_root=collection_root,
+                    commit=state_volume.commit,
+                    base_policy=None if base_policy is None else base_policy.directory,
+                    train_args=(*recipe.train_args, *recipe.model_args),
+                )
+
+            asyncio.run(run())
+    finally:
+        for process in processes:
+            process.terminate()
+        for process in processes:
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    print(f"Ready: {samples} rollouts at {collection_root / 'batch'}", flush=True)
+    return collection_id
+
+
 @app.local_entrypoint()
-def main() -> None:
+def main(
+    collect_rollouts: int | None = None,
+    rollouts_persist_to_volume: bool = False,
+    fresh: bool = False,
+    policy_file: str = "",
+    yes_rollouts: bool = False,
+    yes_publish: bool = False,
+) -> None:
+    if collect_rollouts is not None:
+        from miles_plugins.proximal.collect_batch import validate_collection_request
+
+        if not rollouts_persist_to_volume or not yes_rollouts or not yes_publish:
+            raise ValueError("Collection requires --rollouts-persist-to-volume --yes-rollouts --yes-publish")
+        policy_json = Path(policy_file).read_text() if policy_file else ""
+        validate_collection_request(
+            RUN,
+            samples=collect_rollouts,
+            fresh=fresh,
+            policy_json=policy_json,
+            persist_to_volume=rollouts_persist_to_volume,
+        )
+        identity = collect.remote(
+            collect_rollouts, fresh, policy_json, yes_rollouts, yes_publish, rollouts_persist_to_volume
+        )
+        print(f"Collection ready: {identity}")
+        return
+    if fresh or policy_file or yes_rollouts or yes_publish:
+        raise ValueError("Collection options require --collect-rollouts N")
+    # Online training already enables the same acknowledged Volume persistence.
+    if rollouts_persist_to_volume:
+        print(f"Rollout persistence enabled: {TRAINING.state_volume.volume_name}, run {RUN.run_id}")
     code = train.remote()
     print(f"Trainer exited with {code}")
