@@ -54,9 +54,15 @@ async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: st
 
 
 async def wait_for_releases() -> None:
-    """Finish the background session releases (at shutdown, and in tests)."""
-    while _releases:
-        await asyncio.gather(*list(_releases), return_exceptions=True)
+    """Finish the background session releases (at shutdown, and in tests).
+
+    Waits only on this loop's unfinished releases. A finished release leaves ``_releases``
+    in a done callback that runs on the loop's next turn, and awaiting only finished tasks
+    never yields that turn: looping until the set empties would spin the loop forever.
+    """
+    loop = asyncio.get_running_loop()
+    while pending := [task for task in _releases if not task.done() and task.get_loop() is loop]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def execute_attempt(
