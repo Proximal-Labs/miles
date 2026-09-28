@@ -75,6 +75,14 @@ Measures what capture adds to each model call on real platform traffic, on the t
 - **Trainer:** 8 × B300 at TP 4 with two data-parallel ranks, with sequences up to 256k tokens.
   - **Memory.** A 262k-token micro-batch needs about 155 GB on one GPU, which ran out of memory on H200. The output layer's bf16 logits for a micro-batch do exist: about 30 GiB at TP 4 for 256k tokens. Log-probs are computed from them in 4,096-token fp32 chunks and the loss is recomputed, so there is no full-vocabulary fp32 tensor.
   - **No MTP head in training (#23).** Qwen3.8's HF config declares one. Megatron used to add its loss, undetached, to every training forward. That was a reward-independent self-imitation term reaching the policy's LoRA weights, and its fp32 full-vocabulary logits cost about 60 GiB. Measured on 64 × B300 at TP 4 with 4 samples of 258k tokens per data-parallel rank, dropping it cut a steady step from 173.7 s to 148.8 s (−14%) and peak GPU memory from about 253k to 196k MiB.
+  - **What the leak did in production (run 013, 2026-09-28).** Run 013's code predated #23.
+    - **The policy degraded.** Over 16 steps at LR 4e-5:
+      - mean rollout log-prob of generated tokens fell from −0.66 to −1.45;
+      - pass rate fell from 24–28% to 13–15%;
+      - on 3 of 5 environments the model stopped submitting and its reasoning turned telegraphic.
+    - **The MTP loss did it.** Replaying its step-19 batch with every reward set to 0, so the RL loss is exactly 0, still left 84% of the decoder LoRA's gradient norm. That gradient pointed along the adapter's accumulated drift (cosine 0.69); the RL gradient did not (0.006).
+    - **Why it dominated:** after Adam's normalization the two pushes had the same size, but only the MTP push repeated every step. So it accumulated linearly while the RL push behaved like a random walk.
+    - **Old checkpoints don't load.** Checkpoints from before #23 carry MTP-layer LoRA weights, so they fail to load on this code.
   - **Serving still uses the base model's MTP head** as the NEXTN draft. A draft never changes the sampled tokens or the returned logprobs, only decode speed, so watch the speculative accept length as the policy drifts from the base. Train MTP detached (`--enable-mtp-training --mtp-num-layers 1`) only if that length falls and serving is shown to load the trained head.
   - **Context parallelism works, but TP 4 stays.**
     - **The blocker is fixed.** Megatron-Bridge 0.7's Qwen3-VL model, which Qwen3.8 uses, needs explicit rank-local 3D MRoPE position ids for CP-sharded inputs, and Miles's Qwen3-VL patch now passes them. The Gated DeltaNet layers support CP (`linear_cp_mode`, chunkwise by default).
@@ -84,6 +92,15 @@ Measures what capture adds to each model call on real platform traffic, on the t
 - **Credentials:** replicas take capture's platform key from `miles-platform`. Capture's control credential is the gateway key, which only the trainer and the replicas hold.
 - **Failure budget:** 16 consecutive failed groups.
 - **Trainer replay before paying for rollouts** (`miles_plugins/proximal/e2e/trainer_replay.py`): the production trainer on mock agent-shaped rollouts (model spans trained, tool outputs masked, mixed rewards per group) through Miles's `--load-debug-rollout-data`. On 8 × B300 (2026-09-26): a realistic batch (32 samples, mean 153k tokens) trained in 17 min and a stress batch (mean 227k) in 13 min, checkpoints included. Without `cuda_allocator: expandable_segments` the first step ran out of memory on a 30 GiB logits buffer with 37 GiB reserved but unallocated.
+- **Learning rate.** Run 013 raised it from 1e-5 to 4e-5 at step 4, the rate of the Tinker cookbook's RL recipes.
+  - **What happened:** with the MTP loss still attached, the adapter's drift ran about 4× faster, and the policy degraded within about four steps.
+  - **Without MTP, 4e-5 is untested.** Raise the LR only while watching mean rollout log-prob per step. The trainer doesn't log it today (`entropy_coef` is 0), so the drift was invisible in W&B. It held near −0.66 on a healthy policy.
+- **Gradient attribution** (`miles_plugins/proximal/e2e/grad_attribution.py`) replays one recorded production step from its snapshots, at a learning rate too small to move any weight. It runs three arms:
+  1. the batch as trained;
+  2. the same samples with every reward 0, which isolates the reward-independent loss terms;
+  3. the batch again, as the noise floor.
+
+  Gradients come back from the saved Adam moments and are split by parameter using the names the training state now records. It reproduced run 013's step-19 gradient bit for bit on 8 × B300, in 76 min. Use it when a run drifts in a direction the reward doesn't explain.
 - **Step sizing on N clustered nodes** (`miles_plugins/proximal/e2e/step_sizing.py`, #21). It runs the production trainer on fixed-length mock rollouts across N gang-scheduled Modal nodes with RDMA, and records per-step timers plus peak GPU and host memory. `--layouts` compares parallel layouts on one cluster.
   - **1024 samples of 258k tokens per step works on 64 × B300.** With the MTP head on (2026-09-27), the step processed 264M tokens in 45 min: 524 s recompute, 1948 s train, train MFU 0.48.
   - **Memory is independent of batch size.** Peak GPU memory was the same ~253k MiB as a 16-sample step. Each micro-batch is one sample, so a bigger batch only adds gradient accumulation, which costs time.
