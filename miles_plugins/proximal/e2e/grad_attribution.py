@@ -37,8 +37,9 @@ from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume
 FROZEN_LR = "1e-30"
 CHECKPOINTS = Path("/state/checkpoints")  # --save in the fork's train_args.
 RESULTS_MOUNT = Path("/results")
+# Created once by hand (`modal volume create miles-forensics --env main`); referenced, never created here.
 results_volume = modal.Volume.from_name(
-    "miles-forensics", environment_name=node.TRAINING.state_volume.environment_name, create_if_missing=True
+    "miles-forensics", environment_name=node.TRAINING.state_volume.environment_name, create_if_missing=False
 )
 
 app = modal.App(f"{node.TRAINING.app_name}-grad-attribution")
