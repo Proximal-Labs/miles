@@ -7,9 +7,10 @@ No container, replica or Volume lifecycle operations exist in this client.
 import asyncio
 import hashlib
 import time
+from typing import TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, FiniteFloat
+from pydantic import BaseModel, ConfigDict, FiniteFloat, ValidationError
 from pydantic.alias_generators import to_camel
 
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
@@ -47,8 +48,9 @@ class CreatedRun(Wire):
 
 class Container(Wire):
     id: str
-    status: str
-    agent_type: str
+    # Proto JSON omits empty fields: a container still launching has no agent yet.
+    status: str = "ROLLOUT_CONTAINER_STATUS_UNSPECIFIED"
+    agent_type: str = ""
     reward_scored: bool = False
     reward: FiniteFloat | None = None
     error: str | None = None
@@ -74,6 +76,18 @@ SANDBOX_DEPLOYMENT: dict[str, dict[str, object] | None] = {
     "kata-clh": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}},
     "kata-qemu": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_QEMU"}},
 }
+
+
+WireT = TypeVar("WireT", bound=Wire)
+
+
+def _platform_reply(model: type[WireT], response: httpx.Response) -> WireT:
+    """A run reply outside the wire contract makes that attempt ineligible, not the training run."""
+    try:
+        return model.model_validate_json(response.content)
+    except ValidationError as exc:
+        where = ", ".join(".".join(str(part) for part in error["loc"]) for error in exc.errors())
+        raise IneligibleAttempt(f"Platform {model.__name__} reply broke the wire contract at {where}") from exc
 
 
 class IneligibleAttempt(RuntimeError):
@@ -279,13 +293,13 @@ class PlatformClient:
             raise ValueError("Attempt is outside the authorized run")
         await self.preflight()
         response = await self._rpc("CreateEnvironmentRun", self.run_request(attempt))
-        created = CreatedRun.model_validate_json(response.content)
+        created = _platform_reply(CreatedRun, response)
         if created.run_id != attempt.attempt_id or created.instances_started not in (0, 1):
             raise IneligibleAttempt("Platform did not acknowledge the exact single-rollout request")
         deadline = time.monotonic() + attempt.harness.timeout_seconds + self.config.request_timeout_seconds
         while time.monotonic() < deadline:
-            reply = Containers.model_validate_json(
-                (await self._rpc("GetEnvironmentRunContainers", {"runId": created.run_id})).content
+            reply = _platform_reply(
+                Containers, await self._rpc("GetEnvironmentRunContainers", {"runId": created.run_id})
             )
             if reply.run_id != created.run_id or len(reply.containers) > 1:
                 raise IneligibleAttempt("Platform returned a different run or multiple rollouts")
@@ -307,9 +321,7 @@ class PlatformClient:
         raise IneligibleAttempt("Platform rollout exceeded its declared deadline")
 
     async def _grade(self, attempt: Attempt, container: Container) -> Grade:
-        summary = Summary.model_validate_json(
-            (await self._rpc("GetRunSummary", {"runId": attempt.attempt_id})).content
-        )
+        summary = _platform_reply(Summary, await self._rpc("GetRunSummary", {"runId": attempt.attempt_id}))
         if (summary.run_id, summary.image_id, summary.source_commit_sha) != (
             attempt.attempt_id,
             attempt.task.image_id,
