@@ -352,23 +352,31 @@ class RolloutStore:
 
     async def load(self, row: GroupRow) -> tuple[StoredGroup, list[Sample]]:
         payload = await self._read_payload(row)
-        size = int.from_bytes(payload[:8], "big")
-        header = StoredGroup.model_validate_json(payload[8 : 8 + size])
-        if (
-            header.group_id != row.group_id
-            or header.policy.version != row.policy_version
-            or header.contract_sha256 != self.contract_sha256
-        ):
-            raise ValueError(f"Stored payload for group {row.group_id} names a different group, policy or contract")
-        samples = []
-        body = payload[8 + size :]
-        reply = decode_samples_and_merge_input_sample(body, Sample(), fields=COMPUTED_FIELDS_V2)
-        if len(reply.samples) != len(header.identities):
-            raise ValueError("Stored payload sample count differs from its identities")
-        for sample, identity in zip(reply.samples, header.identities, strict=True):
-            sample.index, sample.group_index = identity.index, identity.group_index
-            samples.append(sample)
-        return header, samples
+        return decode_group(payload, row=row, contract_sha256=self.contract_sha256)
+
+
+def decode_group(payload: bytes, *, row: GroupRow, contract_sha256: str) -> tuple[StoredGroup, list[Sample]]:
+    """The same immutable group format for the online store and offline batches."""
+    if hashlib.sha256(payload).hexdigest() != row.payload_sha256:
+        raise ValueError(f"Stored payload for group {row.group_id} fails its checksum")
+    if len(payload) < 8:
+        raise ValueError("Truncated group header")
+    size = int.from_bytes(payload[:8], "big")
+    if not 0 < size < len(payload) - 8:
+        raise ValueError("Invalid group header length")
+    header = StoredGroup.model_validate_json(payload[8 : 8 + size])
+    if (
+        header.group_id != row.group_id
+        or header.policy.version != row.policy_version
+        or header.contract_sha256 != contract_sha256
+    ):
+        raise ValueError(f"Stored payload for group {row.group_id} names a different group, policy or contract")
+    reply = decode_samples_and_merge_input_sample(payload[8 + size :], Sample(), fields=COMPUTED_FIELDS_V2)
+    if len(reply.samples) != len(header.identities):
+        raise ValueError("Stored payload sample count differs from its identities")
+    for sample, identity in zip(reply.samples, header.identities, strict=True):
+        sample.index, sample.group_index = identity.index, identity.group_index
+    return header, reply.samples
 
 
 def payload_sync(config: RunConfig) -> PayloadSync:

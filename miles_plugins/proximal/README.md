@@ -108,6 +108,13 @@ At startup and after each iteration, the existing weight updater exports/publish
 
 For resume, restore the latest matching native checkpoint; the task source restores its cursor and consumption ledger from the same checkpoint. Completed groups persist in the rollout store and are selectable after restart if still fresh; only in-flight work is regenerated. The first publication after resume abandons versions newer than the checkpoint, and their groups are never trained on. Artifact retention is explicit operator maintenance; this integration never deletes shared policy history.
 
+For **collection now and one independent training step later**, see the
+[offline batch runbook](../../docs/proximal/offline-batches.md). A finite CPU collector
+uses the existing platform producer, while a frozen batch enters the ordinary Miles
+training driver through `FrozenBatchRolloutFn`. Preserve a compatible native training
+checkpoint alongside the data; serving PEFT exports alone cannot initialize this
+fork's Megatron resume path.
+
 ## CPU verification
 
 The dedicated [CPU workflow](../../.github/workflows/proximal-publication.yml) builds the Linux environment in `tests/integration/proximal_async/Dockerfile`, fetches only the pinned Qwen3 tokenizer, and runs tests with networking disabled. Its exact test selection currently passes **475 tests**, including 61 publication/integration tests and the affected upstream argument, async-driver, session/codec and weight-update regressions. Strict mypy covers all 19 adapter modules; Ruff, Black, isort and workflow syntax checks also pass locally.

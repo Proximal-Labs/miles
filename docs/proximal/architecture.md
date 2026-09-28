@@ -15,6 +15,7 @@ The implementation lives in `miles_plugins/proximal`. See [investigation](invest
 | Exact prompt/completion IDs and assistant loss masks | `SessionCore` + Qwen3 TITO + existing sample codec | Miles capture service on each inference replica |
 | Complete-group acceptance, durable storage, batch query with consumption-time staleness | `DataBuffer` → `PlatformDataBuffer` over `RolloutStore` (Postgres index + payloads on a durable mount) | Miles |
 | Consumption ledger (which groups this run trained on) | `DataSource` checkpoint → `PlatformTaskSource` | Miles |
+| Finite collection and later independent training | Existing `PlatformRolloutFn` producer; immutable group selection → `FrozenBatchRolloutFn`; native `train.py` | Miles |
 | Policy registry: which immutable adapter each version names, and lineage on resume | `RolloutStore` policies table | Miles |
 | Train-to-serving transfer | `WeightUpdater` → `ModalVolumeTransfer` | Miles |
 | Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publishes; platform mounts |
@@ -86,7 +87,7 @@ The artifact mount is an explicit choice. For a Modal Volume, the writer commits
 
 The training-contract digest covers everything that changes what a group means as training data: base model, pinned dataset, harness revision and limits, sampling, LoRA shape, tokenizer, TITO/thinking settings and the model's reasoning/tool-call parsers. The batch query only selects groups with the consuming trainer's digest, and `get` re-validates each loaded group's full evidence, for every member, against the run config before training on it. The producer then pauses while more than `completed_group_capacity` fresh, unconsumed groups are waiting, matching Miles's default bounded buffer.
 
-`get` is the batch query. It selects the oldest group that is within `max_policy_lag` of the trainer's committed version, was sampled from live (not abandoned) weights, and is not in this run's consumption ledger. It records the group in the ledger and returns it. Staleness is evaluated at consumption; stale groups are simply never selected, so nothing needs deleting or recycling. There is no ownership tag and no global "consumed" flag. The query is scoped to one training run and its policy lineage; reusing stored groups in another experiment would need its own query and is not supported here.
+`get` is the batch query. It selects the oldest group that is within `max_policy_lag` of the trainer's committed version, was sampled from live (not abandoned) weights, and is not in this run's consumption ledger. It records the group in the ledger and returns it. Staleness is evaluated at consumption; stale groups are simply never selected, so nothing needs deleting or recycling. There is no ownership tag and no global "consumed" flag. The query is scoped to one training run and its policy lineage. An independent experiment can explicitly freeze a selection into an offline bundle; this never changes the online consumption ledger or makes an abandoned policy live.
 
 The consumption ledger is trainer state, saved through the task source alongside the dataset fingerprint, cursor, and retry task indices. Miles saves this state immediately after the weights for the same step, and it is overwritten when a resumed run saves that step again. Resuming a complete checkpoint restores the ledger saved with its weights, so groups consumed by discarded steps become selectable again if still fresh. A step whose weights exist but whose state does not (an interrupted save) refuses to resume; the operator resumes the previous complete step. Restoring a step first deletes any saved state for later steps (all steps, on a fresh start) before training writes new weights, so a crash between re-saving a step's weights and its state cannot pair them with the abandoned timeline's ledger. This is not exactly-once consumption across a crash between optimizer step and save: the steps after the last complete checkpoint are retrained, possibly on different groups. A restarted process sees every stored group, so completed paid rollouts survive a crash. Groups still in flight when a process dies are regenerated. Entries below the staleness window are pruned because staleness only grows.
 
@@ -106,7 +107,41 @@ The platform owns sandbox retention. The operator owns retention for stored grou
 
 ## First-pass limits and verification
 
-The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/replay payloads. Unsupported modes fail during free argument validation.
+The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/routing-replay payloads. Unsupported modes fail during free argument validation.
+
+## Disjoint rollout collection and a training step
+
+The durable data unit is the existing complete-group payload, including rewards,
+exact tokens, assistant masks, behavior logprobs and typed acceptance evidence.
+An immutable `FrozenBatch` manifest orders those groups, hashes their payloads,
+records the source run contract and explicitly names the behavior policy. It is
+an artifact at the existing data-plane seam, not another training coordinator.
+This first pass selects one exact policy per batch. Raw ungraded captures and
+partial groups cannot be frozen as training batches.
+
+`collect_batch` composes `PlatformTaskSource`, `PlatformRolloutFn` and its existing
+buffer on CPU. It drains complete groups incrementally, freezes the requested
+count, then closes the producer. It neither initializes an optimizer nor
+publishes weights. Concurrency can produce additional groups or in-flight work;
+the requested count is the accepted batch size, not a billing limit.
+
+Later, `FrozenBatchRolloutFn` reads only the bundle through the ordinary Miles
+rollout-function seam. Miles still performs reward normalization, advantages,
+logprob recomputation/correction, partitioning, backward and optimizer updates.
+The offline launcher owns checkpoint validation and invokes native `train.py`
+in train-only mode, without Postgres, platform or serving clients. A batch of
+1,024 trajectories at group size 8 means 128 groups and global batch size 1,024
+for one optimizer update; microbatching remains Miles's responsibility.
+
+Training initialization is separate from the data artifact. The first supported
+offline launcher requires a retained, verified native recovery checkpoint from
+the source run, the same parallel layout, and explicit optimizer-state resume.
+Serving PEFT exports are not training checkpoints: this fork's Megatron loader
+does not import them. The selected batch must fit the checkpoint's policy-lag
+window. A policy version number alone is not proof of equal weights across
+abandoned histories; source checkpoint/behavior lineage must be chosen deliberately.
+No automatic 8-to-64-GPU resharding or creation of an initial trainer checkpoint
+from a serving-only adapter is implemented. See [offline batch runbook](offline-batches.md).
 
 CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.
 
