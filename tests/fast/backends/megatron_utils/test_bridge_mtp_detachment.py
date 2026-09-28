@@ -76,9 +76,47 @@ def test_bridge_mtp_detachment(
     # A missing flag covers callers that only register Megatron's arguments.
     if enabled is not None:
         runtime_args.enable_mtp_training = enabled
+    runtime_args.mtp_num_layers = 1  # MTP requested, as --enable-mtp-training requires.
     provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
 
     apply_bridge_runtime_config(provider, runtime_args)
 
     assert provider.mtp_detach_heads is expected_detach
     assert provider.mtp_num_layers == 1
+
+
+@pytest.mark.parametrize("requested", [None, 1])
+def test_bridge_builds_mtp_only_when_requested(
+    apply_bridge_runtime_config: Callable,
+    runtime_args: argparse.Namespace,
+    requested: int | None,
+) -> None:
+    # The HF config brings an MTP layer. Unless --mtp-num-layers asks for it, the model gets
+    # none, so no undetached MTP loss trains the policy on its own sampled tokens.
+    runtime_args.mtp_num_layers = requested
+    provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=False)
+
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert provider.mtp_num_layers == requested
+    assert provider.mtp_detach_heads is False
+
+
+def test_every_bridge_provider_site_applies_the_mtp_rule() -> None:
+    # Each function that builds a Bridge provider must apply the MTP rule. The LoRA path once
+    # built its own provider and silently kept the HF config's MTP layer.
+    root = Path(__file__).resolve().parents[4] / "miles"
+    sites = []
+    for path in root.rglob("*.py"):
+        for function in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            called = {
+                node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+            }
+            if "to_megatron_provider" in called:
+                sites.append(f"{path.relative_to(root)}:{function.name}")
+                assert called & {"apply_mtp_args", "_apply_bridge_runtime_config"}, sites[-1]
+    assert sites, "no Bridge provider sites found; the guard is not looking at the code"
