@@ -347,6 +347,7 @@ def train() -> int:
             artifacts=Path(RUN.artifact_directory),
             dsn=dsn,
             pg_bin=pg_bin,
+            max_policy_lag=RUN.research.max_policy_lag,
         )
         print(f"[training] {'resuming from step ' + str(resume_step) if resume_step is not None else 'fresh start'}")
         snapshotter = threading.Thread(target=_snapshot_loop, args=(dsn, pg_bin, stop, resume_step))

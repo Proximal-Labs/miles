@@ -13,6 +13,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def server_binaries() -> Path:
+    """The newest installed server's binary directory (initdb, pg_ctl, pg_dump, pg_restore)."""
+    binaries = sorted(Path("/usr/lib/postgresql").glob("*/bin"))
+    if not binaries:
+        raise RuntimeError("Postgres server binaries are required; use the proximal_async test image")
+    return binaries[-1]
+
+
 @contextmanager
 def local_postgres(root: Path | None = None) -> Iterator[str]:
     """Yield a DSN for a local cluster and stop it on exit.
@@ -20,10 +28,7 @@ def local_postgres(root: Path | None = None) -> Iterator[str]:
     Without ``root``: a fresh throwaway cluster, deleted on exit. With ``root``: a
     persistent cluster kept there, so a later launch sees the same store.
     """
-    binaries = sorted(Path("/usr/lib/postgresql").glob("*/bin"))
-    if not binaries:
-        raise RuntimeError("Postgres server binaries are required; use the proximal_async test image")
-    bindir = binaries[-1]
+    bindir = server_binaries()
     persistent = root is not None
     # Not under a private tmp root: the unprivileged server user must traverse it.
     root = root if root is not None else Path(tempfile.mkdtemp(prefix="proximal-pg-"))
