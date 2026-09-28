@@ -34,7 +34,7 @@
 --eps-clip 0.2
 --eps-clip-high 0.28
 --optimizer adam
---lr 1e-5
+--lr 4e-5
 --lr-decay-style constant
 # The learning rate is constant, so the scheduler follows these arguments rather than a
 # checkpoint written at another batch size (its total-iteration count scales with the batch).
