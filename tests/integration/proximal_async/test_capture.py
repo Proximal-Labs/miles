@@ -4,8 +4,10 @@ Run in the Linux CPU image with PROXIMAL_TEST_TOKENIZER pointing to the pinned
 Qwen3 tokenizer. Missing test assets are failures, not skipped integration tests.
 """
 
+import asyncio
 import json
 import os
+import threading
 from argparse import Namespace
 
 import httpx
@@ -517,3 +519,30 @@ async def test_sessions_abandoned_by_their_trainer_expire(config, authorization,
             with pytest.raises(httpx.HTTPStatusError) as lost:
                 await client.collect(abandoned, attempt)
             assert lost.value.response.status_code == 404
+
+
+def test_waiting_for_finished_releases_does_not_spin_the_event_loop():
+    """test_e2e_stage_a's intermittent hang: every release had finished, but their done
+    callbacks (which empty ``_releases``) had not run yet, and awaiting only finished tasks
+    never yields to the loop. The wait must return, and must not starve the loop."""
+    from miles_plugins.proximal import rollout
+
+    async def finished() -> None:
+        return None
+
+    async def scenario() -> None:
+        task = asyncio.get_running_loop().create_task(finished())
+        rollout._releases.add(task)
+        task.add_done_callback(rollout._releases.discard)
+        try:
+            await asyncio.sleep(0)  # The release finishes; its discard callback is only queued.
+            assert task.done() and task in rollout._releases
+            await wait_for_releases()
+        finally:
+            rollout._releases.discard(task)
+
+    # A spinning wait blocks its event loop for good, so run it on a thread we can abandon.
+    worker = threading.Thread(target=asyncio.run, args=(scenario(),), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "wait_for_releases spun on releases that had already finished"

@@ -210,6 +210,8 @@ reader; legacy state cannot acquire missing RNG/completeness evidence retroactiv
 The state writer performs a final drain and snapshot on graceful shutdown. Abrupt
 loss resumes only the last committed optimizer boundary. Async scheduling and
 nondeterministic kernels prevent a bit-identical whole-run continuation guarantee.
+Capture-release shutdown explicitly removes finished tasks and awaits only work
+owned by its event loop, so queued completion callbacks cannot stall the drain.
 
 Checkpoint retention keeps the newest two published bundles and explicit pins;
 accepted captures and group payloads are not deleted. Volume deletion is never

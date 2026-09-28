@@ -59,13 +59,16 @@ async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: st
 
 
 async def wait_for_releases() -> None:
-    """Finish the background session releases (at shutdown, and in tests)."""
-    while _releases:
-        tasks = list(_releases)
-        await asyncio.gather(*tasks, return_exceptions=True)
-        # Do not depend on done callbacks getting another event-loop turn: gather
-        # may finish synchronously for already-completed tasks (also across tests).
-        _releases.difference_update(tasks)
+    """Drain this loop's releases without depending on queued done callbacks."""
+    loop = asyncio.get_running_loop()
+    while True:
+        # Awaiting only finished tasks may never yield to their discard callbacks.
+        # Drop them explicitly, including finished tasks left by an older loop.
+        _releases.difference_update(task for task in tuple(_releases) if task.done())
+        pending = [task for task in _releases if task.get_loop() is loop]
+        if not pending:
+            return
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def _finish_handoff(task: asyncio.Task[_HandoffResult]) -> asyncio.CancelledError | None:

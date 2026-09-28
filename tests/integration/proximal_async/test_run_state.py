@@ -615,14 +615,57 @@ async def test_reconciliation_rejects_index_that_changes_payload_lineage(
         await store.close()
 
 
-async def test_release_drain_removes_already_completed_tasks():
+def test_release_drain_removes_already_completed_tasks():
+    import concurrent.futures
+    import threading
+
     from miles_plugins.proximal.rollout import _releases, wait_for_releases
 
-    task = asyncio.create_task(asyncio.sleep(0))
-    await task
-    _releases.add(task)  # Completion callback did not get another loop turn.
-    await wait_for_releases()
-    assert task not in _releases
+    async def scenario():
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+        _releases.add(task)  # No done callback will remove this task.
+        try:
+            await wait_for_releases()
+            assert task not in _releases
+        finally:
+            _releases.discard(task)
+
+    result = concurrent.futures.Future()
+
+    def run():
+        try:
+            asyncio.run(scenario())
+            result.set_result(None)
+        except BaseException as error:
+            result.set_exception(error)
+
+    # A regression can spin without yielding; an asyncio timeout cannot catch it.
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    result.result(timeout=10)
+    worker.join(timeout=1)
+
+
+def test_release_drain_leaves_another_loops_pending_release_with_its_owner():
+    from miles_plugins.proximal.rollout import _releases, wait_for_releases
+
+    other = asyncio.new_event_loop()
+    task = other.create_task(asyncio.sleep(0))
+    _releases.add(task)
+    try:
+        asyncio.run(wait_for_releases())
+        assert task in _releases and not task.done()
+        other.run_until_complete(task)
+        other.close()
+        asyncio.run(wait_for_releases())
+        assert task not in _releases  # Finished tasks need no live owning loop.
+    finally:
+        _releases.discard(task)
+        if not other.is_closed():
+            task.cancel()
+            other.run_until_complete(asyncio.gather(task, return_exceptions=True))
+            other.close()
 
 
 def test_resume_cannot_expand_a_pruned_consumption_window(context):
