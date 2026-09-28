@@ -29,6 +29,19 @@ def patch_megatron_model(model):
             delattr(model_config, "share_embeddings_and_output_weights")
 
 
+def apply_mtp_args(provider, args) -> None:
+    """Build MTP layers only when --mtp-num-layers asks for them; detach them for --enable-mtp-training.
+
+    A Bridge provider inherits MTP layers from the HF config. Megatron then adds an MTP loss to
+    every training forward, and without detachment that loss trains the policy on its own
+    sampled tokens. The non-bridge path already builds MTP only from --mtp-num-layers. Every
+    site that builds a Bridge provider applies this.
+    """
+    provider.mtp_num_layers = getattr(args, "mtp_num_layers", None)
+    if getattr(args, "enable_mtp_training", False):
+        provider.mtp_detach_heads = True
+
+
 def apply_dsa_backend_args(provider, args) -> None:
     """Map --dsa-attention-backend onto the provider's dsa_attention_backend (bridge) or dsa_kernel_backend (main)."""
     backend = getattr(args, "dsa_attention_backend", "megatron")
