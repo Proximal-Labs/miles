@@ -78,3 +78,72 @@ def test_reassemble_bails_on_indivisible_segment():
     cu = [0, 6]  # 6 not divisible by 2*cp=4
     gathered = [torch.zeros(3, dtype=torch.long), torch.zeros(3, dtype=torch.long)]
     assert _reassemble_full_row(gathered, cu, cp_size=2) is None
+
+
+def _fake_bridge_module(monkeypatch):
+    """A stand-in for Megatron-Bridge's Qwen3-VL model module whose forward records kwargs."""
+    import sys
+    import types
+
+    from miles_plugins.models import qwen3_vl
+
+    calls = []
+
+    class Qwen3VLModel:
+        image_token_id, video_token_id, vision_start_token_id = -1, -2, -3
+        config = types.SimpleNamespace(spatial_merge_size=2)
+
+        def forward(self, *args, **kwargs):
+            calls.append(kwargs)
+
+    module = types.ModuleType("megatron.bridge.models.qwen_vl.modelling_qwen3_vl.model")
+    module.Qwen3VLModel = Qwen3VLModel
+    module.get_rope_index = lambda *args, **kwargs: (None, None)
+    module.preprocess_packed_seqs = lambda input_ids, attention_mask, *args, **kwargs: (input_ids, None)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    qwen3_vl._patch_model_forward_and_rope_index()
+    return Qwen3VLModel, calls
+
+
+@pytest.mark.parametrize("cp_size,sample_lens", [(2, [10, 7, 13]), (4, [40, 17])])
+def test_pre_sharded_cp_row_gets_explicit_rank_local_positions(monkeypatch, cp_size, sample_lens):
+    """Megatron-Bridge 0.7 refuses a CP pre-sharded THD row without explicit 3D MRoPE
+    positions. The patched forward must pass each rank's zigzag slice of the per-segment
+    0..L positions, identical on all three MRoPE axes for text."""
+    import types
+
+    from miles_plugins.models import qwen3_vl
+
+    model_cls, calls = _fake_bridge_module(monkeypatch)
+    samples, per_rank, cu = _build_like_get_batch(sample_lens, cp_size)
+    monkeypatch.setattr(
+        qwen3_vl, "_cp_allgather_unzigzag", lambda flat, cu, cp: _reassemble_full_row(per_rank, cu, cp)
+    )
+    for rank in range(cp_size):
+        monkeypatch.setattr(qwen3_vl, "_cp_size_rank", lambda rank=rank: (cp_size, rank))
+        psp = types.SimpleNamespace(qkv_format="thd", cu_seqlens_q=torch.tensor(cu, dtype=torch.int32))
+        model_cls().forward(input_ids=per_rank[rank].unsqueeze(0), position_ids=None, packed_seq_params=psp)
+
+        positions = calls[-1]["position_ids"]
+        assert positions.shape == (3, 1, per_rank[rank].numel())
+        expected = torch.cat(
+            [
+                _natural_to_zigzag_slice(torch.arange(cu[i + 1] - cu[i]), cp_size, rank, dim=0)
+                for i in range(len(cu) - 1)
+            ]
+        )
+        for axis in range(3):
+            assert torch.equal(positions[axis, 0], expected)
+
+
+def test_unsharded_row_keeps_bridge_positions(monkeypatch):
+    """Without CP the row is not pre-sharded, so the forward leaves position_ids to Bridge."""
+    import types
+
+    from miles_plugins.models import qwen3_vl
+
+    model_cls, calls = _fake_bridge_module(monkeypatch)
+    monkeypatch.setattr(qwen3_vl, "_cp_size_rank", lambda: (1, 0))
+    psp = types.SimpleNamespace(qkv_format="thd", cu_seqlens_q=torch.tensor([0, 5, 12], dtype=torch.int32))
+    model_cls().forward(input_ids=torch.arange(1, 13).unsqueeze(0), position_ids=None, packed_seq_params=psp)
+    assert calls[-1]["position_ids"] is None
