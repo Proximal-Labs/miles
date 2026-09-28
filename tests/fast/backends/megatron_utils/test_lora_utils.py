@@ -489,6 +489,7 @@ class TestSaveLoraCheckpointTrainingState:
         assert saved["per_bucket_numel"] == [3]
         for key, tensor in shard.items():
             assert torch.equal(saved[0][torch.float32][0][0][key], tensor)
+        assert saved[0][torch.float32][0][0]["padding"] is False  # the shape Megatron's loader reads
 
 
 class TestLoadTrainingState:
@@ -561,6 +562,19 @@ class TestLoadDistributedOptimizerState:
 
         assert [event[0] for event in events] == ["optimizer", "parameter_state"]
         assert torch.equal(events[1][1]["exp_avg_sq"], torch.ones(2))
+
+    def test_saved_elements_are_marked_real_parameters_for_the_loader(self, tmp_path):
+        """radixark/Megatron-LM (Sep 2026) indexes element['padding'] on load; the getter omits it."""
+        shard = {"param": torch.ones(2), "exp_avg": torch.zeros(2), "exp_avg_sq": torch.zeros(2)}
+        state = {"per_bucket_numel": [2], "per_bucket_numel_unpadded": [2], 0: {torch.float32: [[shard]]}}
+        self._write(tmp_path, optimizer_parameter_state=[state])
+        events = []
+
+        lora_utils._load_training_state(tmp_path, self._optimizer(events), None)
+
+        (element,) = events[1][1][0][torch.float32][0]
+        assert element["padding"] is False
+        assert torch.equal(element["param"], torch.ones(2))
 
     def test_a_checkpoint_without_parameter_state_is_refused(self, tmp_path):
         self._write(tmp_path)
