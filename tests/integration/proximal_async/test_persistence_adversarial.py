@@ -14,10 +14,83 @@ from miles.rollout.session.samples.codec import encode_samples
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 from miles_plugins.proximal import offline_batch
 from miles_plugins.proximal.buffer import accepted, validate_group
+from miles_plugins.proximal.clients import LaunchFailed
 from miles_plugins.proximal.contracts import FailedAttempt, SessionHandle, digest
 from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
 from miles_plugins.proximal.state_writer import StateWriter
 from miles_plugins.proximal.store import open_store
+
+
+@pytest.mark.parametrize("execution", ["failed", "graded", "not_started"])
+@pytest.mark.parametrize("fetch_error", [TimeoutError, ValueError])
+async def test_capture_release_requires_saved_payload_or_proof_nothing_ran(
+    config, attempt, store_dsn, tmp_path, execution, fetch_error
+):
+    """A timeout or corrupt download does not prove the replica has no useful data."""
+    _, evidence = sample_for(attempt)
+    handle = SessionHandle(
+        session_id="a" * 32, rollout_id="r", base_url="http://localhost:1/v1", request_sha256=digest(attempt)
+    )
+    released = []
+
+    class Capture:
+        async def create(self, _):
+            return handle
+
+        async def collect(self, *_):
+            raise fetch_error("capture could not be retrieved")
+
+        async def release(self, _):
+            released.append(True)
+
+    class Platform:
+        async def execute(self, *_):
+            if execution == "graded":
+                return evidence.grade
+            if execution == "not_started":
+                raise LaunchFailed("platform never started the rollout")
+            raise RuntimeError("verifier failed")
+
+        async def cancel(self, _):
+            pass
+
+    store = await run_state_store(config)
+    mount, durable = tmp_path / "mount", tmp_path / "durable"
+    writer = StateWriter(
+        dsn=store_dsn,
+        run_id=config.run_id,
+        artifacts=config.artifact_directory,
+        snapshot_root=mount,
+        commit=lambda: shutil.copytree(mount, durable, dirs_exist_ok=True),
+    )
+    writer.start()
+    try:
+        with pytest.raises(fetch_error if execution == "graded" else RuntimeError):
+            await asyncio.wait_for(
+                execute_attempt(
+                    attempt,
+                    Sample(index=0, group_index=0),
+                    capture=Capture(),
+                    platform=Platform(),
+                    artifact_root=config.artifact_directory / config.run_id / "accepted",
+                    store=store,
+                ),
+                5,
+            )
+        await wait_for_releases()
+        directory = durable / "artifacts" / config.run_id / "accepted" / attempt.attempt_id
+        outcome = FailedAttempt.model_validate_json((directory / "failed.json").read_bytes())
+        assert outcome.capture is None
+        assert outcome.grade == (evidence.grade if execution == "graded" else None)
+        assert not (directory / "accepted.json").exists()
+        if execution == "not_started":
+            assert released == [True], "A proven launch failure must not occupy replica capacity"
+        else:
+            assert not released, "Archiving a failed read must not delete the unread replica capture"
+    finally:
+        await asyncio.to_thread(writer.close)
+        await wait_for_releases()
+        await store.close()
 
 
 async def test_failed_capture_disk_error_retains_replica_payload(config, attempt, monkeypatch):

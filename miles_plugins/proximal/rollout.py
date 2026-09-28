@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeVar
 
 import httpx
 
@@ -21,6 +22,7 @@ from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, Lau
 from miles_plugins.proximal.contracts import (
     AcceptedAttempt,
     Attempt,
+    CaptureReceipt,
     FailedAttempt,
     Grade,
     LaunchRetry,
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 # background, so a rollout's sample reaches training without waiting for it.
 RELEASE_TIMEOUT_SECONDS = 60
 _releases: set["asyncio.Task[None]"] = set()
+_HandoffResult = TypeVar("_HandoffResult")
 
 
 async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: str) -> None:
@@ -65,7 +68,7 @@ async def wait_for_releases() -> None:
         _releases.difference_update(tasks)
 
 
-async def _finish_handoff(task: asyncio.Task[None]) -> asyncio.CancelledError | None:
+async def _finish_handoff(task: asyncio.Task[_HandoffResult]) -> asyncio.CancelledError | None:
     """Finish a durable handoff before propagating any repeated shutdown signals."""
     cancelled = None
     while True:
@@ -88,7 +91,7 @@ async def _archive_failure(
     platform: PlatformClient,
     directory: Path,
     store: RolloutStore | None,
-) -> None:
+) -> CaptureReceipt | None:
     # These are logical API lifetimes. Platform alone owns physical resources.
     try:
         await asyncio.wait_for(platform.cancel(attempt), timeout=30)
@@ -101,9 +104,14 @@ async def _archive_failure(
     if handle is not None:
         try:
             receipt, partial = await asyncio.wait_for(capture.collect(handle, attempt), timeout=30)
-        except Exception:
-            # A dead replica or an empty/unsealed session has no recoverable
-            # token payload. Preserve that fact; never invent a sample.
+        except Exception as collect_error:
+            # A failed read does not prove the replica has no useful bytes.
+            # Archive the unknown outcome, but do not authorize its deletion.
+            logger.warning(
+                "Capture retrieval failed for attempt %s (%s); no payload archived",
+                attempt.attempt_id,
+                type(collect_error).__name__,
+            )
             receipt = None
         else:
             # Retrieval failure can leave no capture. A local storage failure
@@ -121,6 +129,7 @@ async def _archive_failure(
     write_immutable(failed_path, canonical_bytes(outcome))
     if store is not None:
         await store.publish_artifact(payload_path, failed_path, record_id=f"failed-{attempt.attempt_id}")
+    return receipt
 
 
 async def execute_attempt(
@@ -172,21 +181,22 @@ async def execute_attempt(
         return result
     except (Exception, asyncio.CancelledError) as exc:
         if not accepted_locally:
-            cancelled = await _finish_handoff(
-                asyncio.create_task(
-                    _archive_failure(
-                        attempt,
-                        exc,
-                        handle=handle,
-                        grade=grade,
-                        capture=capture,
-                        platform=platform,
-                        directory=directory,
-                        store=store,
-                    )
+            archive = asyncio.create_task(
+                _archive_failure(
+                    attempt,
+                    exc,
+                    handle=handle,
+                    grade=grade,
+                    capture=capture,
+                    platform=platform,
+                    directory=directory,
+                    store=store,
                 )
             )
-            complete = True  # The outcome is durable, although it is not trainable.
+            cancelled = await _finish_handoff(archive)
+            # A durable failure record alone does not preserve unread capture data.
+            # LaunchFailed is the platform's explicit proof that no rollout ran.
+            complete = archive.result() is not None or isinstance(exc, LaunchFailed)
             if cancelled is not None:
                 raise cancelled from exc
         raise

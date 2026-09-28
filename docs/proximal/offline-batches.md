@@ -64,11 +64,28 @@ The job prints a collection ID and writes:
   base-policy proof, and an automatically finalized `batch/` after 1,024 accepted
   samples. Group size comes from the run config; 1,024 is not a cap on billed attempts.
 
-Results are saved incrementally, before a batch exists. A storage failure holds
-completion until publication succeeds; a crash can still lose an unsealed capture,
-which remains explicitly unknown/failed. After an interrupted collection, committed
-groups and source metadata remain usable without its Postgres. No manual copy or
-Volume commit is needed on the supported Modal collection path.
+Results are saved incrementally, before a batch exists. After an interrupted
+collection, committed groups and source metadata remain usable without its
+Postgres. No manual copy or Volume commit is needed on the supported Modal
+collection path. Cluster allocation is independent of retaining these inputs.
+
+### Exact durability boundary
+
+| Failure point | What survives |
+| --- | --- |
+| Collector/trainer disappears after capture handoff | The accepted payload and grade evidence are committed on the state Volume. Checkpoint pruning and compute cleanup do not remove them. |
+| Collector disappears before the final batch is frozen | Committed complete-group indexes and payloads can be selected later with `freeze --oldest` or explicit IDs, without the old database. |
+| A Volume commit fails or its reply is lost while the collector remains alive | Publication retries the same immutable bytes. Completion waits; storage retries do not resubmit inference. |
+| Graceful cancellation repeats during handoff | Accepted or recoverable failed-attempt payloads finish archival before capture release. |
+| Capture retrieval times out or returns invalid bytes | Failure evidence is archived, but the unread replica copy is not explicitly released. A typed platform launch failure is the exception: it certifies nothing ran. Existing replica expiry still applies; no automatic retrieval recovery is implemented. |
+| Collector is hard-killed before capture handoff, or its replica dies | Generated tokens can be lost. Local staging and local Postgres are not durable, and the replica has no durable per-turn journal. Even a platform grade does not mean the token payload reached the Volume. |
+| Capture is committed but its complete group index is not | The individual capture and grade remain archived. Current recovery/freezing reads complete groups; reconstructing a missing group from individual captures is not implemented. |
+
+Thus this is durable storage of acknowledged results, **not a zero-loss guarantee
+for every in-flight token**. A request intent proves an attempt was launched or
+about to launch; it cannot replace missing tokens or logprobs. A null capture in
+a failure record means no capture was retrieved, not proof that no capture exists.
+Use one active producer/writer per run; independently launched apps are not fenced.
 
 For this P0, the existing lossless sample codec is unchanged. Complete groups and
 self-contained batch exports duplicate payloads; deduplication/compression is not

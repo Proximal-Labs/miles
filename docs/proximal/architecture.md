@@ -216,3 +216,14 @@ accepted captures and group payloads are not deleted. Volume deletion is never
 compute cleanup. One active trainer per run remains a launch invariant: a Volume
 file is not a distributed lease. Automated failover with a possibly live old owner
 is unsupported. Platform artifact registration/CPU downloads are a separate change.
+
+Durability starts at the acknowledged Volume handoff, not at model generation.
+A failed capture read (including timeout or invalid payload) records an unknown
+capture and does not authorize replica release, unless the platform explicitly
+certifies that the rollout never started (`LaunchFailed`). This preserves the replica's
+existing recovery opportunity; it does not extend its session expiry or provide
+automatic reconciliation. Capture sessions are still volatile until sealed on
+replica-local disk and handed off. A hard collector/replica loss before handoff can
+lose generated tokens, including an already graded result. Complete-group indexes
+are independently recoverable; individual accepted captures survive without them,
+but recovery does not yet reconstruct missing group indexes from those captures.
