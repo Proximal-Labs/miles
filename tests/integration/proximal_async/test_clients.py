@@ -4,6 +4,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from miles_plugins.proximal import clients
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, LaunchFailed, PlatformClient
 from miles_plugins.proximal.contracts import RunConfig, SessionHandle, digest
@@ -60,6 +61,11 @@ def handler(config, attempt, mutation="", calls=None):
                 "p2pEnforce": config.harness.p2p_enforce,
             }
             body = {"runId": attempt.attempt_id, "instancesStarted": 1}
+        elif method == "GetEnvironmentRunContainers" and (
+            mutation == "status_down" or (mutation == "status_outage" and len(polls) < 3)
+        ):
+            polls.append(method)
+            return httpx.Response(520, text="<!DOCTYPE html><title>Origin error</title>")
         elif method == "GetEnvironmentRunContainers" and mutation == "launching" and not polls:
             # Proto JSON omits the agent while the container is still launching.
             polls.append(method)
@@ -124,6 +130,44 @@ async def test_a_launching_container_without_an_agent_is_still_polled(config, au
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "launching"))) as client:
         grade = await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
     assert grade.status == "success"
+
+
+async def test_a_status_read_rides_out_a_platform_outage(config, authorization, attempt, monkeypatch):
+    """Run 013 dropped a whole group on one 520 from a status poll; the rollout was still running."""
+    monkeypatch.setattr(clients, "REQUEST_ATTEMPTS", 1)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "status_outage"))) as client:
+        grade = await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
+    assert grade.status == "success"
+
+
+async def test_a_lasting_outage_still_fails_the_attempt(config, authorization, attempt, monkeypatch):
+    monkeypatch.setattr(clients, "REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(clients, "STATUS_OUTAGE_SECONDS", 0.05)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "status_down"))) as client:
+        with pytest.raises(httpx.HTTPStatusError, match="520"):
+            await PlatformClient(authorization, client).execute(attempt, session(config, attempt))
+
+
+@pytest.mark.parametrize(("status", "retried"), [(520, True), (500, True), (503, True), (404, False), (409, False)])
+async def test_only_transient_statuses_are_retried(status, retried, monkeypatch):
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(clients.asyncio, "sleep", no_sleep)
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={}) if len(calls) > 1 else httpx.Response(status, text="failed")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        if retried:
+            response = await clients.request(client, "POST", "https://platform.test/x", headers={})
+            assert response.status_code == 200 and len(calls) == 2
+        else:
+            with pytest.raises(httpx.HTTPStatusError):
+                await clients.request(client, "POST", "https://platform.test/x", headers={})
+            assert len(calls) == 1
 
 
 async def test_a_malformed_platform_reply_fails_the_attempt_not_the_run(config, authorization, attempt):

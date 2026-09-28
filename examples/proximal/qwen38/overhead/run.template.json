@@ -80,8 +80,8 @@
     "tool_call_parser": "qwen3_coder",
     "reasoning_effort": "xhigh"
   },
-  "max_in_flight_samples": 140,
-  "completed_group_capacity": 24,
+  "max_in_flight_samples": 200,
+  "completed_group_capacity": 12,
   "rollout_sandbox": "kata-clh",
   "launch_retry": {
     "attempts": 4,
