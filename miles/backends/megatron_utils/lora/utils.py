@@ -663,7 +663,7 @@ def _load_training_state(
         parameter_states = _checked_parameter_states(optimizer, training_state, state_path)
         optimizer.load_state_dict(training_state["optimizer"])
         for part, parameter_state in zip(_distributed_optimizers(optimizer), parameter_states, strict=True):
-            part.load_parameter_state_from_dp_reshardable(parameter_state)
+            part.load_parameter_state_from_dp_reshardable(_unpadded(parameter_state))
         logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
@@ -689,7 +689,9 @@ def _distributed_optimizers(optimizer: Any) -> list[Any]:
 
 def _parameter_state(optimizer: Any) -> list[Any]:
     """This rank's shard of each distributed optimizer's parameter state, on CPU."""
-    return [_to_cpu(part.get_parameter_state_dp_reshardable()) for part in _distributed_optimizers(optimizer)]
+    return [
+        _unpadded(_to_cpu(part.get_parameter_state_dp_reshardable())) for part in _distributed_optimizers(optimizer)
+    ]
 
 
 def _checked_parameter_states(optimizer: Any, training_state: dict[str, Any], state_path: Path) -> list[Any]:
@@ -702,6 +704,23 @@ def _checked_parameter_states(optimizer: Any, training_state: dict[str, Any], st
             "Resume with --no-load-optim to keep a fresh optimizer instead."
         )
     return parameter_states
+
+
+def _unpadded(parameter_state: dict[Any, Any]) -> dict[Any, Any]:
+    """Mark every bucket element as a real (non-padding) parameter, as the loader expects.
+
+    Megatron's loader skips elements whose ``padding`` is set and indexes the key on
+    every element (some versions read it with ``[]``). Only its sharded checkpoint path
+    adds the key; ``get_parameter_state_dp_reshardable``, which saved this state, emits
+    real parameters only and leaves it out.
+    """
+    for key, dtype_state in parameter_state.items():
+        if isinstance(key, int):  # grad buffers; the other keys are bucket sizes
+            for buckets in dtype_state.values():
+                for bucket in buckets:
+                    for element in bucket:
+                        element.setdefault("padding", False)
+    return parameter_state
 
 
 def _to_cpu(state: Any) -> Any:
