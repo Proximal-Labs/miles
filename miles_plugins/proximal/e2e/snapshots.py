@@ -44,13 +44,23 @@ def latest_snapshot(snapshot_root: Path) -> int | None:
 
 
 def _copy_new(source: Path, target: Path) -> None:
-    """Copy files missing from target; store payloads and adapters are write-once."""
+    """Copy files missing from target; store payloads and adapters are write-once.
+
+    Dot-directories are other writers' scratch space (the publisher stages each export
+    in ``.export-*`` and deletes it), so a file there can vanish between listing and
+    copying; neither is state to snapshot.
+    """
     for path in source.rglob("*"):
-        if path.is_file():
-            destination = target / path.relative_to(source)
-            if not destination.exists():
-                destination.parent.mkdir(parents=True, exist_ok=True)
+        relative = path.relative_to(source)
+        if any(part.startswith(".") for part in relative.parts) or not path.is_file():
+            continue
+        destination = target / relative
+        if not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
                 shutil.copy2(path, destination)
+            except FileNotFoundError:
+                destination.unlink(missing_ok=True)
 
 
 def _write_atomic(path: Path, text: str) -> None:

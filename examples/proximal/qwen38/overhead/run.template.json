@@ -1,5 +1,5 @@
 {
-  "run_id": "qwen38-27b-overhead-008",
+  "run_id": "qwen38-27b-overhead-013",
   "base_model": {
     "name": "Qwen/Qwen3.8-27B",
     "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
@@ -80,8 +80,8 @@
     "tool_call_parser": "qwen3_coder",
     "reasoning_effort": "xhigh"
   },
-  "max_in_flight_samples": 96,
-  "completed_group_capacity": 16,
+  "max_in_flight_samples": 140,
+  "completed_group_capacity": 24,
   "rollout_sandbox": "kata-clh",
   "launch_retry": {
     "attempts": 4,
