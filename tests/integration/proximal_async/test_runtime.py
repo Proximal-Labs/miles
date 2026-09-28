@@ -232,6 +232,25 @@ def test_rollback_rewrites_step_state_and_refuses_partial_checkpoints(config, tm
         PlatformTaskSource(args).load(2)
 
 
+def test_a_lora_resume_restores_step_state_saved_beside_the_adapter(config, tmp_path):
+    """Run 013: a LoRA resume's --load is the HF base, so the ledger must come from --save's root."""
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    checkpoints = tmp_path / "checkpoints"
+    saving = PlatformTaskSource(Namespace(proximal_config=str(path), save=str(checkpoints), load=None))
+    saving.consumed.add("a", 1)
+    saving.save(3)
+    adapter = checkpoints / "iter_0000003" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "training_state_rank0.pt").write_bytes(b"")
+    args = Namespace(
+        proximal_config=str(path), save=str(checkpoints), load=str(tmp_path / "base"), lora_adapter_path=str(adapter)
+    )
+    resumed = PlatformTaskSource(args)
+    resumed.load(3)
+    assert [c.group_id for c in resumed.consumed.snapshot()] == ["a"]
+
+
 def test_rollback_invalidates_later_state_before_new_weights_exist(config, tmp_path):
     path = tmp_path / "run.json"
     path.write_text(config.model_dump_json())

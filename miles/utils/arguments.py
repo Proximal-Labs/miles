@@ -22,6 +22,7 @@ from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.resume import resumes_lora_adapter
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
@@ -2881,12 +2882,6 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     if (enable := args.mini_ft_controller_enable) is not None:
         return enable
     return bool(args.ft_components) and args.api_server_port != 0
-
-
-def resumes_lora_adapter(args) -> bool:
-    """Whether --lora-adapter-path is a checkpoint this run saved: it carries training state."""
-    adapter = getattr(args, "lora_adapter_path", None)
-    return adapter is not None and os.path.exists(os.path.join(adapter, "training_state_rank0.pt"))
 
 
 def miles_validate_args(args):
