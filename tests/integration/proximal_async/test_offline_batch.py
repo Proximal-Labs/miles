@@ -264,6 +264,38 @@ async def test_wrong_policy_and_reward_evidence_rejected(config, policy, attempt
         )
 
 
+async def test_native_resume_refuses_state_loss_and_input_overwrite(
+    config, policy, attempt, tmp_path, context, store_dsn, pg_bin
+):
+    config = config.model_copy(update={"tokenizer_path": tmp_path / "base"})
+    await populate(config, policy, attempt, 2)
+    bundle = tmp_path / "batch"
+    batch = freeze(config, policy, config.artifact_directory / config.run_id, bundle)
+    checkpoint_path = recovery(config, context, tmp_path, store_dsn, pg_bin)
+    checkpoint = read_checkpoint(checkpoint_path, batch)
+    changes = [
+        {"optimizer": "muon"},
+        {"actor_num_gpus_per_node": 4},
+        {"tp": 1},
+        {"no_load_optim": True},
+        {"no_save_rng": True},
+        {"finetune": True},
+        {"proximal_frozen_fresh": True},
+        {"lora_adapter_path": str(tmp_path / "serving-export")},
+        *({"save": str(path)} for path in (bundle, bundle / "output", checkpoint_path, config.tokenizer_path)),
+    ]
+    for change in changes:
+        args = args_for(batch, bundle, checkpoint_path, checkpoint, tmp_path / "new-checkpoint")
+        validate_train_args(args, batch, checkpoint)
+        vars(args).update(change)
+        with pytest.raises(ValueError):
+            validate_train_args(args, batch, checkpoint)
+    optimizer = checkpoint_path / "checkpoint/adapter/training_state_rank0.pt"
+    optimizer.write_bytes(optimizer.read_bytes() + b"corrupt")
+    with pytest.raises(ValueError, match="checksum|size"):
+        train_argv(bundle, batch, checkpoint_path)
+
+
 @pytest.mark.parametrize("persist_to_volume", [False, True])
 async def test_collect_then_stop_services_and_read_batch(stage_a, tmp_path, monkeypatch, persist_to_volume):
     run, path, ports = stage_a

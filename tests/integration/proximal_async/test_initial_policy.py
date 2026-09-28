@@ -7,7 +7,7 @@ import torch
 from safetensors.torch import load_file, save_file
 from tests.integration.proximal_async.test_offline_batch import populate
 
-from miles_plugins.proximal.initial_policy import prepare_base_policy, verify_base_policy
+from miles_plugins.proximal.initial_policy import copy_base_policy, prepare_base_policy, verify_base_policy
 from miles_plugins.proximal.offline_batch import freeze_batch, train_argv, validate_train_args
 from miles_plugins.proximal.snapshot import prepare_snapshot
 
@@ -110,3 +110,13 @@ def test_missing_or_quantized_targets_fail_before_publication(config, tmp_path):
     with pytest.raises(ValueError, match="unquantized"):
         prepare_base_policy(config, output=tmp_path / "initial")
     assert not (tmp_path / "initial").exists()
+
+
+@pytest.mark.parametrize("name", ["adapter_config.json", "adapter_model.safetensors", "manifest.json"])
+def test_copy_rechecks_the_original_verified_policy_bytes(config, tmp_path, name):
+    config = base_config(config, tmp_path)
+    snapshot = prepare_base_policy(config, output=tmp_path / "initial")
+    path = snapshot.directory / name
+    path.write_bytes(path.read_bytes() + b"corrupted-after-verification")
+    with pytest.raises(ValueError, match="checksum|integrity"):
+        copy_base_policy(snapshot, tmp_path / "detached-proof")

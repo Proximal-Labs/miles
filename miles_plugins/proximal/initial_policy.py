@@ -14,8 +14,14 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from miles_plugins.proximal.contracts import Contract, Policy, RunConfig
-from miles_plugins.proximal.snapshot import PreparedSnapshot, SnapshotMetadata, prepare_snapshot, read_snapshot
-from miles_plugins.proximal.state_artifacts import copy_verified, describe
+from miles_plugins.proximal.snapshot import (
+    PreparedSnapshot,
+    SnapshotMetadata,
+    manifest_bytes,
+    prepare_snapshot,
+    read_snapshot,
+)
+from miles_plugins.proximal.state_artifacts import StateFile, copy_verified
 
 
 class BasePolicyConfig(Contract):
@@ -124,6 +130,18 @@ def copy_base_policy(snapshot: PreparedSnapshot, destination: Path) -> None:
     """Keep the proof with detached data; caller commits payloads before readiness."""
     for file in snapshot.manifest.files:
         source = snapshot.directory / file.name
-        copy_verified(source, destination / file.name, describe(source, relative=file.name))
+        copy_verified(
+            source,
+            destination / file.name,
+            StateFile(path=file.name, size_bytes=file.size_bytes, sha256=file.sha256),
+        )
     source = snapshot.directory / "manifest.json"
-    copy_verified(source, destination / "manifest.json", describe(source, relative="manifest.json"))
+    copy_verified(
+        source,
+        destination / "manifest.json",
+        StateFile(
+            path="manifest.json",
+            size_bytes=len(manifest_bytes(snapshot.manifest)),
+            sha256=snapshot.reference.sha256,
+        ),
+    )

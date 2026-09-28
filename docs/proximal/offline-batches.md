@@ -243,3 +243,11 @@ out-of-core loader. Provision host RAM for actual lengths as in the sizing work.
   large-model and multi-GPU continuation remain separate gates. The new CPU-only
   bootstrap and persistence flag have CPU coverage; they have not yet been used
   for a new live 1,024-rollout platform collection/GPU step.
+
+Adversarial CPU coverage injects repeated cancellation during logical cancellation,
+capture retrieval and terminal publication; disk-full errors; failed commits and
+lost acknowledgements at both publication stages; and file changes after validation.
+It also checks exact multi-turn masks/logprobs after source removal and rejects
+native optimizer corruption, reset flags, incompatible layouts and output paths
+overlapping inputs. These tests use real Postgres/files/codecs with a simulated
+Volume commit; they do not certify live Modal mount behavior or GPU numerics.

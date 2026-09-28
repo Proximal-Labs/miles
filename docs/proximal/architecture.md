@@ -118,6 +118,10 @@ sample codec and grade evidence before releasing capture. Failed/cancelled attem
 retain an explicit outcome and any sealed capture that can be recovered. A request
 without a terminal record after a crash is unknown, never a fabricated zero reward.
 Training eligibility and batch selection do not control artifact retention.
+Repeated graceful shutdown signals do not interrupt accepted or failed-result
+handoffs. A local storage error preserves a recoverable replica capture; it is
+never reclassified as unavailable capture. Batch and initial-policy copies verify
+bytes against the already validated manifest hashes before publishing readiness.
 
 The CPU collector owns an artifact-only instance of the existing state publisher.
 `modal_training --rollouts-persist-to-volume` uses the deployment's configured

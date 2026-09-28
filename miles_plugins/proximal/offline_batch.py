@@ -90,20 +90,31 @@ def validate_batch(bundle: Path) -> FrozenBatch:
     return batch
 
 
+def _write_manifest(batch: FrozenBatch, destination: Path) -> None:
+    # Serialize the validated value, not a source manifest that could have changed.
+    # Modal v1 does not support local write_immutable's hardlink operation.
+    with tempfile.TemporaryDirectory(prefix="frozen-manifest-") as temporary:
+        manifest = Path(temporary) / "batch.json"
+        manifest.write_text(batch.model_dump_json())
+        copy_verified(manifest, destination / "batch.json", describe(manifest, relative="batch.json"))
+
+
 def publish_batch(bundle: Path, destination: Path, *, commit: Callable[[], None]) -> FrozenBatch:
     """Publish exact referenced bytes, commit, then publish/commit readiness last."""
     batch = validate_batch(bundle)
     for index in batch.groups:
         relative = f"groups/{index.header.group_id}.bin"
         source = bundle / relative
-        copy_verified(source, destination / relative, describe(source, relative=relative))
+        file = describe(source, relative=relative)
+        if file.sha256 != index.payload_sha256:
+            raise ValueError("Source group changed during publication")
+        copy_verified(source, destination / relative, file)
     if (bundle / "base_policy").exists():
         copy_base_policy(
             verify_base_policy(batch.source, batch.policy, bundle / "base_policy"), destination / "base_policy"
         )
     commit()
-    source = bundle / "batch.json"
-    copy_verified(source, destination / "batch.json", describe(source, relative="batch.json"))
+    _write_manifest(batch, destination)
     commit()
     return batch
 
@@ -180,12 +191,7 @@ def freeze_batch(
         if file.sha256 != index.payload_sha256:
             raise ValueError("Source group changed during freeze")
         copy_verified(source_root / relative, out / relative, file)
-    # The output can be a mounted Modal Volume, which does not support hardlinks.
-    # Use the same verified, single-writer artifact transfer as recovery bundles.
-    with tempfile.TemporaryDirectory(prefix="frozen-manifest-") as temporary:
-        manifest = Path(temporary) / "batch.json"
-        manifest.write_text(batch.model_dump_json())
-        copy_verified(manifest, out / "batch.json", describe(manifest, relative="batch.json"))
+    _write_manifest(batch, out)
     return batch
 
 
