@@ -6,6 +6,7 @@ to validate or train a completed bundle. See docs/proximal/offline-batches.md.
 """
 
 import argparse
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -29,7 +30,6 @@ from miles_plugins.proximal.contracts import (
 )
 from miles_plugins.proximal.state_artifacts import copy_verified, describe
 from miles_plugins.proximal.state_checkpoints import CheckpointManifest, read_manifest
-from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, decode_group
 
 ROLLOUT = "miles_plugins.proximal.offline_batch.FrozenBatchRolloutFn"
@@ -135,7 +135,12 @@ def freeze_batch(
         if file.sha256 != index.payload_sha256:
             raise ValueError("Source group changed during freeze")
         copy_verified(source_root / relative, out / relative, file)
-    write_immutable(out / "batch.json", batch.model_dump_json().encode())
+    # The output can be a mounted Modal Volume, which does not support hardlinks.
+    # Use the same verified, single-writer artifact transfer as recovery bundles.
+    with tempfile.TemporaryDirectory(prefix="frozen-manifest-") as temporary:
+        manifest = Path(temporary) / "batch.json"
+        manifest.write_text(batch.model_dump_json())
+        copy_verified(manifest, out / "batch.json", describe(manifest, relative="batch.json"))
     return batch
 
 

@@ -181,6 +181,26 @@ async def test_legacy_payload_and_corruption_fail_closed(config, policy, attempt
         validate_batch(bundle)
 
 
+async def test_volume_freeze_needs_no_hardlinks_and_rejects_manifest_replacement(
+    config, policy, attempt, tmp_path, monkeypatch
+):
+    await populate(config, policy, attempt, 2)
+    source = config.artifact_directory / config.run_id
+    bundle = tmp_path / "batch"
+
+    def no_hardlinks(*args, **kwargs):
+        raise PermissionError("Volume does not support hardlinks")
+
+    monkeypatch.setattr("os.link", no_hardlinks)
+    freeze(config, policy, source, bundle)
+    original = (bundle / "batch.json").read_bytes()
+    freeze(config, policy, source, bundle)  # Same manifest is an idempotent retry.
+    with pytest.raises(ValueError, match="checksum/size"):
+        freeze(config, policy, source, bundle, count=1)
+    assert (bundle / "batch.json").read_bytes() == original
+    assert validate_batch(bundle).num_samples == 4
+
+
 @pytest.mark.parametrize("ids,samples", [(("g0", "g0"), 4), (("g0",), 4), (("../g0", "g1"), 4)])
 async def test_invalid_selection_has_no_completion(config, policy, attempt, tmp_path, ids, samples):
     await populate(config, policy, attempt, 2)

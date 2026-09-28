@@ -48,6 +48,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if method == "remote" and name in {
                 "e2e/stage_base.py",
                 "e2e/stage_gsm8k.py",
+                "e2e/state_gpu_check.py",
                 "e2e/step_sizing.py",
                 "e2e/trainer_replay.py",
                 "modal_training.py",
@@ -73,6 +74,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("e2e/math_platform.py", "post"),  # The gsm8k platform's agent calling its capture session.
         ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
         ("e2e/stage_gsm8k.py", "remote"),  # Paid gsm8k data staging, run by hand.
+        *(("e2e/state_gpu_check.py", "remote"),) * 5,  # Explicit-consent bounded state verification phases.
         ("e2e/step_sizing.py", "ephemeral"),  # Run-scoped coordination Dict for the sizing cluster.
         ("e2e/step_sizing.py", "remote"),  # Paid clustered trainer step sizing, run by hand.
         ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.

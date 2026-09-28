@@ -95,6 +95,10 @@ reward evidence, masks and policy provenance. It introduces no giant pickle or
 new tensor format. A bundle is a deliberate copy and therefore takes additional
 storage. Commit/upload the complete directory before stopping its producing host;
 for a mounted Modal Volume, the host must commit and later readers must reload.
+Use one writer per output bundle. Payloads and the final manifest use verified
+copy-and-rename, as recovery bundles do; Modal v1 rejects the local immutable
+writer's hardlink operation. Retrying identical files succeeds; conflicting
+committed files fail validation.
 See [Modal Volume visibility](https://modal.com/docs/guide/volumes#volume-commits-and-reloads).
 
 ## Execute one separate training step
@@ -153,5 +157,8 @@ out-of-core loader. Provision host RAM for actual lengths as in the sizing work.
 - This first pass is fixed-policy collection and one optimizer update, not repeated
   offline RL over the same batch or mixed-policy historical replay.
 - The CPU tests prove real codecs, provenance validation, complete-group ordering,
-  reward normalization and service independence. A full GPU update and committed
-  cross-container Modal handoff still need live verification.
+  reward normalization and service independence. The [live GPU verification](state-gpu-verification.md)
+  also trained 1,024 real saved rollouts across separate Modal containers and
+  reproduced native weights, optimizer/scheduler/RNG, training data and serving
+  exports exactly. That evidence is for BF16 Qwen3-0.6B, rank 32, one H100;
+  large-model and multi-GPU continuation remain separate gates.
