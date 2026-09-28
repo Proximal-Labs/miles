@@ -14,8 +14,9 @@ import asyncio
 import hashlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS_V2,
@@ -25,6 +26,9 @@ from miles.rollout.session.samples.codec import (
 from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import secret_env
 from miles_plugins.proximal.contracts import Contract, Policy, RunConfig, SafeId, digest, training_contract
+from miles_plugins.proximal.snapshot import Digest
+from miles_plugins.proximal.state_artifacts import SCHEMA as OUTBOX_SCHEMA
+from miles_plugins.proximal.state_artifacts import ArtifactRecord, describe
 from miles_plugins.proximal.storage import write_immutable
 
 if TYPE_CHECKING:
@@ -92,6 +96,13 @@ class StoredGroup(Contract):
     identities: tuple[SampleIdentity, ...]
 
 
+class GroupIndex(Contract):
+    schema_version: Literal[1] = 1
+    header: StoredGroup
+    payload_sha256: Digest
+    created_at: datetime
+
+
 @dataclass(frozen=True)
 class PayloadSync:
     """Cross-container visibility for the payload mount (e.g. a Modal Volume).
@@ -102,6 +113,7 @@ class PayloadSync:
 
     commit: Callable[[], None]
     reload: Callable[[], None]
+    durable_outbox: bool = False
 
 
 # For a shared disk: writes are immediately visible to every reader.
@@ -143,7 +155,7 @@ class RolloutStore:
         connection = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
         store = cls(connection, run_id=run_id, contract_sha256=contract_sha256, root=root, sync=sync)
         async with store._lock:
-            await connection.execute(SCHEMA)
+            await connection.execute(SCHEMA + OUTBOX_SCHEMA)
         return store
 
     async def close(self) -> None:
@@ -216,8 +228,42 @@ class RolloutStore:
     def _payload_path(self, group_id: str) -> Path:
         return self.root / self.run_id / "groups" / f"{group_id}.bin"
 
+    async def publish_artifact(self, payload: Path, completion: Path, *, record_id: str) -> None:
+        """Wait for durable handoff, retaining the completed result during an outage."""
+        if not self.sync.durable_outbox:
+            await asyncio.to_thread(self.sync.commit)
+            return
+        root = self.root / self.run_id
+        record = ArtifactRecord(
+            run_id=self.run_id,
+            record_id=record_id,
+            payload=await asyncio.to_thread(describe, payload, relative=payload.relative_to(root).as_posix()),
+            completion=await asyncio.to_thread(describe, completion, relative=completion.relative_to(root).as_posix()),
+        )
+        async with self._lock:
+            await self.connection.execute(
+                "INSERT INTO proximal_artifact_outbox (training_run_id, record_id, record) VALUES (%s, %s, %s)"
+                " ON CONFLICT DO NOTHING",
+                (self.run_id, record_id, record.model_dump_json()),
+            )
+        while True:
+            async with self._lock:
+                cursor = await self.connection.execute(
+                    "SELECT record::text, committed FROM proximal_artifact_outbox"
+                    " WHERE training_run_id = %s AND record_id = %s",
+                    (self.run_id, record_id),
+                )
+                row = await cursor.fetchone()
+            if row is None or ArtifactRecord.model_validate_json(str(row[0])) != record:
+                raise ValueError(f"Conflicting artifact publication {record_id}")
+            if row[1]:
+                return
+            await asyncio.sleep(0.25)
+
     async def add_group(self, group_id: str, policy: Policy, samples: Sequence[Sample]) -> None:
         """Persist one validated group: payload file first, index row last."""
+        if policy.run_id != self.run_id or not samples:
+            raise ValueError("A stored group needs samples and this run's policy")
         identities = []
         for sample in samples:
             if sample.index is None or sample.group_index is None:
@@ -233,12 +279,20 @@ class RolloutStore:
         digest = hashlib.sha256(payload).hexdigest()
         path = self._payload_path(group_id)
         await asyncio.to_thread(write_immutable, path, payload)
-        await asyncio.to_thread(self.sync.commit)  # Visible to other containers before the row exists.
+        index_path = path.with_suffix(".json")
+        if index_path.exists():
+            index = GroupIndex.model_validate_json(index_path.read_bytes())
+            if index.header != header or index.payload_sha256 != digest:
+                raise ValueError(f"Group {group_id} has a conflicting immutable index")
+        else:
+            index = GroupIndex(header=header, payload_sha256=digest, created_at=datetime.now(timezone.utc))
+            await asyncio.to_thread(write_immutable, index_path, index.model_dump_json().encode())
+        await self.publish_artifact(path, index_path, record_id=f"group-{group_id}")
         async with self._lock:
             cursor = await self.connection.execute(
                 "INSERT INTO proximal_rollout_groups (training_run_id, group_id, policy_version, policy_sha256,"
-                " group_index, contract_sha256, payload_path, payload_sha256)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                " group_index, contract_sha256, payload_path, payload_sha256, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON CONFLICT (training_run_id, group_id) DO NOTHING",
                 (
                     self.run_id,
@@ -249,6 +303,7 @@ class RolloutStore:
                     self.contract_sha256,
                     str(path),
                     digest,
+                    index.created_at,
                 ),
             )
             if cursor.rowcount == 0:
@@ -320,6 +375,8 @@ def payload_sync(config: RunConfig) -> PayloadSync:
     storage = config.artifact_storage
     if storage.kind == "shared_disk":
         return LOCAL_DISK
+    if storage.kind == "run_state":
+        return PayloadSync(commit=lambda: None, reload=lambda: None, durable_outbox=True)
     if storage.kind == "modal_volume":
         import modal  # Optional dependency, only for Volume-backed runs.
 

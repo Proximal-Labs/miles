@@ -205,7 +205,18 @@ class ModalVolumeArtifacts(Contract):
     volume: VolumeDestination
 
 
-ArtifactStorage = Annotated[SharedDiskArtifacts | ModalVolumeArtifacts, Field(discriminator="kind")]
+class RunStateArtifacts(Contract):
+    """Local files, acknowledged by the run composition root's Volume publisher.
+
+    The launcher supplies this variant only while its publication worker is running.
+    """
+
+    kind: Literal["run_state"]
+
+
+ArtifactStorage = Annotated[
+    SharedDiskArtifacts | ModalVolumeArtifacts | RunStateArtifacts, Field(discriminator="kind")
+]
 
 
 # Where the platform runs each rollout's sandbox, in the platform's own vocabulary

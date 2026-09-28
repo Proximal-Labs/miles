@@ -31,6 +31,33 @@ from miles_plugins.proximal.snapshot import Nonempty
 REGISTRY_KEY = "modal.inference.endpoints"
 
 
+CheckpointId = Annotated[str, Field(pattern=r"^[0-9]{7,}-[0-9a-f]{64}$")]
+
+
+class AutoResume(Contract):
+    # Preserves the existing launcher behavior for deployed configs.
+    kind: Literal["auto"] = "auto"
+    allow_changes: tuple[str, ...] = ()
+
+
+class FreshRun(Contract):
+    kind: Literal["fresh"] = "fresh"
+
+
+class LatestResume(Contract):
+    kind: Literal["latest"] = "latest"
+    allow_changes: tuple[str, ...] = ()
+
+
+class SelectedResume(Contract):
+    kind: Literal["checkpoint"] = "checkpoint"
+    checkpoint: CheckpointId
+    allow_changes: tuple[str, ...] = ()
+
+
+ResumeSelection = Annotated[AutoResume | FreshRun | LatestResume | SelectedResume, Field(discriminator="kind")]
+
+
 class Gsm8kPlatform(Contract):
     kind: Literal["gsm8k"]
     # Relative to the serving config's base mount (staged by e2e.stage_gsm8k).
@@ -112,6 +139,7 @@ class TrainingDeployment(Contract):
     # Miles training arguments file, relative to the repository root.
     train_args: Nonempty
     state_volume: VolumeDestination
+    resume: ResumeSelection = AutoResume()
     kernel_cache: KernelCache | None
     secrets: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
     platform: Annotated[Gsm8kPlatform | RealPlatform, Field(discriminator="kind")]
@@ -123,6 +151,10 @@ def read_training_deployment(path: str | Path) -> TrainingDeployment:
 
 def check_deployment(run: RunConfig, deployment: TrainingDeployment) -> None:
     """Refuse combinations the node cannot run correctly."""
+    if deployment.state_volume == run.volume:
+        raise ValueError("Training state and serving adapters require separate Volumes")
+    if deployment.kernel_cache is not None and deployment.kernel_cache.volume == deployment.state_volume:
+        raise ValueError("Training state and kernel cache require separate Volumes")
     count = int(deployment.gpu.rpartition(":")[2]) if ":" in deployment.gpu else 1
     if count != deployment.num_gpus:
         raise ValueError(f"gpu {deployment.gpu!r} provides {count} GPUs, but num_gpus is {deployment.num_gpus}")
@@ -154,6 +186,9 @@ def train_args_gpus(text: str) -> int:
 
 def check_train_args(deployment: TrainingDeployment, text: str) -> None:
     """The training arguments must ask for exactly the GPUs the deployment provides."""
+    forbidden = {"--no-save-optim", "--no-save-rng", "--no-load-optim", "--no-load-rng"}
+    if forbidden.intersection(text.split()):
+        raise ValueError("Modal full recovery requires optimizer and RNG save/load")
     gpus = train_args_gpus(text)
     if gpus != deployment.num_gpus:
         raise ValueError(

@@ -8,6 +8,7 @@ on:
       - "train_async.py"
       - "tests/fast/test_train_async.py"
       - "tests/fast/proximal_publication/**"
+      - "tests/fast/backends/megatron_utils/test_lora_utils.py"
       - "tests/integration/proximal_async/**"
       - ".github/workflows/proximal-publication.yml"
   push:
@@ -15,6 +16,7 @@ on:
     paths:
       - "miles_plugins/proximal/**"
       - "tests/fast/proximal_publication/**"
+      - "tests/fast/backends/megatron_utils/test_lora_utils.py"
       - "tests/integration/proximal_async/**"
       - ".github/workflows/proximal-publication.yml"
 
@@ -44,6 +46,7 @@ jobs:
             -v "$PWD:/work:ro" -v "$PWD/.cpu-sglang:/sglang:ro" -v "$PWD/.cpu-tokenizer:/tokenizer:ro" \
             proximal-cpu python -m pytest --confcutdir=tests/integration/proximal_async \
             tests/integration/proximal_async tests/fast/proximal_publication \
+            tests/fast/backends/megatron_utils/test_lora_utils.py \
             tests/fast/rollout/test_fully_async_rollout.py tests/fast/utils/test_arguments.py \
             tests/fast/backends/training_utils/weight_update/test_connection_contract.py \
             tests/fast/backends/training_utils/weight_update/test_dist_weight_update_lifecycle.py \

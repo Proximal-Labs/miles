@@ -56,14 +56,25 @@ async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: st
 async def wait_for_releases() -> None:
     """Finish the background session releases (at shutdown, and in tests)."""
     while _releases:
-        await asyncio.gather(*list(_releases), return_exceptions=True)
+        tasks = list(_releases)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # Do not depend on done callbacks getting another event-loop turn: gather
+        # may finish synchronously for already-completed tasks (also across tests).
+        _releases.difference_update(tasks)
 
 
 async def execute_attempt(
-    attempt: Attempt, sample: Sample, *, capture: CaptureClient, platform: PlatformClient, artifact_root: Path
+    attempt: Attempt,
+    sample: Sample,
+    *,
+    capture: CaptureClient,
+    platform: PlatformClient,
+    artifact_root: Path,
+    store: RolloutStore | None = None,
 ) -> Sample:
     handle = await capture.create(attempt)
     complete = False
+    accepted_locally = False
     try:
         grade = await platform.execute(attempt, handle)
         receipt, payload = await capture.collect(handle, attempt)
@@ -74,23 +85,33 @@ async def execute_attempt(
         result.reward = grade.reward
         evidence = AcceptedAttempt(attempt=attempt, capture=receipt, grade=grade)
         validate_sample(result, evidence)
+        accepted_locally = True  # Validated paid work must survive a local write failure too.
         directory = artifact_root / attempt.attempt_id
         write_immutable(directory / "samples.safetensors", payload)
         write_immutable(directory / "accepted.json", canonical_bytes(evidence))
+        if store is not None:
+            await store.publish_artifact(
+                directory / "samples.safetensors",
+                directory / "accepted.json",
+                record_id=f"capture-{attempt.attempt_id}",
+            )
         result.metadata["proximal_accepted"] = evidence.model_dump_json()
         complete = True
         return result
     finally:
         # These are logical API lifetimes. Platform alone owns physical resources.
         # Cancellation is bounded and awaited before dropping the local session.
-        if not complete:
+        if not complete and not accepted_locally:
             try:
                 await asyncio.wait_for(platform.cancel(attempt), timeout=30)
             except Exception as exc:
                 logger.error("Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(exc).__name__)
-        task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
-        _releases.add(task)
-        task.add_done_callback(_releases.discard)
+        # A staged accepted result whose handoff was interrupted must remain on the
+        # replica. Its existing session expiry still bounds retention after a crash.
+        if complete or not accepted_locally:
+            task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
+            _releases.add(task)
+            task.add_done_callback(_releases.discard)
 
 
 async def execute_with_launch_retry(
@@ -102,6 +123,7 @@ async def execute_with_launch_retry(
     artifact_root: Path,
     retry: LaunchRetry,
     rng: random.Random | None = None,
+    store: RolloutStore | None = None,
 ) -> Sample:
     """``execute_attempt``, relaunching under a new attempt identity when the platform could
     not start the rollout (LaunchFailed). Each launch is its own platform run and capture
@@ -111,7 +133,7 @@ async def execute_with_launch_retry(
     for launch in range(retry.attempts):
         try:
             return await execute_attempt(
-                attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root
+                attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root, store=store
             )
         except LaunchFailed as exc:
             if launch == retry.attempts - 1:
@@ -213,6 +235,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
                     platform=self._platform,
                     artifact_root=self.config.artifact_directory / self.config.run_id / "accepted",
                     retry=self.config.launch_retry,
+                    store=self._store,
                 )
             )
             for attempt, sample in zip(attempts, prompt_group, strict=True)
