@@ -129,7 +129,13 @@ state Volume; `--collect-rollouts N` selects a CPU-only run. Online training alr
 uses the same persistence path. No additional store service or manual commit is
 exposed to the operator.
 It commits results incrementally and automatically publishes a self-contained
-batch when the requested complete groups have arrived. An interrupted collection
+batch when the requested complete groups have arrived. Finite collection admits
+only the requested number of new prompt groups through `PlatformTaskSource`;
+failed groups retry the same task after all their launched siblings finish.
+The existing submission scheduler idles when that source has no remaining work.
+Successful collection therefore waits for every admitted rollout and its durable
+handoff before the run owner stops serving. Failure or explicit cancellation still
+reaches the run's bounded cleanup path. An interrupted collection
 can select already committed groups later without the old database. The P0 format
 keeps the proven lossless codec and self-contained group/batch copies; replacing
 those copies with references is a later storage optimization, not a prerequisite
@@ -146,8 +152,9 @@ partial groups cannot be frozen as training batches.
 `collect_batch` composes `PlatformTaskSource`, `PlatformRolloutFn` and its existing
 buffer on CPU. It drains complete groups incrementally, freezes the requested
 count, then closes the producer. It neither initializes an optimizer nor
-publishes weights. Concurrency can produce additional groups or in-flight work;
-the requested count is the accepted batch size, not a billing limit.
+publishes weights. Finite admission prevents speculative extra groups beyond the
+requested batch. Retries can still incur additional paid attempts; all are retained,
+and the requested count is the accepted batch size, not a billing limit.
 
 Later, `FrozenBatchRolloutFn` reads only the bundle through the ordinary Miles
 rollout-function seam. Miles still performs reward normalization, advantages,

@@ -154,6 +154,7 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
     return {
         "model_path": engine_model_path(run, deployment),
         "served_model_name": run.base_model.name,
+        "context_length": run.research.sampling.max_sequence_tokens,
         "trust_remote_code": False,
         "device": "cuda",  # Explicit: replicas are GPU hosts; rendering must not probe this machine.
         "host": "127.0.0.1",
@@ -209,6 +210,7 @@ OPERATIONAL_ENGINE_SETTINGS = frozenset(
         "log_level",
         "log_requests",
         "enable_cache_report",
+        "tokenizer_worker_num",
         "watchdog_timeout",
     }
 )

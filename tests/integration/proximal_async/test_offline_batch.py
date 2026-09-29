@@ -352,8 +352,9 @@ async def test_collect_then_stop_services_and_read_batch(stage_a, tmp_path, monk
         shutil.rmtree(mount)
         shutil.rmtree(tmp_path / "collected")
         bundle = durable / "collections/one/batch"
-        assert len(list((durable / "artifacts" / run.run_id / "accepted").glob("*/accepted.json"))) >= 4
-        assert len(list((durable / "artifacts" / run.run_id / "groups").glob("*.json"))) >= 2
+        assert len(list((durable / "artifacts" / run.run_id / "accepted").glob("*/accepted.json"))) == 4
+        assert not list((durable / "artifacts" / run.run_id / "accepted").glob("*/failed.json"))
+        assert len(list((durable / "artifacts" / run.run_id / "groups").glob("*.json"))) == 2
     else:
         bundle = tmp_path / "collected"
     assert validate_batch(bundle) == result

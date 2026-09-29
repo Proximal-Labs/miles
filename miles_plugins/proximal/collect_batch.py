@@ -31,6 +31,8 @@ def validate_collection_request(
     """Shared free validation on the local launch host and CPU worker."""
     if not persist_to_volume:
         raise ValueError("Detached collection requires --rollouts-persist-to-volume")
+    if config.research.unused_groups != "retry":
+        raise ValueError("Finite collection requires retrying failed groups")
     if samples <= 0 or samples % config.research.group_size or fresh == bool(policy_json):
         raise ValueError("Choose complete groups and exactly one of --fresh or --policy-file")
     policy = None if fresh else Policy.model_validate_json(policy_json)
@@ -80,7 +82,7 @@ async def collect_batch(
     )
     # Drain one group at a time to bound collector memory. Miles owns concurrency,
     # retries, validation, backpressure, capture release and logical cancellation.
-    source = PlatformTaskSource(args)
+    source = PlatformTaskSource(args, num_groups=num_samples // config.research.group_size)
     store = await open_store(config)
     rollout = PlatformRolloutFn(RolloutFnConstructorInput(args=args, data_source=source))
     ids: list[str] = []

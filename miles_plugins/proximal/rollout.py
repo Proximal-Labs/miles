@@ -303,6 +303,14 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         report = await canary(self.authorization, self._http(), policy)
         logger.info("Preflight canary passed: %s", report)
 
+    def _max_in_flight_groups(self) -> int:
+        # The finite collector uses Miles's sample scheduler: zero capacity stops
+        # backfill while active groups finish. A failed group's buffer callback
+        # reopens admission for its retry; an exhausted idle worker waits for close.
+        if isinstance(self.data_source, PlatformTaskSource) and not self.data_source.has_samples:
+            return 0
+        return super()._max_in_flight_groups()
+
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         self._http()
         assert self._capture is not None and self._platform is not None and self._store is not None
@@ -345,7 +353,17 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             for task in tasks:
                 task.add_done_callback(lambda _task: sample_done())
         try:
-            result = await asyncio.gather(*tasks)
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            # A failed rollout does not revoke the paid work of its siblings.
+            # Let each finish and persist before rejecting/retrying the group.
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException) and not isinstance(outcome, (IneligibleAttempt, httpx.HTTPError)):
+                    raise outcome
+            result = []
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                result.append(outcome)
         except (IneligibleAttempt, httpx.HTTPError) as exc:
             # Messages carry only our own text or the request method, URL and status, never headers.
             logger.warning(
