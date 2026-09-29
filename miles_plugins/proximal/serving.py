@@ -246,6 +246,10 @@ def engine_argv(run: RunConfig, deployment: ServingDeployment) -> list[str]:
     changed = sorted(name for name in names if getattr(resolved, name) != getattr(baseline, name))
     if not_operational := [name for name in changed if name not in OPERATIONAL_ENGINE_SETTINGS]:
         raise ValueError(f"Extra engine flags change non-operational settings: {not_operational}")
+    # serving_app always authenticates its loopback engine. SGLang only checks
+    # this incompatibility in HTTP-server startup, after allocating GPU memory.
+    if resolved.tokenizer_worker_num != 1:
+        raise ValueError("The authenticated serving engine requires tokenizer_worker_num=1")
     return argv
 
 

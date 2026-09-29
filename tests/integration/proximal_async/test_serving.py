@@ -98,6 +98,19 @@ def test_extras_must_parse_and_performance_flags_pass(config):
     assert parse_server_args_argv(engine_argv(config, ok)).mem_fraction_static == 0.85
 
 
+@pytest.mark.parametrize("workers", [2, 8])
+def test_authenticated_engine_rejects_multiple_tokenizer_workers_before_deploy(config, workers):
+    serving = deployment(extra_engine_args=["--tokenizer-worker-num", str(workers)])
+    with pytest.raises(ValueError, match="authenticated serving engine requires tokenizer_worker_num=1"):
+        engine_argv(config, serving)
+
+
+def test_authenticated_engine_accepts_one_tokenizer_worker(config):
+    for extra in ([], ["--tokenizer-worker-num", "1"]):
+        serving = deployment(extra_engine_args=extra)
+        assert parse_server_args_argv(engine_argv(config, serving)).tokenizer_worker_num == 1
+
+
 def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatch):
     run_path, serving_path = tmp_path / "run.json", tmp_path / "serving.json"
     run_path.write_text(config.model_dump_json())

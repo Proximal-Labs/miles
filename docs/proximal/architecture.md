@@ -109,6 +109,10 @@ The platform owns sandbox retention. The operator owns retention for stored grou
 
 The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/routing-replay payloads. Unsupported modes fail during free argument validation.
 
+The serving engine retains its loopback API-key authentication. The pinned SGLang
+build does not support that authentication with multiple tokenizer workers, so
+serving argument validation requires one worker before allocating replicas.
+
 ## Disjoint rollout collection and a training step
 
 P0: storage happens at the shared attempt/result and group-store seams, whether
