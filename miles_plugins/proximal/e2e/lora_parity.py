@@ -124,7 +124,7 @@ def _miles_argv(checkpoint: Path, model_args: str, targets: str) -> list[str]:
 
 def _write_tokens(checkpoint: Path, lengths: list[int]) -> Path:
     """Fixed sequences of real code tokens (this fork's own sources), one per length."""
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer  # type: ignore[import-not-found,unused-ignore]
 
     text = "\n".join(p.read_text() for p in sorted(Path("/root/miles_plugins").rglob("*.py")))
     ids = AutoTokenizer.from_pretrained(str(checkpoint)).encode(text)
