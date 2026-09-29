@@ -127,7 +127,14 @@ if PROFILE == "qwen38":
                 .apt_install("postgresql", *_EFA_PACKAGES)
                 .pip_install("psycopg[binary]")
                 .run_commands(_EFA)
-                .env({**node.MEGATRON_ENV, node._TRAINING_PATH: node._CONTAINER_TRAINING_CONFIG, **_SIZING_ENV})
+                .env(
+                    {
+                        **node.MEGATRON_ENV,
+                        node._TRAINING_PATH: node._CONTAINER_TRAINING_CONFIG,
+                        "PROXIMAL_CODE_SHA256": node.CODE_SHA256,
+                        **_SIZING_ENV,
+                    }
+                )
             )
         )
         .add_local_file(os.environ[node._TRAINING_PATH], node._CONTAINER_TRAINING_CONFIG)
