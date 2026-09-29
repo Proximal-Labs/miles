@@ -20,7 +20,7 @@ from miles_plugins.proximal.offline_batch import (
     FrozenBatchRolloutFn,
     assemble_batch,
     freeze_batch,
-    load_batch_group,
+    load_training_group,
     publish_batch,
     read_checkpoint,
     validate_batch,
@@ -41,7 +41,7 @@ async def make_bundle(config, policy, attempt, root, *, prefix, groups, mixed=Tr
                     update={
                         "attempt_id": f"{attempt_prefix or prefix}-{group_index}-{i}",
                         "group_id": group,
-                        "sample_index": i,
+                        "sample_index": group_index * config.research.group_size + i,
                         "dataset_sha256": digest(config.dataset),
                         "task": config.dataset.tasks[0],
                     }
@@ -213,7 +213,7 @@ async def test_zero_variance_is_explicit_and_revalidated_on_consumption(config, 
     batch = assemble_batch(selections=(old, new), num_samples=4, require_nonzero_reward_variance=False, out=out)
     strict = batch.model_copy(update={"require_nonzero_reward_variance": True})
     with pytest.raises(ValueError, match="zero-variance"):
-        load_batch_group(out, strict, strict.groups[-1])
+        load_training_group(out, strict, strict.training_groups[-1])
     # The input manifests and sample bytes never acquire a new dataset identity.
     assert validate_batch(old.bundle).source.dataset == config.dataset
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnInput, RolloutFnTrainOutput
 from miles_plugins.proximal.contracts import pinned_dataset
 from miles_plugins.proximal.data_source import ConsumedGroup, Cursor
-from miles_plugins.proximal.offline_batch import load_batch_group, validate_batch
+from miles_plugins.proximal.offline_batch import load_training_group, training_groups, validate_batch
 from miles_plugins.proximal.storage import write_atomic
 
 
@@ -31,8 +31,8 @@ class ReferenceReplay(BaseRolloutFn):
         if input.evaluation or input.rollout_id not in (0, 1):
             raise ValueError("Reference experiment is exactly two training updates")
         groups = []
-        for group_index, index in enumerate(self.batch.groups):
-            group = load_batch_group(self.root, self.batch, index)
+        for group_index, selection in enumerate(training_groups(self.batch)):
+            group = load_training_group(self.root, self.batch, selection)
             for offset, sample in enumerate(group):
                 sample.group_index = group_index
                 sample.index = group_index * len(group) + offset
@@ -43,7 +43,7 @@ class ReferenceReplay(BaseRolloutFn):
     def save(self, rollout_id: int) -> None:
         cursor = Cursor(
             dataset_sha256=pinned_dataset(self.batch.source.dataset).sha256,
-            next_group=len(self.batch.groups),
+            next_group=len(training_groups(self.batch)),
             pending_tasks=(),
             consumed=tuple(
                 ConsumedGroup(group_id=g.header.group_id, policy_version=g.header.policy.version)

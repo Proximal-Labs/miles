@@ -7,7 +7,7 @@ to validate or train a completed bundle. See docs/proximal/offline-batches.md.
 
 import argparse
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, assert_never
@@ -48,8 +48,6 @@ class _BatchFields(Contract):
     def _complete(self) -> "_BatchFields":
         if self.policy.run_id != self.source.run_id or self.policy.base_model != self.source.base_model:
             raise ValueError("Batch policy differs from source run/base")
-        if len(self.groups) * self.source.research.group_size != self.num_samples:
-            raise ValueError("Batch must contain the requested number of complete groups")
         ids = [g.header.group_id for g in self.groups]
         if len(ids) != len(set(ids)):
             raise ValueError("Repeated group in frozen batch")
@@ -61,6 +59,8 @@ class FrozenBatch(_BatchFields):
 
     @model_validator(mode="after")
     def _single_source(self) -> "FrozenBatch":
+        if len(self.groups) * self.source.research.group_size != self.num_samples:
+            raise ValueError("Batch must contain the requested number of complete groups")
         contract = digest(training_contract(self.source))
         for group in self.groups:
             if group.header.policy != self.policy or group.header.contract_sha256 != contract:
@@ -68,10 +68,20 @@ class FrozenBatch(_BatchFields):
         return self
 
 
+class GroupMembers(Contract):
+    source_group_id: SafeId
+    sample_offsets: Annotated[tuple[Annotated[int, Field(ge=0)], ...], Field(min_length=1)]
+
+
+class TrainingGroup(Contract):
+    members: Annotated[tuple[GroupMembers, ...], Field(min_length=1)]
+
+
 class AssembledBatch(_BatchFields):
     schema_version: Literal[2] = 2
     additional_sources: Annotated[tuple[RunConfig, ...], Field(min_length=1)]
     require_nonzero_reward_variance: bool
+    training_groups: Annotated[tuple[TrainingGroup, ...], Field(min_length=1)]
 
     @model_validator(mode="after")
     def _compatible_sources(self) -> "AssembledBatch":
@@ -83,10 +93,11 @@ class AssembledBatch(_BatchFields):
             # may differ. This comparison never changes stored provenance.
             if (
                 contract.dataset.project_id != primary.dataset.project_id
-                or contract.model_copy(update={"dataset": primary.dataset}) != primary
+                or contract.model_copy(update={"dataset": primary.dataset, "group_size": primary.group_size})
+                != primary
                 or source.research.max_policy_lag != self.source.research.max_policy_lag
             ):
-                raise ValueError("Assembly sources differ beyond dataset membership")
+                raise ValueError("Assembly sources differ beyond dataset membership/collection group size")
             identity = digest(contract)
             if identity in contracts:
                 raise ValueError("Repeated assembly source contract")
@@ -95,6 +106,26 @@ class AssembledBatch(_BatchFields):
             raise ValueError("Assembly needs exactly the sources referenced by its groups")
         if any(group.header.policy != self.policy for group in self.groups):
             raise ValueError("Assembly requires one exact behavior policy")
+        if len(self.training_groups) * primary.group_size != self.num_samples:
+            raise ValueError("Assembly must contain exactly the requested training groups")
+        source_sizes = {
+            digest(training_contract(s)): s.research.group_size for s in (self.source, *self.additional_sources)
+        }
+        indexes = {g.header.group_id: g for g in self.groups}
+        selected: set[tuple[str, int]] = set()
+        for group in self.training_groups:
+            if sum(len(part.sample_offsets) for part in group.members) != primary.group_size:
+                raise ValueError("Training group differs from the anchor's group size")
+            for part in group.members:
+                if part.source_group_id not in indexes:
+                    raise ValueError("Training selection names a missing source group")
+                size = source_sizes[indexes[part.source_group_id].header.contract_sha256]
+                for i in part.sample_offsets:
+                    if i >= size or (part.source_group_id, i) in selected:
+                        raise ValueError("Repeated or out-of-range source sample selection")
+                    selected.add((part.source_group_id, i))
+        if {group for group, _ in selected} != set(indexes):
+            raise ValueError("Assembly must reference exactly its stored source groups")
         return self
 
 
@@ -134,7 +165,49 @@ def load_group(root: Path, index: GroupIndex, config: RunConfig) -> list[Sample]
 
 
 def load_batch_group(root: Path, batch: Batch, index: GroupIndex) -> list[Sample]:
-    samples = load_group(root, index, group_source(batch, index))
+    """Read an original source group; its variance is not training eligibility."""
+    return load_group(root, index, group_source(batch, index))
+
+
+def training_groups(batch: Batch) -> tuple[TrainingGroup, ...]:
+    if isinstance(batch, AssembledBatch):
+        return batch.training_groups
+    if isinstance(batch, FrozenBatch):
+        return tuple(
+            TrainingGroup(
+                members=(
+                    GroupMembers(
+                        source_group_id=index.header.group_id,
+                        sample_offsets=tuple(range(batch.source.research.group_size)),
+                    ),
+                )
+            )
+            for index in batch.groups
+        )
+    assert_never(batch)
+
+
+def load_training_group(
+    root: Path,
+    batch: Batch,
+    group: TrainingGroup,
+    *,
+    source_roots: Mapping[str, Path] | None = None,
+) -> list[Sample]:
+    indexes = {index.header.group_id: index for index in batch.groups}
+    samples: list[Sample] = []
+    for part in group.members:
+        source = load_batch_group(
+            root if source_roots is None else source_roots[part.source_group_id], batch, indexes[part.source_group_id]
+        )
+        if any(i >= len(source) for i in part.sample_offsets):
+            raise ValueError("Requested sample offset is absent from its source payload")
+        samples.extend(source[i] for i in part.sample_offsets)
+    first = accepted(samples[0]).attempt
+    if len(samples) != batch.source.research.group_size or any(
+        accepted(sample).attempt.task != first.task for sample in samples
+    ):
+        raise ValueError("Training group must contain the fixed number of samples from one exact task/image/commit")
     if isinstance(batch, AssembledBatch) and batch.require_nonzero_reward_variance:
         # Same threshold and float64/sample std as Miles's standard group filter.
         rewards = torch.tensor([accepted(sample).grade.reward for sample in samples], dtype=torch.float64)
@@ -147,8 +220,8 @@ def validate_batch(bundle: Path) -> Batch:
     """Validate one group at a time; never materialize the whole 1024-sample batch."""
     batch = read_batch(bundle)
     attempts: set[str] = set()
-    for index in batch.groups:
-        for sample in load_batch_group(bundle, batch, index):
+    for group in training_groups(batch):
+        for sample in load_training_group(bundle, batch, group):
             attempt_id = accepted(sample).attempt.attempt_id
             if attempt_id in attempts:
                 raise ValueError("Repeated rollout attempt in frozen batch")
@@ -197,12 +270,49 @@ def assemble_batch(
     require_nonzero_reward_variance: bool,
     out: Path,
 ) -> AssembledBatch:
+    return _assemble_batch(
+        selections=selections,
+        num_samples=num_samples,
+        require_nonzero_reward_variance=require_nonzero_reward_variance,
+        regrouping=None,
+        out=out,
+    )
+
+
+def regroup_batch(
+    *,
+    selections: tuple[BatchSelection, ...],
+    groups: tuple[TrainingGroup, ...],
+    num_samples: int,
+    require_nonzero_reward_variance: bool,
+    out: Path,
+) -> AssembledBatch:
+    return _assemble_batch(
+        selections=selections,
+        num_samples=num_samples,
+        require_nonzero_reward_variance=require_nonzero_reward_variance,
+        regrouping=groups,
+        out=out,
+    )
+
+
+def _assemble_batch(
+    *,
+    selections: tuple[BatchSelection, ...],
+    num_samples: int,
+    require_nonzero_reward_variance: bool,
+    regrouping: tuple[TrainingGroup, ...] | None,
+    out: Path,
+) -> AssembledBatch:
     """Copy explicit groups, preserving their source contracts and codec bytes."""
     if len(selections) < 2:
         raise ValueError("Assembly requires at least two explicit input selections")
     inputs = [(selection, read_batch(selection.bundle)) for selection in selections]
+    if any(not isinstance(batch, FrozenBatch) for _, batch in inputs):
+        raise ValueError("Assembly inputs must be original collection bundles")
     sources: dict[str, RunConfig] = {}
     picked: list[tuple[Path, GroupIndex]] = []
+    complete_groups: list[TrainingGroup] = []
     for selection, batch in inputs:
         protected = selection.bundle.resolve()
         target = out.resolve()
@@ -217,6 +327,16 @@ def assemble_batch(
             index = indexes[group_id]
             sources.setdefault(index.header.contract_sha256, group_source(batch, index))
             picked.append((selection.bundle, index))
+            complete_groups.append(
+                TrainingGroup(
+                    members=(
+                        GroupMembers(
+                            source_group_id=group_id,
+                            sample_offsets=tuple(range(group_source(batch, index).research.group_size)),
+                        ),
+                    )
+                )
+            )
     anchor = inputs[0][1].source
     anchor_digest = digest(training_contract(anchor))
     sources.pop(anchor_digest, None)
@@ -227,11 +347,13 @@ def assemble_batch(
         num_samples=num_samples,
         groups=tuple(index for _, index in picked),
         require_nonzero_reward_variance=require_nonzero_reward_variance,
+        training_groups=regrouping if regrouping is not None else tuple(complete_groups),
     )
     attempts: set[str] = set()
-    # Verify all selected data before writing readiness or copying any payload.
-    for root, index in picked:
-        for sample in load_batch_group(root, result, index):
+    # Same reader/validator as the trainer; only payload locations differ here.
+    roots = {index.header.group_id: root for root, index in picked}
+    for group in result.training_groups:
+        for sample in load_training_group(out, result, group, source_roots=roots):
             identity = accepted(sample).attempt.attempt_id
             if identity in attempts:
                 raise ValueError("Repeated rollout attempt in assembled batch")
@@ -345,8 +467,8 @@ class FrozenBatchRolloutFn(BaseRolloutFn):
             raise ValueError("A frozen batch is one training input, with no eval or implicit replay")
         groups = []
         attempts: set[str] = set()
-        for group_index, index in enumerate(self.batch.groups):
-            samples = load_batch_group(self.bundle, self.batch, index)
+        for group_index, group in enumerate(training_groups(self.batch)):
+            samples = load_training_group(self.bundle, self.batch, group)
             for offset, sample in enumerate(samples):
                 attempt_id = accepted(sample).attempt.attempt_id
                 if attempt_id in attempts:
@@ -381,7 +503,7 @@ def validate_input_args(args: argparse.Namespace, batch: Batch) -> None:
         "rollout_global_dataset": False,
         "rollout_function_path": ROLLOUT,
         "global_batch_size": batch.num_samples,
-        "rollout_batch_size": len(batch.groups),
+        "rollout_batch_size": len(training_groups(batch)),
         "n_samples_per_prompt": batch.source.research.group_size,
         **behavior_correction_args(batch.source.research.behavior_correction),
     }
@@ -507,7 +629,7 @@ def train_argv(bundle: Path, batch: Batch, checkpoint_path: Path | None, *, fres
         "--train-backend", "megatron", "--megatron-to-hf-mode", "bridge",
         "--save-interval", "1", "--rollout-num-gpus", "0", "--num-rollout", str(1 if checkpoint is None else checkpoint.step + 2),
         "--start-rollout-id", str(0 if checkpoint is None else checkpoint.step + 1),
-        "--rollout-batch-size", str(len(batch.groups)), "--global-batch-size", str(batch.num_samples),
+        "--rollout-batch-size", str(len(training_groups(batch))), "--global-batch-size", str(batch.num_samples),
         "--n-samples-per-prompt", str(research.group_size),
         "--rollout-max-response-len", str(research.sampling.max_tokens),
         "--rollout-max-context-len", str(research.sampling.max_sequence_tokens),
@@ -538,6 +660,9 @@ def main() -> None:
     assembly.add_argument("--samples", type=int, required=True)
     assembly.add_argument("--out", type=Path, required=True)
     assembly.add_argument("--require-nonzero-reward-variance", action=argparse.BooleanOptionalAction, required=True)
+    assembly.add_argument(
+        "--regroup-plan", type=Path, help="Explicit JSON array of training groups and source-payload sample offsets"
+    )
     train = commands.add_parser("train")
     train.add_argument("--bundle", type=Path, required=True)
     initialization = train.add_mutually_exclusive_group(required=True)
@@ -567,11 +692,16 @@ def main() -> None:
             base_policy=args.base_policy,
         )
     elif args.command == "assemble":
-        batch = assemble_batch(
+        batch = _assemble_batch(
             selections=TypeAdapter(tuple[BatchSelection, ...]).validate_json(args.selection.read_bytes()),
             num_samples=args.samples,
             out=args.out,
             require_nonzero_reward_variance=args.require_nonzero_reward_variance,
+            regrouping=(
+                TypeAdapter(tuple[TrainingGroup, ...]).validate_json(args.regroup_plan.read_bytes())
+                if args.regroup_plan
+                else None
+            ),
         )
     elif args.command == "check":
         batch = validate_batch(args.bundle)
@@ -608,7 +738,7 @@ def main() -> None:
             finish_tracking()  # type: ignore[no-untyped-call]
         return
     print(
-        f"Validated {batch.num_samples} samples in {len(batch.groups)} groups; policy {batch.policy.snapshot.sha256}"
+        f"Validated {batch.num_samples} samples in {len(training_groups(batch))} groups; policy {batch.policy.snapshot.sha256}"
     )
 
 

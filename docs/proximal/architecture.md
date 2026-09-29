@@ -155,14 +155,25 @@ partial groups cannot be frozen as training batches.
 
 Explicit cross-collection assembly uses a version-2 frozen manifest. Its primary
 source remains the training/checkpoint anchor; additional source contracts retain
-their original pinned datasets. Only dataset membership may differ, within one
-project. Run, exact behavior policy, base, harness, sampling, LoRA and token/rendering
+their original pinned datasets and collection group sizes. Dataset membership may
+differ within one project. Explicit regrouping may also combine samples from
+different collection group sizes into the anchor's fixed training group size.
+Run, exact behavior policy, base, harness, sampling, LoRA and token/rendering
 contracts must match. Each group is validated against the source identified by its
 original contract digest; neither its header nor its sample evidence is rewritten.
 Online buffer matching remains exact. Assembly takes explicit ordered group IDs
 from immutable input bundles, rejects duplicate groups/attempts and optionally
 requires nonzero reward variance. It copies verified original codec bytes and
-publishes its manifest last. The ordinary frozen rollout consumer handles both
+publishes its manifest last. A v2 manifest separately records source payloads and
+ordered training-group selections by original group ID and offset within the original payload.
+Every source payload is validated in full before selecting members. Each training
+group must have the anchor's group size, one exact task/image/commit, and no repeated
+attempt; acceptance metadata is never rewritten to pretend separate launches were
+one original group. For four-rollout retries of an all-zero task, choose four old
+sample offsets before launching and combine all four new samples. Variance filtering
+applies to the resulting training group, not its all-zero source group. This is an
+explicit adaptive sampling recipe, not eight independent fresh draws.
+The ordinary frozen rollout consumer handles both
 manifest versions, including offline validation and native Miles conversion.
 
 CPU collection IDs are minted on the launch host and passed as retry-stable Modal
@@ -170,7 +181,11 @@ inputs. Before any rollout/publication, the worker commits an invocation record.
 A completed retry validates and returns its existing batch; an interrupted retry
 fails closed before creating new requests. This is a replay guard, not automatic
 resumption of volatile capture sessions or a distributed lease. One active owner
-remains required. The CPU collector can explicitly opt into non-preemptible Modal
+per collection remains required. Artifact-only collectors may share a state Volume
+under one immutable behavior policy: each owns a distinct invocation/collection
+directory and UUID attempt/group paths, publishes no trainer checkpoint or LATEST,
+and has its own local index/outbox. They never update the same file. Only one active
+trainer may own the run's checkpoint/publication lineage. The CPU collector can explicitly opt into non-preemptible Modal
 capacity; this does not replace the durable guard or promise survival of all faults.
 
 `collect_batch` composes `PlatformTaskSource`, `PlatformRolloutFn` and its existing
