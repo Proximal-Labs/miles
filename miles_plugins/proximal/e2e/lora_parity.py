@@ -4,18 +4,20 @@ One node, one tensor-parallel group like a run's trainer (``lora_parity_stages.p
 
 1. Build the trainer's LoRA model for ``--targets`` and load the checkpoint. While every
    lora_B is still zero, Megatron-Bridge's merged export must reproduce the checkpoint
-   exactly (round trip).
+   (round trip).
 2. Give every adapter random nonzero weights whose update is ``--strength`` times the base
    weight's RMS. Write the adapter a run would publish (the publisher's staging, layout
    check and writer) and the same adapter merged into a full checkpoint in Megatron's own
    layout: the trained policy.
-3. Score fixed token sequences with SGLang: the base model with the adapter loaded as a
-   replica loads it, the base model alone, and the merged checkpoint alone.
-
-The adapter must reproduce the merged checkpoint's logprobs far more closely than the
-base model does. The merged checkpoint is stored in bf16, so its rounding leaves a small
-residual; two deliberately broken adapters (GDN q and k slices swapped, attention q and
-gate halves swapped) show how large a mapping error is, and must be caught.
+3. Export mapping, per module: ``merged - base`` must equal ``(alpha / r) B A`` computed
+   from the published tensors, up to the merged checkpoint's bf16 rounding.
+4. Serving, per module family: SGLang scores fixed token sequences under the published
+   adapter and its MLP-only and attention/GDN-only subsets (loaded like a replica, strict),
+   and under each one's merged checkpoint. An adapter must match its merged checkpoint far
+   more closely than the base model does. Two deliberately broken attention/GDN adapters
+   (GDN q and k slices swapped, attention q and gate halves swapped) show what a mapping
+   error looks like and must be caught. A plain engine on the base checkpoint gives the
+   engine's own noise floor.
 
     modal run --env main -m miles_plugins.proximal.e2e.lora_parity --model Qwen/Qwen3.5-4B
     modal run --env main -m miles_plugins.proximal.e2e.lora_parity --model qwen38
@@ -50,8 +52,12 @@ ALL_LINEAR = ",".join(
         "mlp.linear_fc2",
     )
 )
-# The training image, as the Qwen3.8 deployments pin it.
-IMAGE = json.loads((REPO / "examples/proximal/qwen38/overhead/serving.json").read_text())["image"]
+# The training image, as the Qwen3.8 deployments pin it (read where the app is launched).
+IMAGE = (
+    json.loads((REPO / "examples/proximal/qwen38/overhead/serving.json").read_text())["image"]
+    if modal.is_local()
+    else ""
+)
 
 image = (
     add_fork_sources(
@@ -132,8 +138,100 @@ def _write_tokens(checkpoint: Path, lengths: list[int]) -> Path:
     return path
 
 
-def _broken_adapters(adapter: Path, checkpoint: Path) -> dict[str, Path]:
-    """The published adapter with one layout mistake each: what a mapping error looks like."""
+# The adapter's module families, as HF tensor leaves.
+FAMILIES = {
+    "mlp": frozenset({"gate_proj", "up_proj", "down_proj"}),
+    "mixers": frozenset(
+        {"q_proj", "k_proj", "v_proj", "o_proj", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj"}
+    ),
+}
+
+
+def _leaf(name: str) -> str:
+    return name.split(".lora_")[0].rsplit(".", 1)[-1]
+
+
+def _pairs(adapter: Path) -> dict[str, tuple[Any, Any]]:
+    """Adapter module name -> (lora_A, lora_B)."""
+    from safetensors.torch import load_file
+
+    tensors = load_file(str(adapter / "adapter_model.safetensors"))
+    modules = {name.split(".lora_")[0] for name in tensors}
+    return {m: (tensors[f"{m}.lora_A.weight"], tensors[f"{m}.lora_B.weight"]) for m in modules}
+
+
+def _scale(adapter: Path) -> float:
+    config = json.loads((adapter / "adapter_config.json").read_text())
+    return float(config["lora_alpha"]) / float(config["r"])
+
+
+def _weights(checkpoint: Path) -> dict[str, Path]:
+    """Tensor name -> the safetensors file holding it."""
+    from safetensors import safe_open
+
+    index: dict[str, Path] = {}
+    for path in checkpoint.glob("*.safetensors"):
+        with safe_open(str(path), framework="pt") as handle:
+            index.update({key: path for key in handle.keys()})
+    return index
+
+
+def _base_name(module: str) -> str:
+    return module.removeprefix("base_model.model.") + ".weight"
+
+
+def _export_mapping_errors(adapter: Path, checkpoint: Path, merged: Path) -> dict[str, float]:
+    """Per tensor leaf, the largest relative error of ``merged - base`` against ``(alpha / r) B A``."""
+    from safetensors import safe_open
+
+    scale, base, after = _scale(adapter), _weights(checkpoint), _weights(merged)
+    errors: dict[str, float] = {}
+    for module, (a, b) in _pairs(adapter).items():
+        name = _base_name(module)
+        with safe_open(str(base[name]), framework="pt") as old, safe_open(str(after[name]), framework="pt") as new:
+            actual = new.get_tensor(name).float() - old.get_tensor(name).float()
+        expected = scale * (b.float() @ a.float())
+        error = ((actual - expected).norm() / expected.norm()).item()
+        errors[_leaf(module)] = max(errors.get(_leaf(module), 0.0), error)
+    return errors
+
+
+def _subset(adapter: Path, leaves: frozenset[str], directory: Path) -> Path:
+    from safetensors.torch import load_file, save_file
+
+    directory.mkdir()
+    (directory / "adapter_config.json").write_text((adapter / "adapter_config.json").read_text())
+    tensors = load_file(str(adapter / "adapter_model.safetensors"))
+    save_file({n: t for n, t in tensors.items() if _leaf(n) in leaves}, str(directory / "adapter_model.safetensors"))
+    return directory
+
+
+def _merge(adapter: Path, checkpoint: Path, directory: Path) -> Path:
+    """The checkpoint with ``adapter`` merged in HF space: each base weight plus (alpha / r) B A."""
+    import shutil
+
+    from safetensors.torch import load_file, save_file
+
+    scale, index = _scale(adapter), _weights(checkpoint)
+    updates: dict[Path, dict[str, tuple[Any, Any]]] = {}
+    for module, pair in _pairs(adapter).items():
+        name = _base_name(module)
+        updates.setdefault(index[name], {})[name] = pair
+    directory.mkdir()
+    for path in checkpoint.iterdir():
+        if path.is_file() and path not in updates:
+            shutil.copy2(path, directory / path.name)
+    for path, changes in updates.items():
+        tensors = load_file(str(path))
+        for name, (a, b) in changes.items():
+            base = tensors[name]
+            tensors[name] = (base.float() + scale * (b.float() @ a.float())).to(base.dtype)
+        save_file(tensors, str(directory / path.name), metadata={"format": "pt"})
+    return directory
+
+
+def _broken(adapter: Path, checkpoint: Path) -> dict[str, Path]:
+    """``adapter`` with one layout mistake each: what a mapping error looks like."""
     import torch
     from safetensors.torch import load_file, save_file
 
@@ -145,14 +243,12 @@ def _broken_adapters(adapter: Path, checkpoint: Path) -> dict[str, Path]:
     def swap_gdn_qk(name: str, tensor: torch.Tensor) -> torch.Tensor:
         if not name.endswith("linear_attn.in_proj_qkv.lora_B.weight"):
             return tensor
-        q, k, rest = tensor[:key_dim], tensor[key_dim : 2 * key_dim], tensor[2 * key_dim :]
-        return torch.cat([k, q, rest]).contiguous()
+        return torch.cat([tensor[key_dim : 2 * key_dim], tensor[:key_dim], tensor[2 * key_dim :]]).contiguous()
 
     def swap_attention_gate(name: str, tensor: torch.Tensor) -> torch.Tensor:
         if not name.endswith("self_attn.q_proj.lora_B.weight"):
             return tensor
-        per_head = tensor.reshape(heads, 2, head_dim, -1)
-        return per_head.flip(1).reshape(tensor.shape).contiguous()
+        return tensor.reshape(heads, 2, head_dim, -1).flip(1).reshape(tensor.shape).contiguous()
 
     tensors = load_file(str(adapter / "adapter_model.safetensors"))
     broken = {}
@@ -160,10 +256,7 @@ def _broken_adapters(adapter: Path, checkpoint: Path) -> dict[str, Path]:
         directory = WORK / label
         directory.mkdir()
         (directory / "adapter_config.json").write_text((adapter / "adapter_config.json").read_text())
-        save_file(
-            {name: edit(name, tensor) for name, tensor in tensors.items()},
-            str(directory / "adapter_model.safetensors"),
-        )
+        save_file({n: edit(n, t) for n, t in tensors.items()}, str(directory / "adapter_model.safetensors"))
         broken[label] = directory
     return broken
 
@@ -178,23 +271,16 @@ def _score(model: Path, tokens: Path, name: str, *, adapters: dict[str, Path], t
     return dict(json.loads(out.read_text()))
 
 
-def _distance(a: list[list[float]], b: list[list[float]]) -> dict[str, float]:
+def _distance(a: list[list[float]], b: list[list[float]]) -> dict[str, Any]:
+    """Absolute logprob differences, over all tokens and per sequence."""
     import torch
 
-    diff = (torch.tensor([x for s in a for x in s]) - torch.tensor([x for s in b for x in s])).abs()
-    return {"mean": diff.mean().item(), "p99": diff.quantile(0.99).item(), "max": diff.max().item()}
+    def stats(x: list[float], y: list[float]) -> dict[str, float]:
+        diff = (torch.tensor(x) - torch.tensor(y)).abs()
+        return {"mean": diff.mean().item(), "p99": diff.quantile(0.99).item(), "max": diff.max().item()}
 
-
-def _verdict(distances: dict[str, dict[str, float]]) -> dict[str, Any]:
-    effect = distances["base"]["mean"]
-    ratios = {label: d["mean"] / effect for label, d in distances.items()}
-    checks = {
-        "adapter_changes_the_model": effect >= 0.05,
-        "adapter_matches_merged": ratios["adapter"] <= 0.3,
-        "gdn_mapping_error_detected": ratios["gdn_qk_swapped"] >= 3 * ratios["adapter"],
-        "attention_mapping_error_detected": ratios["attention_gate_swapped"] >= 3 * ratios["adapter"],
-    }
-    return {"ratios_to_adapter_effect": ratios, "checks": checks, "passed": all(checks.values())}
+    flat = stats([v for s in a for v in s], [v for s in b for v in s])
+    return flat | {"per_sequence_mean": [stats(x, y)["mean"] for x, y in zip(a, b, strict=True)]}
 
 
 @app.function(
@@ -216,13 +302,46 @@ def parity(model: str, targets: str, strength: float, seed: int, lengths: list[i
     export = json.loads((WORK / "export.json").read_text())
     if export["layout_problem"] is not None:
         return {"export": export, "passed": False}
+    adapter = WORK / "adapter"
+    mapping = _export_mapping_errors(adapter, checkpoint, WORK / "merged")
+
+    # Each served adapter, and the merged checkpoint it must reproduce.
+    adapters, truth = {"all": adapter}, {"all": WORK / "merged"}
+    for family, leaves in FAMILIES.items():
+        adapters[family] = _subset(adapter, leaves, WORK / f"{family}-adapter")
+        truth[family] = _merge(adapters[family], checkpoint, WORK / f"{family}-merged")
+    for label, path in _broken(adapters["mixers"], checkpoint).items():
+        adapters[label], truth[label] = path, truth["mixers"]
+
     tokens = _write_tokens(checkpoint, lengths)
-    serving_targets = export["serving_targets"]
-    adapters = {"adapter": WORK / "adapter", **_broken_adapters(WORK / "adapter", checkpoint)}
-    served = _score(checkpoint, tokens, "served", adapters=adapters, targets=serving_targets)
-    merged = _score(WORK / "merged", tokens, "merged", adapters={}, targets=[])["base"]
-    distances = {label: _distance(scores, merged) for label, scores in served.items()}
-    return {"export": export, "lengths": lengths, "distances_to_merged": distances, **_verdict(distances)}
+    served = _score(checkpoint, tokens, "served", adapters=adapters, targets=export["serving_targets"])
+    plain = _score(checkpoint, tokens, "plain", adapters={}, targets=[])["base"]
+    merged = {p: _score(p, tokens, p.name, adapters={}, targets=[])["base"] for p in set(truth.values())}
+    report: dict[str, Any] = {"export": export, "export_mapping_errors": mapping, "lengths": lengths}
+    report["noise_floor"] = _distance(served["base"], plain)
+    report["served"] = {
+        label: {
+            "residual": _distance(served[label], merged[truth[label]]),
+            "effect": _distance(served["base"], merged[truth[label]]),
+        }
+        for label in adapters
+    }
+    return report | _verdict(report)
+
+
+def _verdict(report: dict[str, Any]) -> dict[str, Any]:
+    ratio = {label: r["residual"]["mean"] / r["effect"]["mean"] for label, r in report["served"].items()}
+    checks = {
+        # A wrong export mapping errs by about 100% of the update; bf16 rounding by a few percent.
+        "export_mapping": max(report["export_mapping_errors"].values()) <= 0.1,
+        "round_trip": report["export"]["round_trip"]["max_abs_difference"] <= 2**-8,
+        "adapters_change_the_model": all(r["effect"]["mean"] >= 0.02 for r in report["served"].values()),
+        "served_like_merged": all(ratio[label] <= 0.3 for label in ("all", *FAMILIES)),
+        "mapping_errors_caught": all(
+            ratio[label] >= 2 * ratio["mixers"] for label in ("gdn_qk_swapped", "attention_gate_swapped")
+        ),
+    }
+    return {"residual_to_effect": ratio, "checks": checks, "passed": all(checks.values())}
 
 
 @app.local_entrypoint()
@@ -236,11 +355,7 @@ def main(
 ) -> None:
     result = parity.remote(model, targets, strength, seed, [int(n) for n in lengths.split(",")])
     Path(out).write_text(json.dumps(result, indent=2))
-    print(
-        json.dumps(
-            {k: result.get(k) for k in ("distances_to_merged", "ratios_to_adapter_effect", "checks", "passed")},
-            indent=2,
-        )
-    )
+    summary = {k: result.get(k) for k in ("export_mapping_errors", "residual_to_effect", "checks", "passed")}
+    print(json.dumps(summary, indent=2))
     print(f"round trip: {result['export'].get('round_trip')}")
     print(f"details in {out}")
