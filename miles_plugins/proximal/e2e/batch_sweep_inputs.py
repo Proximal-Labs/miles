@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from miles_plugins.proximal.contracts import Contract, Nonempty, RunConfig, SafeId, behavior_correction_argv
+from miles_plugins.proximal.contracts import Contract, RunConfig, SafeId, behavior_correction_argv
 from miles_plugins.proximal.e2e.argv import set_flag
 from miles_plugins.proximal.initial_policy import verify_base_policy
-from miles_plugins.proximal.snapshot import Digest
+from miles_plugins.proximal.snapshot import Digest, Nonempty
 from miles_plugins.proximal.state_artifacts import RelativePath
 
 if TYPE_CHECKING:

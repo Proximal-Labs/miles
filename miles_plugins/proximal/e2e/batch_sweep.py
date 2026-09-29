@@ -26,6 +26,7 @@ from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run, r
 from miles_plugins.proximal.e2e import step_sizing as cluster
 from miles_plugins.proximal.e2e.batch_sweep_artifacts import finalize_step, publish_node_files
 from miles_plugins.proximal.e2e.batch_sweep_inputs import (
+    SweepPhase,
     SweepPlan,
     phase_command,
     validate_phase_args,
@@ -154,8 +155,12 @@ def _run_phases(plan: SweepPlan, state: cluster._State, root: Path, bundle: Path
             VOLUME.commit()
         if result["exit_code"] != 0 or len(result["perf"]) != phase.updates:
             raise RuntimeError(f"{phase.name} did not complete exactly {phase.updates} updates; artifacts retained")
+
+        def phase_committed(phase: SweepPhase = phase) -> bool:
+            return all(state.get(f"durable/{phase.name}/{step}") for step in range(phase.updates))
+
         cluster._wait(
-            lambda phase=phase: all(state.get(f"durable/{phase.name}/{step}") for step in range(phase.updates)),
+            phase_committed,
             1800,
             f"{phase.name} native and eval checkpoints committed",
             state,
