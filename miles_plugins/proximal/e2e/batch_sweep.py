@@ -77,11 +77,10 @@ def _check_commands(plan: SweepPlan, bundle: Path, *, hardware: bool) -> None:
 
 
 @app.function(
-    image=cluster.image.env(
-        {
-            "LD_LIBRARY_PATH": "/usr/local/cuda/compat:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
-        }
-    ),
+    image=cluster.image,
+    env={
+        "LD_LIBRARY_PATH": "/usr/local/cuda/compat:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+    },
     volumes={**cluster.VOLUMES, str(MOUNT): VOLUME.read_only()},
     cpu=4,
     memory=32768,
