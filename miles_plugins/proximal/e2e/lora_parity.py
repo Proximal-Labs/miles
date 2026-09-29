@@ -348,7 +348,7 @@ def _verdict(report: dict[str, Any]) -> dict[str, Any]:
 def main(
     model: str = "Qwen/Qwen3.5-4B",
     targets: str = ALL_LINEAR,
-    strength: float = 0.05,
+    strength: float = 0.15,  # Large enough that a mapping error dwarfs the merged checkpoint's bf16 rounding.
     seed: int = 0,
     lengths: str = "512,4096,16384",
     out: str = "lora_parity.json",
