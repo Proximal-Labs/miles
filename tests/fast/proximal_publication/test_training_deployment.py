@@ -218,3 +218,10 @@ def test_a_deployment_serves_any_run_that_fits_its_serving_contract():
         }
     )
     assert len(serving_mismatches(longer, deployed)) == 2
+
+
+def test_run_state_cannot_use_the_serving_adapter_volume():
+    run = _real_run()
+    deployment = read_training_deployment(QWEN38 / "training.json").model_copy(update={"state_volume": run.volume})
+    with pytest.raises(ValueError, match="separate Volumes"):
+        check_deployment(run, deployment)

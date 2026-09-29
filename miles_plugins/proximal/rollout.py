@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeVar
 
 import httpx
 
@@ -21,6 +22,9 @@ from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, Lau
 from miles_plugins.proximal.contracts import (
     AcceptedAttempt,
     Attempt,
+    CaptureReceipt,
+    FailedAttempt,
+    Grade,
     LaunchRetry,
     SessionHandle,
     Task,
@@ -40,6 +44,7 @@ logger = logging.getLogger(__name__)
 # background, so a rollout's sample reaches training without waiting for it.
 RELEASE_TIMEOUT_SECONDS = 60
 _releases: set["asyncio.Task[None]"] = set()
+_HandoffResult = TypeVar("_HandoffResult")
 
 
 async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: str) -> None:
@@ -54,23 +59,102 @@ async def _release(capture: CaptureClient, handle: SessionHandle, attempt_id: st
 
 
 async def wait_for_releases() -> None:
-    """Finish the background session releases (at shutdown, and in tests).
-
-    Waits only on this loop's unfinished releases. A finished release leaves ``_releases``
-    in a done callback that runs on the loop's next turn, and awaiting only finished tasks
-    never yields that turn: looping until the set empties would spin the loop forever.
-    """
+    """Drain this loop's releases without depending on queued done callbacks."""
     loop = asyncio.get_running_loop()
-    while pending := [task for task in _releases if not task.done() and task.get_loop() is loop]:
+    while True:
+        # Awaiting only finished tasks may never yield to their discard callbacks.
+        # Drop them explicitly, including finished tasks left by an older loop.
+        _releases.difference_update(task for task in tuple(_releases) if task.done())
+        pending = [task for task in _releases if task.get_loop() is loop]
+        if not pending:
+            return
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def execute_attempt(
-    attempt: Attempt, sample: Sample, *, capture: CaptureClient, platform: PlatformClient, artifact_root: Path
-) -> Sample:
-    handle = await capture.create(attempt)
-    complete = False
+async def _finish_handoff(task: asyncio.Task[_HandoffResult]) -> asyncio.CancelledError | None:
+    """Finish a durable handoff before propagating any repeated shutdown signals."""
+    cancelled = None
+    while True:
+        try:
+            await asyncio.shield(task)
+            return cancelled
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+
+
+async def _archive_failure(
+    attempt: Attempt,
+    error: Exception | asyncio.CancelledError,
+    *,
+    handle: SessionHandle | None,
+    grade: Grade | None,
+    capture: CaptureClient,
+    platform: PlatformClient,
+    directory: Path,
+    store: RolloutStore | None,
+) -> CaptureReceipt | None:
+    # These are logical API lifetimes. Platform alone owns physical resources.
     try:
+        await asyncio.wait_for(platform.cancel(attempt), timeout=30)
+    except Exception as cancel_error:
+        logger.error(
+            "Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(cancel_error).__name__
+        )
+    receipt = None
+    payload_path = directory / "request.json"
+    if handle is not None:
+        try:
+            receipt, partial = await asyncio.wait_for(capture.collect(handle, attempt), timeout=30)
+        except Exception as collect_error:
+            # A failed read does not prove the replica has no useful bytes.
+            # Archive the unknown outcome, but do not authorize its deletion.
+            logger.warning(
+                "Capture retrieval failed for attempt %s (%s); no payload archived",
+                attempt.attempt_id,
+                type(collect_error).__name__,
+            )
+            receipt = None
+        else:
+            # Retrieval failure can leave no capture. A local storage failure
+            # cannot: propagate it and retain the replica's recoverable bytes.
+            payload_path = directory / "partial.safetensors"
+            write_immutable(payload_path, partial)
+    outcome = FailedAttempt(
+        attempt=attempt,
+        status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+        error_type=type(error).__name__,
+        capture=receipt,
+        grade=grade,
+    )
+    failed_path = directory / "failed.json"
+    write_immutable(failed_path, canonical_bytes(outcome))
+    if store is not None:
+        await store.publish_artifact(payload_path, failed_path, record_id=f"failed-{attempt.attempt_id}")
+    return receipt
+
+
+async def execute_attempt(
+    attempt: Attempt,
+    sample: Sample,
+    *,
+    capture: CaptureClient,
+    platform: PlatformClient,
+    artifact_root: Path,
+    store: RolloutStore | None = None,
+) -> Sample:
+    directory = artifact_root / attempt.attempt_id
+    request_path = directory / "request.json"
+    write_immutable(request_path, canonical_bytes(attempt))
+    if store is not None:
+        await store.publish_artifact(request_path, request_path, record_id=f"request-{attempt.attempt_id}")
+    handle = None
+    grade = None
+    complete = False
+    accepted_locally = False
+    try:
+        handle = await capture.create(attempt)
         grade = await platform.execute(attempt, handle)
         receipt, payload = await capture.collect(handle, attempt)
         decoded = decode_samples_and_merge_input_sample(payload, sample)
@@ -80,23 +164,52 @@ async def execute_attempt(
         result.reward = grade.reward
         evidence = AcceptedAttempt(attempt=attempt, capture=receipt, grade=grade)
         validate_sample(result, evidence)
-        directory = artifact_root / attempt.attempt_id
+        accepted_locally = True  # Validated paid work must survive a local write failure too.
         write_immutable(directory / "samples.safetensors", payload)
         write_immutable(directory / "accepted.json", canonical_bytes(evidence))
+        if store is not None:
+            publication = asyncio.create_task(
+                store.publish_artifact(
+                    directory / "samples.safetensors",
+                    directory / "accepted.json",
+                    record_id=f"capture-{attempt.attempt_id}",
+                )
+            )
+            cancelled = await _finish_handoff(publication)
+            if cancelled is not None:
+                complete = True
+                raise cancelled
         result.metadata["proximal_accepted"] = evidence.model_dump_json()
         complete = True
         return result
+    except (Exception, asyncio.CancelledError) as exc:
+        if not accepted_locally:
+            archive = asyncio.create_task(
+                _archive_failure(
+                    attempt,
+                    exc,
+                    handle=handle,
+                    grade=grade,
+                    capture=capture,
+                    platform=platform,
+                    directory=directory,
+                    store=store,
+                )
+            )
+            cancelled = await _finish_handoff(archive)
+            # A durable failure record alone does not preserve unread capture data.
+            # LaunchFailed is the platform's explicit proof that no rollout ran.
+            complete = archive.result() is not None or isinstance(exc, LaunchFailed)
+            if cancelled is not None:
+                raise cancelled from exc
+        raise
     finally:
-        # These are logical API lifetimes. Platform alone owns physical resources.
-        # Cancellation is bounded and awaited before dropping the local session.
-        if not complete:
-            try:
-                await asyncio.wait_for(platform.cancel(attempt), timeout=30)
-            except Exception as exc:
-                logger.error("Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(exc).__name__)
-        task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
-        _releases.add(task)
-        task.add_done_callback(_releases.discard)
+        # A staged accepted result whose handoff was interrupted must remain on the
+        # replica. Its existing session expiry still bounds retention after a crash.
+        if complete and handle is not None:
+            task = asyncio.create_task(_release(capture, handle, attempt.attempt_id))
+            _releases.add(task)
+            task.add_done_callback(_releases.discard)
 
 
 async def execute_with_launch_retry(
@@ -108,6 +221,7 @@ async def execute_with_launch_retry(
     artifact_root: Path,
     retry: LaunchRetry,
     rng: random.Random | None = None,
+    store: RolloutStore | None = None,
 ) -> Sample:
     """``execute_attempt``, relaunching under a new attempt identity when the platform could
     not start the rollout (LaunchFailed). Each launch is its own platform run and capture
@@ -117,7 +231,7 @@ async def execute_with_launch_retry(
     for launch in range(retry.attempts):
         try:
             return await execute_attempt(
-                attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root
+                attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root, store=store
             )
         except LaunchFailed as exc:
             if launch == retry.attempts - 1:
@@ -189,6 +303,14 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         report = await canary(self.authorization, self._http(), policy)
         logger.info("Preflight canary passed: %s", report)
 
+    def _max_in_flight_groups(self) -> int:
+        # The finite collector uses Miles's sample scheduler: zero capacity stops
+        # backfill while active groups finish. A failed group's buffer callback
+        # reopens admission for its retry; an exhausted idle worker waits for close.
+        if isinstance(self.data_source, PlatformTaskSource) and not self.data_source.has_samples:
+            return 0
+        return super()._max_in_flight_groups()
+
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         self._http()
         assert self._capture is not None and self._platform is not None and self._store is not None
@@ -219,6 +341,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
                     platform=self._platform,
                     artifact_root=self.config.artifact_directory / self.config.run_id / "accepted",
                     retry=self.config.launch_retry,
+                    store=self._store,
                 )
             )
             for attempt, sample in zip(attempts, prompt_group, strict=True)
@@ -230,7 +353,17 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             for task in tasks:
                 task.add_done_callback(lambda _task: sample_done())
         try:
-            result = await asyncio.gather(*tasks)
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            # A failed rollout does not revoke the paid work of its siblings.
+            # Let each finish and persist before rejecting/retrying the group.
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException) and not isinstance(outcome, (IneligibleAttempt, httpx.HTTPError)):
+                    raise outcome
+            result = []
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                result.append(outcome)
         except (IneligibleAttempt, httpx.HTTPError) as exc:
             # Messages carry only our own text or the request method, URL and status, never headers.
             logger.warning(

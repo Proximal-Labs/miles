@@ -136,3 +136,27 @@ async def store(config):
     opened = await open_store(config)
     yield opened
     await opened.close()
+
+
+@pytest.fixture
+def pg_bin():
+    from miles_plugins.proximal.e2e.local_postgres import server_binaries
+
+    return server_binaries()
+
+
+@pytest.fixture
+def empty_database(postgres_server, monkeypatch):
+    """Makes a new empty database the run's store, as in a fresh container."""
+
+    import psycopg
+
+    def create() -> str:
+        name = f"t_{uuid.uuid4().hex}"
+        with psycopg.connect(postgres_server, autocommit=True) as admin:
+            admin.execute(f"CREATE DATABASE {name}")
+        dsn = postgres_server.replace("dbname=postgres", f"dbname={name}")
+        monkeypatch.setenv("STORE_TEST_DSN", dsn)
+        return dsn
+
+    return create

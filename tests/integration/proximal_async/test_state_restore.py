@@ -8,7 +8,6 @@ import asyncio
 import hashlib
 import shutil
 import subprocess
-import uuid
 from pathlib import Path
 
 import psycopg
@@ -18,7 +17,6 @@ from tests.integration.proximal_async.test_buffer import entry, make_buffer, ver
 from miles_plugins.proximal.buffer import accepted
 from miles_plugins.proximal.data_source import ConsumedGroup, ConsumptionLedger, Cursor
 from miles_plugins.proximal.e2e import snapshots
-from miles_plugins.proximal.e2e.local_postgres import server_binaries
 from miles_plugins.proximal.store import open_store
 
 # The fixture's max_policy_lag is 1. A trainer resumed from step 3 starts at version 4
@@ -31,26 +29,6 @@ EVIDENCE = ("accepted/backlog-0/accepted.json", "accepted/backlog-0/samples.safe
 PUBLICATION = f"publication/snapshots/{'e' * 64}/manifest.json"
 
 
-@pytest.fixture
-def pg_bin():
-    return server_binaries()
-
-
-@pytest.fixture
-def empty_database(postgres_server, monkeypatch):
-    """Makes a new empty database the run's store, as in a fresh container."""
-
-    def create() -> str:
-        name = f"t_{uuid.uuid4().hex}"
-        with psycopg.connect(postgres_server, autocommit=True) as admin:
-            admin.execute(f"CREATE DATABASE {name}")
-        dsn = postgres_server.replace("dbname=postgres", f"dbname={name}")
-        monkeypatch.setenv("STORE_TEST_DSN", dsn)
-        return dsn
-
-    return create
-
-
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -61,7 +39,7 @@ def files(root: Path) -> set[str]:
 
 
 def payloads(*names: str) -> set[str]:
-    return {f"test-run/groups/{name}.bin" for name in names}
+    return {f"test-run/groups/{name}.{suffix}" for name in names for suffix in ("bin", "json")}
 
 
 def save_checkpoint(checkpoints: Path, step: int, consumed: dict[str, int]) -> None:
@@ -136,7 +114,7 @@ async def test_restore_copies_only_payloads_the_run_can_still_train(
     assert restore(config, checkpoints, snapshot_root, empty_database(), pg_bin) == STEP
 
     # Not the consumed group, the one below the window, the evidence or the publication.
-    assert files(config.artifact_directory) == payloads(*TRAINABLE)
+    assert files(config.artifact_directory) == {name for name in payloads(*TRAINABLE) if name.endswith(".bin")}
     assert (checkpoints / "rollout" / f"proximal_{STEP}.json").is_file()
     adapter = snapshots.iter_dir(checkpoints, STEP) / "adapter"
     assert all((adapter / name).is_file() for name in snapshots.ADAPTER_FILES)
@@ -221,4 +199,6 @@ async def test_a_snapshot_after_a_lean_restore_is_complete(
     # That snapshot restores leanly in turn: version 4 and later, minus step 4's ledger.
     await lose_container(config, checkpoints, store)
     assert restore(config, checkpoints, snapshot_root, empty_database(), pg_bin) == STEP + 1
-    assert files(config.artifact_directory) == payloads("current", "ahead", "new")
+    assert files(config.artifact_directory) == {
+        name for name in payloads("current", "ahead", "new") if name.endswith(".bin")
+    }
