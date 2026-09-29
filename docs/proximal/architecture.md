@@ -226,6 +226,9 @@ one update, and native resume still requires an identical target layout. The bat
 original contract, tokens, masks, behavior logprobs and provenance remain unchanged.
 The sweep records its own target list and optimizer recipe alongside the source
 manifest hash and verifies the original zero-delta policy proof before allocation.
+CPU preflight uses the pinned image's native argument parser, HF model validation,
+and sweep-contract checks. Megatron's full validator queries the CUDA architecture
+for tensor parallelism; it runs on the allocated gang before model loading.
 Each configuration starts a fresh model/optimizer and executes its two consecutive
 updates on live workers. The run retains its Modal nodes, Ray cluster and local kernel
 caches across configurations. Native saves remain a training capability; the existing

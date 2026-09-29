@@ -52,22 +52,40 @@ def _paths(plan: SweepPlan) -> tuple[Path, Path]:
     return bundle, root
 
 
-def _check_commands(plan: SweepPlan, bundle: Path) -> None:
-    from miles.utils.arguments import parse_args
+def _check_commands(plan: SweepPlan, bundle: Path, *, hardware: bool) -> None:
+    from miles.utils.arguments import get_miles_extra_args_provider, hf_validate_args, parse_args
+    from miles.utils.hf_config import load_hf_config
 
     before = sys.argv
     try:
         for phase in plan.phases:
             command = phase_command(plan, phase, RUN, bundle=bundle, save=LOCAL / phase.name / "checkpoints")
             sys.argv = command[1:]
-            args = parse_args()  # type: ignore[no-untyped-call]
+            if hardware:
+                args = parse_args()  # type: ignore[no-untyped-call]
+            else:
+                # Megatron's full validator queries the CUDA device architecture
+                # for TP > 1. Use its real parser on CPU, then validate the pinned
+                # model and sweep contract. Full validation runs on the live gang.
+                from megatron.training.arguments import parse_args as parse_megatron_args  # type: ignore[import-not-found]
+
+                args = parse_megatron_args(extra_args_provider=get_miles_extra_args_provider())  # type: ignore[no-untyped-call]
+                hf_validate_args(args, load_hf_config(args.hf_checkpoint))  # type: ignore[no-untyped-call]
             validate_phase_args(args, plan, RUN)
     finally:
         sys.argv = before
 
 
 @app.function(
-    image=cluster.image, volumes={**cluster.VOLUMES, str(MOUNT): VOLUME.read_only()}, cpu=4, memory=32768, timeout=1800
+    image=cluster.image.env(
+        {
+            "LD_LIBRARY_PATH": "/usr/local/cuda/compat:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+        }
+    ),
+    volumes={**cluster.VOLUMES, str(MOUNT): VOLUME.read_only()},
+    cpu=4,
+    memory=32768,
+    timeout=1800,
 )
 def preflight(plan_json: str) -> dict[str, object]:
     """Pinned-image argument and artifact validation before allocating any GPUs."""
@@ -76,7 +94,7 @@ def preflight(plan_json: str) -> dict[str, object]:
     if root.exists():
         raise FileExistsError("Choose a new experiment ID; implicit sweep resume is forbidden")
     batch = validate_source(bundle, plan, RUN)
-    _check_commands(plan, bundle)
+    _check_commands(plan, bundle, hardware=False)
     return {"samples": batch.num_samples, "batch_sha256": plan.batch_sha256, "phases": len(plan.phases)}
 
 
@@ -204,7 +222,7 @@ def sweep(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
             write_atomic(root / "cluster.json", json.dumps({"cluster_id": info.cluster_id, "ips": ips}).encode())
             VOLUME.commit()
             validate_source(bundle, plan, source)
-            _check_commands(plan, bundle)
+            _check_commands(plan, bundle, hardware=True)
             state["validated"] = True
         cluster._wait(lambda: state.get("validated"), 1800, "source validation", state)
         fabric = cluster._fabric()
