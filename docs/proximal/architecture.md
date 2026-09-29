@@ -218,6 +218,27 @@ abandoned histories; source checkpoint/behavior lineage must be chosen deliberat
 No automatic 8-to-64-GPU resharding or creation of an initial trainer checkpoint
 from a serving-only adapter is implemented. See [offline batch runbook](offline-batches.md).
 
+An explicitly authorized two-update comparison can reuse one verified base-policy
+batch across fresh LoRA parameterizations. The bounded `e2e.batch_sweep` composes
+`ReferenceReplay`, the existing clustered sizing lifecycle, and native `train.py`.
+This is deliberate experimental replay; the production frozen consumer still admits
+one update, and native resume still requires an identical target layout. The batch's
+original contract, tokens, masks, behavior logprobs and provenance remain unchanged.
+The sweep records its own target list and optimizer recipe alongside the source
+manifest hash and verifies the original zero-delta policy proof before allocation.
+Each configuration starts a fresh model/optimizer and executes its two consecutive
+updates on live workers. The run retains its Modal nodes, Ray cluster and local kernel
+caches across configurations. Native saves remain a training capability; the existing
+snapshot helper separately packages each completed PEFT export for evaluation.
+Every node commits its own global-rank native/optimizer shards after the native save
+barrier. Only after all nodes' receipts and hashes validate does the owner certify the
+native checkpoint and commit an evaluation snapshot plus a per-step completion receipt.
+Publication failure aborts the experiment; the run never reports an incomplete export
+as ready. Output lives in an isolated experiment namespace, not the source run's
+online policy/checkpoint lineage. No automatic restart or resume of a partially
+completed experiment is allowed. Cluster cleanup preserves all committed artifacts.
+
+
 CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.
 
 
