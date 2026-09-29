@@ -13,9 +13,11 @@ from miles.ray.rollout.train_data_conversion import convert_samples_to_train_dat
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
 from miles_plugins.proximal.buffer import accepted
 from miles_plugins.proximal.offline_batch import (
+    BatchSelection,
     FrozenBatchRolloutFn,
     GroupMembers,
     TrainingGroup,
+    freeze_batch,
     load_training_group,
     publish_batch,
     read_checkpoint,
@@ -170,3 +172,61 @@ async def test_offsets_are_not_confused_with_original_global_sample_indices(grou
     )
     samples = load_training_group(out, batch, groups[0])
     assert [accepted(sample).attempt.sample_index for sample in samples] == [8, 9, 10, 11, 4, 5, 6, 7]
+
+
+async def test_full_1024_packet_combines_old_rescued_and_new_groups(group8, policy, attempt, tmp_path):
+    mixed = await make_bundle(group8, policy, attempt, tmp_path / "mixed", prefix="mixed", groups=96)
+    zeros = await make_bundle(group8, policy, attempt, tmp_path / "zeros", prefix="zero", groups=30, mixed=False)
+    original = tmp_path / "original"
+    old_ids = (*mixed.group_ids, *zeros.group_ids)
+    freeze_batch(
+        config=group8,
+        source_root=group8.artifact_directory / group8.run_id,
+        group_ids=old_ids,
+        policy=policy,
+        num_samples=126 * 8,
+        out=original,
+    )
+    retries = await make_bundle(retry_config(group8), policy, attempt, tmp_path / "retries", prefix="retry", groups=30)
+    new_config = group8.model_copy(
+        update={
+            "dataset": group8.dataset.model_copy(
+                update={"tasks": (group8.dataset.tasks[0].model_copy(update={"environment_id": 99}),)}
+            )
+        }
+    )
+    new = await make_bundle(new_config, policy, attempt, tmp_path / "new", prefix="new", groups=44)
+    groups = (
+        *(
+            TrainingGroup(members=(GroupMembers(source_group_id=g, sample_offsets=tuple(range(8))),))
+            for g in mixed.group_ids
+        ),
+        *(plan(f"zero-{i}", f"retry-{i}")[0] for i in range(30)),
+        *(
+            TrainingGroup(members=(GroupMembers(source_group_id=g, sample_offsets=tuple(range(8))),))
+            for g in new.group_ids[:2]
+        ),
+    )
+    out = tmp_path / "assembled"
+    batch = regroup_batch(
+        selections=(
+            BatchSelection(bundle=original, group_ids=old_ids),
+            new.model_copy(update={"group_ids": new.group_ids[:2]}),
+            retries,
+        ),
+        groups=groups,
+        num_samples=1024,
+        require_nonzero_reward_variance=True,
+        out=out,
+    )
+    assert len(batch.groups) == 158 and len(batch.training_groups) == 128
+    assert len(batch.additional_sources) == 2
+    durable = tmp_path / "durable"
+    publish_batch(out, durable, commit=lambda: None)
+    for path in (out, original, mixed.bundle, zeros.bundle, retries.bundle, new.bundle, group8.artifact_directory):
+        shutil.rmtree(path)
+    assert validate_batch(durable) == batch
+    samples = [sample for group in groups for sample in load_training_group(durable, batch, group)]
+    assert len(samples) == len({accepted(s).attempt.attempt_id for s in samples}) == 1024
+    assert [accepted(s).grade.reward for s in samples[768:776]] == [0.0] * 5 + [1.0, 0.0, 1.0]
+    assert accepted(samples[-1]).attempt.task.environment_id == 99
