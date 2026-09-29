@@ -31,8 +31,9 @@ _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt")
 
 
 def export(out: Path, *, seed: int, strength: float) -> None:
-    from megatron.bridge import AutoBridge
-    from megatron.core import mpu
+    # megatron and sglang exist only in the training image.
+    from megatron.bridge import AutoBridge  # type: ignore[import-not-found,unused-ignore]
+    from megatron.core import mpu  # type: ignore[import-not-found,unused-ignore]
 
     from miles.backends.megatron_utils.checkpoint import _load_checkpoint_hf
     from miles.backends.megatron_utils.initialize import init
@@ -103,7 +104,7 @@ def export(out: Path, *, seed: int, strength: float) -> None:
 
 
 def _lora_module_names(model: list[torch.nn.Module]) -> list[str]:
-    from megatron.bridge.peft.lora_layers import LoRALinear
+    from megatron.bridge.peft.lora_layers import LoRALinear  # type: ignore[import-not-found,unused-ignore]
 
     names = (name for chunk in model for name, module in chunk.named_modules() if isinstance(module, LoRALinear))
     return sorted({re.sub(r"\.\d+\.", ".N.", name) for name in names})
@@ -147,7 +148,7 @@ def _round_trip(exported: Iterator[Any], checkpoint: Path) -> dict[str, Any]:
 
 def _randomize_adapters(model: list[torch.nn.Module], *, seed: int, strength: float, tp_group: Any) -> None:
     """Give every adapter random weights whose update B·A·(alpha/r) is ``strength`` times the base weight's RMS."""
-    from megatron.bridge.peft.lora_layers import LoRALinear
+    from megatron.bridge.peft.lora_layers import LoRALinear  # type: ignore[import-not-found,unused-ignore]
 
     tp_rank = dist.get_rank(group=tp_group)
     for chunk in model:
@@ -184,7 +185,7 @@ def _copy_non_weight_files(source: Path, merged: Path) -> None:
 
 def logprobs(model: Path, tokens: Path, out: Path, *, adapters: dict[str, str], rank: int, targets: list[str]) -> None:
     """Per-token logprobs of each sequence in ``tokens``: base, then under each adapter."""
-    import sglang
+    import sglang  # type: ignore[import-not-found,unused-ignore]
 
     engine_args: dict[str, Any] = {
         "model_path": str(model),
