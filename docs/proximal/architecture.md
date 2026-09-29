@@ -153,6 +153,26 @@ an artifact at the existing data-plane seam, not another training coordinator.
 This first pass selects one exact policy per batch. Raw ungraded captures and
 partial groups cannot be frozen as training batches.
 
+Explicit cross-collection assembly uses a version-2 frozen manifest. Its primary
+source remains the training/checkpoint anchor; additional source contracts retain
+their original pinned datasets. Only dataset membership may differ, within one
+project. Run, exact behavior policy, base, harness, sampling, LoRA and token/rendering
+contracts must match. Each group is validated against the source identified by its
+original contract digest; neither its header nor its sample evidence is rewritten.
+Online buffer matching remains exact. Assembly takes explicit ordered group IDs
+from immutable input bundles, rejects duplicate groups/attempts and optionally
+requires nonzero reward variance. It copies verified original codec bytes and
+publishes its manifest last. The ordinary frozen rollout consumer handles both
+manifest versions, including offline validation and native Miles conversion.
+
+CPU collection IDs are minted on the launch host and passed as retry-stable Modal
+inputs. Before any rollout/publication, the worker commits an invocation record.
+A completed retry validates and returns its existing batch; an interrupted retry
+fails closed before creating new requests. This is a replay guard, not automatic
+resumption of volatile capture sessions or a distributed lease. One active owner
+remains required. The CPU collector can explicitly opt into non-preemptible Modal
+capacity; this does not replace the durable guard or promise survival of all faults.
+
 `collect_batch` composes `PlatformTaskSource`, `PlatformRolloutFn` and its existing
 buffer on CPU. It drains complete groups incrementally, freezes the requested
 count, then closes the producer. It neither initializes an optimizer nor

@@ -135,7 +135,7 @@ def serving_check(root: Path) -> dict[str, object]:
     import sglang  # type: ignore[import-not-found]  # Available in the pinned GPU image.
     from safetensors.torch import save_file
 
-    from miles_plugins.proximal.offline_batch import load_group, read_batch
+    from miles_plugins.proximal.offline_batch import load_batch_group, read_batch
     from miles_plugins.proximal.snapshot import SnapshotMetadata, prepare_snapshot
 
     batch = read_batch(root / "batch")
@@ -161,7 +161,7 @@ def serving_check(root: Path) -> dict[str, object]:
             output_root=root / "serving" / role,
         )
         names[role] = snapshot
-    samples = [s for index in batch.groups[:2] for s in load_group(root / "batch", index, batch.source)]
+    samples = [s for index in batch.groups[:2] for s in load_batch_group(root / "batch", batch, index)]
     prompts = [list(s.tokens) for s in samples]
     engine = sglang.Engine(
         model_path=str(batch.source.tokenizer_path),

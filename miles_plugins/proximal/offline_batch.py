@@ -8,11 +8,12 @@ to validate or train a completed bundle. See docs/proximal/offline-batches.md.
 import argparse
 import tempfile
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal, assert_never
 
-from pydantic import TypeAdapter, model_validator
+import torch
+from pydantic import Field, TypeAdapter, model_validator
 
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnInput, RolloutFnTrainOutput
 from miles.utils.types import Sample
@@ -37,15 +38,14 @@ from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, deco
 ROLLOUT = "miles_plugins.proximal.offline_batch.FrozenBatchRolloutFn"
 
 
-class FrozenBatch(Contract):
-    schema_version: Literal[1] = 1
+class _BatchFields(Contract):
     source: RunConfig
     policy: Policy
     num_samples: Positive
     groups: tuple[GroupIndex, ...]
 
     @model_validator(mode="after")
-    def _complete(self) -> "FrozenBatch":
+    def _complete(self) -> "_BatchFields":
         if self.policy.run_id != self.source.run_id or self.policy.base_model != self.source.base_model:
             raise ValueError("Batch policy differs from source run/base")
         if len(self.groups) * self.source.research.group_size != self.num_samples:
@@ -53,6 +53,14 @@ class FrozenBatch(Contract):
         ids = [g.header.group_id for g in self.groups]
         if len(ids) != len(set(ids)):
             raise ValueError("Repeated group in frozen batch")
+        return self
+
+
+class FrozenBatch(_BatchFields):
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def _single_source(self) -> "FrozenBatch":
         contract = digest(training_contract(self.source))
         for group in self.groups:
             if group.header.policy != self.policy or group.header.contract_sha256 != contract:
@@ -60,8 +68,56 @@ class FrozenBatch(Contract):
         return self
 
 
-def read_batch(bundle: Path) -> FrozenBatch:
-    return FrozenBatch.model_validate_json((bundle / "batch.json").read_bytes())
+class AssembledBatch(_BatchFields):
+    schema_version: Literal[2] = 2
+    additional_sources: Annotated[tuple[RunConfig, ...], Field(min_length=1)]
+    require_nonzero_reward_variance: bool
+
+    @model_validator(mode="after")
+    def _compatible_sources(self) -> "AssembledBatch":
+        primary = training_contract(self.source)
+        contracts = {digest(primary)}
+        for source in self.additional_sources:
+            contract = training_contract(source)
+            # Compare every training field; only membership in the same project
+            # may differ. This comparison never changes stored provenance.
+            if (
+                contract.dataset.project_id != primary.dataset.project_id
+                or contract.model_copy(update={"dataset": primary.dataset}) != primary
+                or source.research.max_policy_lag != self.source.research.max_policy_lag
+            ):
+                raise ValueError("Assembly sources differ beyond dataset membership")
+            identity = digest(contract)
+            if identity in contracts:
+                raise ValueError("Repeated assembly source contract")
+            contracts.add(identity)
+        if {group.header.contract_sha256 for group in self.groups} != contracts:
+            raise ValueError("Assembly needs exactly the sources referenced by its groups")
+        if any(group.header.policy != self.policy for group in self.groups):
+            raise ValueError("Assembly requires one exact behavior policy")
+        return self
+
+
+Batch = Annotated[FrozenBatch | AssembledBatch, Field(discriminator="schema_version")]
+
+
+def batch_sources(batch: Batch) -> tuple[RunConfig, ...]:
+    if isinstance(batch, FrozenBatch):
+        return (batch.source,)
+    if isinstance(batch, AssembledBatch):
+        return (batch.source, *batch.additional_sources)
+    assert_never(batch)
+
+
+def group_source(batch: Batch, index: GroupIndex) -> RunConfig:
+    matches = [s for s in batch_sources(batch) if digest(training_contract(s)) == index.header.contract_sha256]
+    if len(matches) != 1:
+        raise ValueError("Group must name exactly one original source contract")
+    return matches[0]
+
+
+def read_batch(bundle: Path) -> Batch:
+    return TypeAdapter(Batch).validate_json((bundle / "batch.json").read_bytes())
 
 
 def load_group(root: Path, index: GroupIndex, config: RunConfig) -> list[Sample]:
@@ -77,12 +133,22 @@ def load_group(root: Path, index: GroupIndex, config: RunConfig) -> list[Sample]
     return samples
 
 
-def validate_batch(bundle: Path) -> FrozenBatch:
+def load_batch_group(root: Path, batch: Batch, index: GroupIndex) -> list[Sample]:
+    samples = load_group(root, index, group_source(batch, index))
+    if isinstance(batch, AssembledBatch) and batch.require_nonzero_reward_variance:
+        # Same threshold and float64/sample std as Miles's standard group filter.
+        rewards = torch.tensor([accepted(sample).grade.reward for sample in samples], dtype=torch.float64)
+        if len(samples) < 2 or rewards.std().item() <= 1e-8:
+            raise ValueError("Assembly selected a zero-variance reward group")
+    return samples
+
+
+def validate_batch(bundle: Path) -> Batch:
     """Validate one group at a time; never materialize the whole 1024-sample batch."""
     batch = read_batch(bundle)
     attempts: set[str] = set()
     for index in batch.groups:
-        for sample in load_group(bundle, index, batch.source):
+        for sample in load_batch_group(bundle, batch, index):
             attempt_id = accepted(sample).attempt.attempt_id
             if attempt_id in attempts:
                 raise ValueError("Repeated rollout attempt in frozen batch")
@@ -90,7 +156,7 @@ def validate_batch(bundle: Path) -> FrozenBatch:
     return batch
 
 
-def _write_manifest(batch: FrozenBatch, destination: Path) -> None:
+def _write_manifest(batch: Batch, destination: Path) -> None:
     # Serialize the validated value, not a source manifest that could have changed.
     # Modal v1 does not support local write_immutable's hardlink operation.
     with tempfile.TemporaryDirectory(prefix="frozen-manifest-") as temporary:
@@ -99,7 +165,7 @@ def _write_manifest(batch: FrozenBatch, destination: Path) -> None:
         copy_verified(manifest, destination / "batch.json", describe(manifest, relative="batch.json"))
 
 
-def publish_batch(bundle: Path, destination: Path, *, commit: Callable[[], None]) -> FrozenBatch:
+def publish_batch(bundle: Path, destination: Path, *, commit: Callable[[], None]) -> Batch:
     """Publish exact referenced bytes, commit, then publish/commit readiness last."""
     batch = validate_batch(bundle)
     for index in batch.groups:
@@ -117,6 +183,70 @@ def publish_batch(bundle: Path, destination: Path, *, commit: Callable[[], None]
     _write_manifest(batch, destination)
     commit()
     return batch
+
+
+class BatchSelection(Contract):
+    bundle: Path
+    group_ids: Annotated[tuple[SafeId, ...], Field(min_length=1)]
+
+
+def assemble_batch(
+    *,
+    selections: tuple[BatchSelection, ...],
+    num_samples: int,
+    require_nonzero_reward_variance: bool,
+    out: Path,
+) -> AssembledBatch:
+    """Copy explicit groups, preserving their source contracts and codec bytes."""
+    if len(selections) < 2:
+        raise ValueError("Assembly requires at least two explicit input selections")
+    inputs = [(selection, read_batch(selection.bundle)) for selection in selections]
+    sources: dict[str, RunConfig] = {}
+    picked: list[tuple[Path, GroupIndex]] = []
+    for selection, batch in inputs:
+        protected = selection.bundle.resolve()
+        target = out.resolve()
+        if target == protected or target in protected.parents or protected in target.parents:
+            raise ValueError("Assembly output must be separate from immutable inputs")
+        if batch.policy != inputs[0][1].policy:
+            raise ValueError("Assembly requires one exact behavior policy")
+        indexes = {index.header.group_id: index for index in batch.groups}
+        for group_id in selection.group_ids:
+            if group_id not in indexes:
+                raise ValueError(f"Selected group is absent from its input bundle: {group_id}")
+            index = indexes[group_id]
+            sources.setdefault(index.header.contract_sha256, group_source(batch, index))
+            picked.append((selection.bundle, index))
+    anchor = inputs[0][1].source
+    anchor_digest = digest(training_contract(anchor))
+    sources.pop(anchor_digest, None)
+    result = AssembledBatch(
+        source=anchor,
+        additional_sources=tuple(sources.values()),
+        policy=inputs[0][1].policy,
+        num_samples=num_samples,
+        groups=tuple(index for _, index in picked),
+        require_nonzero_reward_variance=require_nonzero_reward_variance,
+    )
+    attempts: set[str] = set()
+    # Verify all selected data before writing readiness or copying any payload.
+    for root, index in picked:
+        for sample in load_batch_group(root, result, index):
+            identity = accepted(sample).attempt.attempt_id
+            if identity in attempts:
+                raise ValueError("Repeated rollout attempt in assembled batch")
+            attempts.add(identity)
+    base = inputs[0][0].bundle / "base_policy"
+    if base.exists():
+        copy_base_policy(verify_base_policy(anchor, result.policy, base), out / "base_policy")
+    for root, index in picked:
+        relative = f"groups/{index.header.group_id}.bin"
+        file = describe(root / relative, relative=relative)
+        if file.sha256 != index.payload_sha256:
+            raise ValueError("Source group changed during assembly")
+        copy_verified(root / relative, out / relative, file)
+    _write_manifest(result, out)
+    return result
 
 
 def oldest_groups(config: RunConfig, source_root: Path, policy: Policy, num_samples: int) -> tuple[str, ...]:
@@ -169,9 +299,7 @@ def freeze_batch(
                 if not 0 < size < file.size_bytes - 8 or size > 16 * 1024 * 1024:
                     raise ValueError("Invalid legacy group header length")
                 header = StoredGroup.model_validate_json(stream.read(size))
-            index = GroupIndex(
-                header=header, payload_sha256=file.sha256, created_at=datetime.fromtimestamp(0, timezone.utc)
-            )
+            index = GroupIndex(header=header, payload_sha256=file.sha256, created_at=datetime.fromtimestamp(0, UTC))
         if index.header.group_id != group_id or index.payload_sha256 != file.sha256:
             raise ValueError("Source group index/payload mismatch")
         indexes.append(index)
@@ -218,7 +346,7 @@ class FrozenBatchRolloutFn(BaseRolloutFn):
         groups = []
         attempts: set[str] = set()
         for group_index, index in enumerate(self.batch.groups):
-            samples = load_group(self.bundle, index, self.batch.source)
+            samples = load_batch_group(self.bundle, self.batch, index)
             for offset, sample in enumerate(samples):
                 attempt_id = accepted(sample).attempt.attempt_id
                 if attempt_id in attempts:
@@ -234,7 +362,7 @@ class FrozenBatchRolloutFn(BaseRolloutFn):
         return RolloutFnTrainOutput(samples=groups, metrics={})
 
 
-def read_checkpoint(path: Path, batch: FrozenBatch) -> CheckpointManifest:
+def read_checkpoint(path: Path, batch: Batch) -> CheckpointManifest:
     checkpoint = read_manifest(path.parent.parent, path.name)
     if checkpoint.context.contract_sha256 != digest(training_contract(batch.source)):
         raise ValueError("Native checkpoint and frozen data have different training contracts")
@@ -246,7 +374,7 @@ def read_checkpoint(path: Path, batch: FrozenBatch) -> CheckpointManifest:
     return checkpoint
 
 
-def validate_input_args(args: argparse.Namespace, batch: FrozenBatch) -> None:
+def validate_input_args(args: argparse.Namespace, batch: Batch) -> None:
     """Data-plane constraints; model/checkpoint validation belongs to the launcher."""
     required = {
         "debug_train_only": True,
@@ -264,7 +392,7 @@ def validate_input_args(args: argparse.Namespace, batch: FrozenBatch) -> None:
         raise ValueError("A frozen batch requires exactly one training iteration")
 
 
-def validate_train_args(args: argparse.Namespace, batch: FrozenBatch, checkpoint: CheckpointManifest | None) -> None:
+def validate_train_args(args: argparse.Namespace, batch: Batch, checkpoint: CheckpointManifest | None) -> None:
     validate_input_args(args, batch)
     fresh = bool(getattr(args, "proximal_frozen_fresh", False))
     if fresh != (checkpoint is None):
@@ -349,7 +477,7 @@ def validate_train_args(args: argparse.Namespace, batch: FrozenBatch, checkpoint
         raise ValueError("Training must load the verified native adapter, not a serving export")
 
 
-def train_argv(bundle: Path, batch: FrozenBatch, checkpoint_path: Path | None, *, fresh: bool = False) -> list[str]:
+def train_argv(bundle: Path, batch: Batch, checkpoint_path: Path | None, *, fresh: bool = False) -> list[str]:
     """Reuse native checkpoint loading and Miles's driver for exactly one update."""
     if fresh == (checkpoint_path is not None):
         raise ValueError("Choose exactly one of fresh base initialization or native resume")
@@ -405,6 +533,11 @@ def main() -> None:
     freeze.add_argument("--base-policy", type=Path)
     check = commands.add_parser("check")
     check.add_argument("--bundle", type=Path, required=True)
+    assembly = commands.add_parser("assemble")
+    assembly.add_argument("--selection", type=Path, required=True, help="JSON array of bundle/group_ids selections")
+    assembly.add_argument("--samples", type=int, required=True)
+    assembly.add_argument("--out", type=Path, required=True)
+    assembly.add_argument("--require-nonzero-reward-variance", action=argparse.BooleanOptionalAction, required=True)
     train = commands.add_parser("train")
     train.add_argument("--bundle", type=Path, required=True)
     initialization = train.add_mutually_exclusive_group(required=True)
@@ -416,6 +549,7 @@ def main() -> None:
     args, extra = parser.parse_known_args()
     if args.command != "train" and extra:
         parser.error(f"Unexpected arguments: {extra}")
+    batch: Batch
     if args.command == "freeze":
         config = read_run_config(args.config)
         policy = Policy.model_validate_json(args.policy.read_bytes())
@@ -431,6 +565,13 @@ def main() -> None:
             num_samples=args.samples,
             out=args.out,
             base_policy=args.base_policy,
+        )
+    elif args.command == "assemble":
+        batch = assemble_batch(
+            selections=TypeAdapter(tuple[BatchSelection, ...]).validate_json(args.selection.read_bytes()),
+            num_samples=args.samples,
+            out=args.out,
+            require_nonzero_reward_variance=args.require_nonzero_reward_variance,
         )
     elif args.command == "check":
         batch = validate_batch(args.bundle)

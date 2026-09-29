@@ -11,18 +11,96 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
 from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run, require_authorization, secret_env
 from miles_plugins.proximal.buffer import accepted, validate_group
-from miles_plugins.proximal.contracts import Policy, RunConfig, RunStateArtifacts, read_run_config
+from miles_plugins.proximal.contracts import (
+    Contract,
+    Policy,
+    Positive,
+    RunConfig,
+    RunStateArtifacts,
+    SafeId,
+    digest,
+    read_run_config,
+    training_contract,
+)
 from miles_plugins.proximal.data_source import PlatformTaskSource
-from miles_plugins.proximal.offline_batch import FrozenBatch, freeze_batch, publish_batch
+from miles_plugins.proximal.offline_batch import FrozenBatch, freeze_batch, publish_batch, validate_batch
 from miles_plugins.proximal.options import BUFFER
 from miles_plugins.proximal.rollout import PlatformRolloutFn
+from miles_plugins.proximal.snapshot import Digest
 from miles_plugins.proximal.state_artifacts import copy_verified, describe, initialize
 from miles_plugins.proximal.state_writer import StateWriter
 from miles_plugins.proximal.storage import write_atomic, write_immutable
 from miles_plugins.proximal.store import open_store
+
+
+class CollectionInvocation(Contract):
+    collection_id: SafeId
+    contract_sha256: Digest
+    num_samples: Positive
+    # None explicitly selects fresh-base initialization.
+    policy: Policy | None
+
+
+def claim_collection(
+    authorization: AuthorizedRun,
+    *,
+    collection_id: str,
+    samples: int,
+    policy: Policy | None,
+    snapshot_root: Path,
+    commit: Callable[[], None],
+) -> bool:
+    """Persist a retry fuse before side effects. True means already completed.
+
+    One run owner is required; this is not a distributed lease. Interrupted work
+    is recoverable from captures/groups, but cannot safely restart from an empty
+    local database with new request IDs.
+    """
+    config = require_authorization(authorization)
+    identity = TypeAdapter(SafeId).validate_python(collection_id)
+    validate_collection_request(
+        config,
+        samples=samples,
+        fresh=policy is None,
+        policy_json="" if policy is None else policy.model_dump_json(),
+        persist_to_volume=True,
+    )
+    record = CollectionInvocation(
+        collection_id=identity, contract_sha256=digest(training_contract(config)), num_samples=samples, policy=policy
+    )
+    marker = snapshot_root / "collection-invocations" / f"{identity}.json"
+    collection = snapshot_root / "collections" / identity
+    if marker.exists():
+        if CollectionInvocation.model_validate_json(marker.read_bytes()) != record:
+            raise ValueError("Collection ID reused with different inputs")
+        if not (collection / "batch/batch.json").is_file():
+            raise ValueError("Interrupted collection: refusing to relaunch paid rollouts; reconcile durable artifacts")
+        batch = validate_batch(collection / "batch")
+        if (
+            not isinstance(batch, FrozenBatch)
+            or digest(training_contract(batch.source)) != record.contract_sha256
+            or batch.num_samples != samples
+            or (policy is not None and batch.policy != policy)
+        ):
+            raise ValueError("Completed collection differs from its invocation")
+        if policy is None:
+            from miles_plugins.proximal.initial_policy import verify_base_policy
+
+            verify_base_policy(config, batch.policy, collection / "batch/base_policy")
+        return True
+    if collection.exists():
+        raise ValueError("Collection already exists without an invocation record; reconcile it explicitly")
+    with tempfile.TemporaryDirectory() as staging:
+        source = Path(staging) / "invocation.json"
+        source.write_text(record.model_dump_json())
+        copy_verified(source, marker, describe(source, relative=marker.name))
+    commit()  # No paid request or publication is allowed before this succeeds.
+    return False
 
 
 def validate_collection_request(

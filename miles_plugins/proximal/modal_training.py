@@ -47,8 +47,16 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 import modal
+from pydantic import TypeAdapter
 
-from miles_plugins.proximal.contracts import RunConfig, RunStateArtifacts, canonical_bytes, digest, training_contract
+from miles_plugins.proximal.contracts import (
+    RunConfig,
+    RunStateArtifacts,
+    SafeId,
+    canonical_bytes,
+    digest,
+    training_contract,
+)
 from miles_plugins.proximal.modal_sources import add_fork_sources
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume, with_configs
 from miles_plugins.proximal.state_checkpoints import RecoveryContext
@@ -488,6 +496,7 @@ def train() -> int:
     secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
     timeout=24 * 3600,
     max_containers=1,
+    nonpreemptible=TRAINING.collection_nonpreemptible,
 )
 def collect(
     samples: int,
@@ -496,13 +505,14 @@ def collect(
     yes_rollouts: bool,
     yes_publish: bool,
     rollouts_persist_to_volume: bool,
+    collection_id: str,
 ) -> str:
     """CPU-only producer; the persistence flag uses TrainingDeployment.state_volume."""
     import httpx
 
     from miles_plugins.proximal.authorization import authorize_run
     from miles_plugins.proximal.clients import ServingPoolClient
-    from miles_plugins.proximal.collect_batch import collect_persisted, validate_collection_request
+    from miles_plugins.proximal.collect_batch import claim_collection, collect_persisted, validate_collection_request
     from miles_plugins.proximal.contracts import Policy
     from miles_plugins.proximal.e2e.local_postgres import local_postgres
     from miles_plugins.proximal.initial_policy import prepare_base_policy
@@ -519,10 +529,19 @@ def collect(
     runtime_run = RUN.model_copy(update={"artifact_storage": RunStateArtifacts(kind="run_state")})
     authorization = authorize_run(runtime_run, yes_rollouts=yes_rollouts, yes_publish=yes_publish)
     state_volume.reload()
+    if claim_collection(
+        authorization,
+        collection_id=collection_id,
+        samples=samples,
+        policy=policy,
+        snapshot_root=SNAPSHOT,
+        commit=state_volume.commit,
+    ):
+        print(f"Collection already complete: {collection_id}", flush=True)
+        return collection_id
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(runtime_run.model_dump_json())
     _set_keys()
-    collection_id = uuid.uuid4().hex
     work = STATE / "collections" / collection_id
     base_policy = prepare_base_policy(runtime_run, output=work / "initial-policy") if fresh else None
     collection_root = SNAPSHOT / "collections" / collection_id
@@ -591,6 +610,7 @@ def main(
     policy_file: str = "",
     yes_rollouts: bool = False,
     yes_publish: bool = False,
+    collection_id: str = "",
 ) -> None:
     if collect_rollouts is not None:
         from miles_plugins.proximal.collect_batch import validate_collection_request
@@ -605,12 +625,14 @@ def main(
             policy_json=policy_json,
             persist_to_volume=rollouts_persist_to_volume,
         )
+        stable_id = TypeAdapter(SafeId).validate_python(collection_id or uuid.uuid4().hex)
+        print(f"Launching collection: {stable_id}", flush=True)
         identity = collect.remote(
-            collect_rollouts, fresh, policy_json, yes_rollouts, yes_publish, rollouts_persist_to_volume
+            collect_rollouts, fresh, policy_json, yes_rollouts, yes_publish, rollouts_persist_to_volume, stable_id
         )
         print(f"Collection ready: {identity}")
         return
-    if fresh or policy_file or yes_rollouts or yes_publish:
+    if fresh or policy_file or yes_rollouts or yes_publish or collection_id:
         raise ValueError("Collection options require --collect-rollouts N")
     # Online training already enables the same acknowledged Volume persistence.
     if rollouts_persist_to_volume:
