@@ -21,7 +21,7 @@ from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import accepted
 from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
 from miles_plugins.proximal.collect_batch import collect_batch, collect_persisted
-from miles_plugins.proximal.contracts import RunStateArtifacts, digest, training_contract
+from miles_plugins.proximal.contracts import RunStateArtifacts, digest, sampling_args, training_contract
 from miles_plugins.proximal.e2e.fake_pool import FakePool
 from miles_plugins.proximal.e2e.fake_trainer import Publisher
 from miles_plugins.proximal.e2e.stub_platform import StubPlatform
@@ -77,6 +77,7 @@ def args_for(batch, bundle, checkpoint_path, checkpoint, save):
         global_batch_size=batch.num_samples,
         rollout_batch_size=len(training_groups(batch)),
         n_samples_per_prompt=batch.source.research.group_size,
+        **sampling_args(batch.source.research.sampling),
         num_rollout=checkpoint.step + 2,
         start_rollout_id=checkpoint.step + 1,
         use_rollout_logprobs=True,

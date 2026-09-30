@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 from miles.utils.function_registry import load_function
 from miles_plugins.proximal.authorization import authorize_run
-from miles_plugins.proximal.contracts import behavior_correction_args, read_run_config
+from miles_plugins.proximal.contracts import behavior_correction_args, read_run_config, sampling_args
 
 if TYPE_CHECKING:
     from miles.utils.types import Sample
@@ -56,9 +56,7 @@ def validate_args(args: Namespace) -> None:
         "max_weight_staleness": config.research.max_policy_lag,
         "async_unused_samples_handler": config.research.unused_groups,
         "async_max_concurrent_samples": config.max_in_flight_samples,
-        "rollout_temperature": config.research.sampling.temperature,
-        "rollout_top_p": config.research.sampling.top_p,
-        "rollout_top_k": config.research.sampling.top_k,
+        **sampling_args(config.research.sampling),
         "rollout_max_response_len": config.research.sampling.max_tokens,
         "rollout_max_context_len": config.research.sampling.max_sequence_tokens,
         "hf_checkpoint": str(config.tokenizer_path),

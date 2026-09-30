@@ -28,6 +28,8 @@ from miles_plugins.proximal.contracts import (
     behavior_correction_argv,
     digest,
     read_run_config,
+    sampling_args,
+    sampling_argv,
     training_contract,
 )
 from miles_plugins.proximal.initial_policy import copy_base_policy, verify_base_policy
@@ -511,6 +513,7 @@ def validate_input_args(args: argparse.Namespace, batch: Batch) -> None:
         "rollout_batch_size": len(training_groups(batch)),
         "n_samples_per_prompt": batch.source.research.group_size,
         **behavior_correction_args(batch.source.research.behavior_correction),
+        **sampling_args(batch.source.research.sampling),
     }
     for name, value in required.items():
         if getattr(args, name, None) != value:
@@ -639,6 +642,7 @@ def train_argv(bundle: Path, batch: Batch, checkpoint_path: Path | None, *, fres
         "--n-samples-per-prompt", str(research.group_size),
         "--rollout-max-response-len", str(research.sampling.max_tokens),
         "--rollout-max-context-len", str(research.sampling.max_sequence_tokens),
+        *sampling_argv(research.sampling),
         *behavior_correction_argv(research.behavior_correction),
     ]  # fmt: skip
 

@@ -19,8 +19,9 @@ from miles.utils.types import Sample
 from miles_plugins.proximal.buffer import validate_sample
 from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient
-from miles_plugins.proximal.contracts import RunConfig, Sampling, replays_sampling_support
+from miles_plugins.proximal.contracts import RunConfig, Sampling, replays_sampling_support, sampling_argv
 from miles_plugins.proximal.preflight import canary
+from miles_plugins.proximal.runtime import training_argv
 from miles_plugins.proximal.store import sample_fields
 
 TOP_P, TOP_K = 0.95, 20
@@ -102,6 +103,17 @@ def test_the_contract_pins_what_a_logprob_means(config, update, error):
     assert not replays_sampling_support(with_sampling(replay, top_p=1.0, top_k=-1, logprob_semantics="untransformed"))
     with pytest.raises(ValueError, match=error):
         with_sampling(replay, **update)
+
+
+def test_the_trainer_is_launched_with_the_contracts_sampling(config, tmp_path):
+    # Miles replays the support exactly when top_p < 1 or top_k > 0; a launch without these
+    # flags would score a replayed batch over the full vocabulary.
+    expected = ["--rollout-temperature", "1.0", "--rollout-top-p", str(TOP_P), "--rollout-top-k", str(TOP_K)]
+    assert sampling_argv(config.research.sampling) == expected
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    argv = training_argv(str(path))
+    assert all(argv[argv.index(flag) + 1] == value for flag, value in zip(expected[::2], expected[1::2], strict=True))
 
 
 async def test_capture_seals_each_generated_tokens_support(config, authorization, policy, attempt, tokenizer, store):

@@ -99,6 +99,27 @@ def replays_sampling_support(sampling: Sampling) -> bool:
     return sampling.logprob_semantics == "sampling_support"
 
 
+def sampling_args(sampling: Sampling) -> dict[str, object]:
+    """The Miles arguments that make the trainer score tokens as the rollouts sampled them.
+
+    Miles enables sampling-support replay exactly when top_p < 1 or top_k > 0, so a
+    trainer launched without these would silently score a replayed batch over the full
+    vocabulary. Every launch path passes them and every validator checks them.
+    """
+    return {
+        "rollout_temperature": sampling.temperature,
+        "rollout_top_p": sampling.top_p,
+        "rollout_top_k": sampling.top_k,
+    }
+
+
+def sampling_argv(sampling: Sampling) -> list[str]:
+    """``sampling_args`` as Miles's argv."""
+    return [
+        item for name, value in sampling_args(sampling).items() for item in ("--" + name.replace("_", "-"), str(value))
+    ]
+
+
 class LoRA(Contract):
     """The trained adapter's shape. Single source for trainer args and serving engines."""
 

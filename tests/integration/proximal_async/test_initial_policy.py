@@ -7,6 +7,7 @@ import torch
 from safetensors.torch import load_file, save_file
 from tests.integration.proximal_async.test_offline_batch import populate
 
+from miles_plugins.proximal.contracts import sampling_args
 from miles_plugins.proximal.initial_policy import copy_base_policy, prepare_base_policy, verify_base_policy
 from miles_plugins.proximal.offline_batch import freeze_batch, train_argv, validate_train_args
 from miles_plugins.proximal.snapshot import prepare_snapshot
@@ -51,6 +52,10 @@ async def test_fresh_batch_needs_no_native_checkpoint_and_keeps_zero_policy_proo
     assert "--lora-adapter-path" not in command and "--proximal-frozen-checkpoint" not in command
     assert command[command.index("--num-rollout") + 1] == "1"
     assert command[command.index("--start-rollout-id") + 1] == "0"
+    # The trainer scores tokens under the batch's sampling contract (replay follows top-p/top-k).
+    for name, value in sampling_args(config.research.sampling).items():
+        flag = "--" + name.replace("_", "-")
+        assert command[command.index(flag) + 1] == str(value)
     args = Namespace(
         debug_train_only=True,
         rollout_global_dataset=False,
@@ -62,6 +67,7 @@ async def test_fresh_batch_needs_no_native_checkpoint_and_keeps_zero_policy_proo
         global_batch_size=4,
         rollout_batch_size=2,
         n_samples_per_prompt=2,
+        **sampling_args(config.research.sampling),
         use_rollout_logprobs=True,
         use_tis=False,
         load=str(config.tokenizer_path),
