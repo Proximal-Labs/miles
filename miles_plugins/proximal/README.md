@@ -7,7 +7,8 @@ with the [Modal collect-then-train guide](../../docs/proximal/modal-collect-then
 ownership, policy selection, automatic Volume persistence, batch validation, and
 what the later training launcher must provide. The
 [offline-batch reference](../../docs/proximal/offline-batches.md) covers detailed
-selection and recovery commands.
+selection and recovery commands. For the training allocation itself, see
+[Modal training clusters](../../docs/proximal/modal-training-clusters.md).
 
 Read the [architecture](../../docs/proximal/architecture.md), [investigation](../../docs/proximal/investigation.md), and exact [remaining platform changes](../../docs/proximal/platform-contract.md). The first pass supports DeepSWE/Qwen3, one Megatron actor cell, text-only linear TITO, complete prompt groups, and rollout-logprob importance ratios. It includes code and CPU tests; live numerical/Modal validation is still required.
 
