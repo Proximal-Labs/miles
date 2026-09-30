@@ -131,6 +131,30 @@ def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatc
         importlib.import_module("miles_plugins.proximal.serving_app")
 
 
+def test_sglang_patch_applies_once_then_is_skipped_and_fails_on_other_sources(tmp_path):
+    import subprocess
+
+    from miles_plugins.proximal.serving import SGLANG_PATCH, sglang_patch_command
+
+    assert SGLANG_PATCH.is_file()
+    root = tmp_path / "sglang"
+    root.mkdir()
+    (root / "f.py").write_text("a = 1\n")
+    patch = tmp_path / "p.patch"
+    patch.write_text("--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-a = 1\n+a = 2\n")
+    command = sglang_patch_command(str(patch), str(root))
+
+    def run():
+        return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert run().returncode == 0 and (root / "f.py").read_text() == "a = 2\n"
+    again = run()  # An image built with the patched Dockerfile already carries it.
+    assert again.returncode == 0 and "already carries" in again.stdout
+    assert (root / "f.py").read_text() == "a = 2\n"
+    (root / "f.py").write_text("b = 1\n")  # Another SGLang revision: fail the build.
+    assert run().returncode != 0 and (root / "f.py").read_text() == "b = 1\n"
+
+
 def test_stage_a_example_configs_are_valid():
     from pathlib import Path
 

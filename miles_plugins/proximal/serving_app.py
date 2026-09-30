@@ -34,7 +34,16 @@ import modal
 
 from miles_plugins.proximal.contracts import RunConfig
 from miles_plugins.proximal.modal_sources import add_fork_sources
-from miles_plugins.proximal.serving import ENGINE_PORT, GATEWAY_PORT, ServingDeployment, engine_argv, gateway_config
+from miles_plugins.proximal.serving import (
+    ENGINE_PORT,
+    GATEWAY_PORT,
+    SGLANG_PATCH,
+    SGLANG_ROOT,
+    ServingDeployment,
+    engine_argv,
+    gateway_config,
+    sglang_patch_command,
+)
 
 _RUN_PATH = "PROXIMAL_RUN_CONFIG"
 _SERVING_PATH = "PROXIMAL_SERVING_CONFIG"
@@ -93,7 +102,16 @@ adapter_volume = modal.Volume.from_name(
     RUN.volume.volume_name, environment_name=RUN.volume.environment_name, create_if_missing=False
 )
 
-image = add_fork_sources(with_configs(modal.Image.from_registry(DEPLOYMENT.image).entrypoint([])))
+
+def with_sglang_patch(image: modal.Image) -> modal.Image:
+    """Sampling supports under speculative decoding, over the pinned image's SGLang (see the patch's Dockerfile note)."""
+    remote = f"/tmp/{SGLANG_PATCH.name}"
+    return image.add_local_file(SGLANG_PATCH, remote, copy=True).run_commands(
+        sglang_patch_command(remote, SGLANG_ROOT)
+    )
+
+
+image = add_fork_sources(with_configs(with_sglang_patch(modal.Image.from_registry(DEPLOYMENT.image).entrypoint([]))))
 
 app = modal.App(DEPLOYMENT.app_name)
 
