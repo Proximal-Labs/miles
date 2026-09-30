@@ -1,7 +1,10 @@
 import logging
 import time
 import traceback
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -57,6 +60,32 @@ def _profile_simple_loop(iterator, args, name):
         torch_profiler.step()
 
 
+@contextmanager
+def profile_microbatches(forward_step_func: Callable, args, name: str) -> Iterator[Callable]:
+    """Yield ``forward_step_func``, stepping a torch profiler at each micro-batch's forward
+    when ``name`` is a ``--profile-target``: Megatron's forward/backward pass has no loop to
+    wrap, so ``--profile-step-start``/``--profile-step-end`` count its micro-batches."""
+    if not (args.use_pytorch_profiler and name in args.profile_target):
+        yield forward_step_func
+        return
+
+    torch_profiler = _create_torch_profiler(args, name=name)
+    is_first_call = True
+
+    def _wrapped(*forward_args: Any, **forward_kwargs: Any) -> Any:
+        nonlocal is_first_call
+        if not is_first_call:
+            torch_profiler.step()
+        is_first_call = False
+        return forward_step_func(*forward_args, **forward_kwargs)
+
+    torch_profiler.start()
+    try:
+        yield _wrapped
+    finally:
+        torch_profiler.stop()
+
+
 def _create_torch_profiler(args, name):
     return torch.profiler.profile(
         schedule=torch.profiler.schedule(
@@ -72,8 +101,9 @@ def _create_torch_profiler(args, name):
             use_gzip=True,
         ),
         record_shapes=True,
-        with_stack=True,
-        profile_memory=True,
+        # Python stacks and memory tracking add most of the profiler's CPU overhead.
+        with_stack=not args.profile_light,
+        profile_memory=not args.profile_light,
         with_flops=True,
     )
 

@@ -26,6 +26,7 @@
 --recompute-num-layers 1
 --log-probs-chunk-size 4096
 --recompute-loss-function
+--skip-actor-forward-only
 --advantage-estimator grpo
 --kl-loss-coef 0.00
 --kl-loss-type low_var_kl

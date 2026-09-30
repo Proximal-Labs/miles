@@ -15,6 +15,14 @@ a stress step near the context cap.
     PROXIMAL_SERVING_CONFIG=examples/proximal/qwen38/overhead/serving.json \\
     PROXIMAL_TRAINING_CONFIG=examples/proximal/qwen38/overhead/training.json \\
       modal run --env main -m miles_plugins.proximal.e2e.trainer_replay
+
+``--extra-args`` appends Miles arguments to the production ones; ``{profile_dir}`` in them
+becomes ``/profiles/<label>`` on the profiles Volume (``<app_name>-profiles``, created once with
+``modal volume create``), which keeps memory snapshots and profiler traces after the container exits. Peak GPU memory (``nvidia-smi`` every 2 s) is
+recorded per step in the output either way.
+
+    --label skip-mem --extra-args "--record-memory-history --memory-snapshot-path snapshot.pickle
+      --memory-snapshot-dir {profile_dir} --memory-snapshot-num-steps 1"
 """
 
 import json
@@ -25,7 +33,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +46,7 @@ from miles_plugins.proximal.contracts import behavior_correction_argv
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume
 
 MOCK = Path("/mock")
+PROFILES = Path("/profiles")
 # Steps: per-sample total lengths. Step 1 is a realistic batch; step 2 packs near the cap.
 DEFAULT_STEPS: tuple[tuple[int, int], ...] = ((90_000, 205_000), (200_000, 258_000))
 PROMPT_TOKENS = 2_000
@@ -91,7 +102,7 @@ def write_mock_rollouts(steps: tuple[tuple[int, int], ...], *, groups: int, grou
         )
 
 
-def replay_command(num_steps: int) -> list[str]:
+def replay_command(num_steps: int, extra_args: Sequence[str] = ()) -> list[str]:
     from miles.utils.external_utils.model_args_utils import load_model_args
 
     run, training = RUN, node.TRAINING
@@ -122,10 +133,12 @@ def replay_command(num_steps: int) -> list[str]:
         "--disable-rollout-global-dataset",
         "--load-debug-rollout-data", str(MOCK / "{rollout_id}.pt"),
         "--num-rollout", str(num_steps),
+        *extra_args,
     ]  # fmt: skip
 
 
 app = modal.App(f"{node.TRAINING.app_name}-replay")
+profiles_volume = modal.Volume.from_name(f"{node.TRAINING.app_name}-profiles", create_if_missing=False)
 
 
 @app.function(
@@ -133,7 +146,7 @@ app = modal.App(f"{node.TRAINING.app_name}-replay")
     gpu=node.TRAINING.gpu,
     cpu=float(node.TRAINING.cpu),
     memory=node.TRAINING.memory_mib,
-    volumes={str(DEPLOYMENT.base_mount): base_volume, **node.kernel_mounts},
+    volumes={str(DEPLOYMENT.base_mount): base_volume, str(PROFILES): profiles_volume, **node.kernel_mounts},
     timeout=3 * 3600,
 )
 def replay(
@@ -143,7 +156,12 @@ def replay(
     env: dict[str, str] | None = None,
     fresh_kernel_caches: bool = False,
     stall_seconds: int = 0,
+    extra_args: list[str] | None = None,
+    label: str = "",
 ) -> dict[str, Any]:
+    profile_dir = PROFILES / (label or time.strftime("replay-%Y%m%d-%H%M%S"))
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    extra = [arg.replace("{profile_dir}", str(profile_dir)) for arg in extra_args or []]
     step_bounds = tuple((low, high) for low, high in steps)
     write_mock_rollouts(step_bounds, groups=rollout_batch_size, group_size=RUN.research.group_size)
     # py-spy, for stack dumps of every rank while a step hangs (ray stack / py-spy dump).
@@ -173,10 +191,13 @@ def replay(
     log = Path("/tmp/replay.log")
     with log.open("w") as out:
         trainer = subprocess.Popen(
-            replay_command(len(step_bounds)), stdout=out, stderr=subprocess.STDOUT, start_new_session=True
+            replay_command(len(step_bounds), extra), stdout=out, stderr=subprocess.STDOUT, start_new_session=True
         )
+        peaks = _GpuPeaks(log)
         code, stall = _wait_or_stall(trainer, log, stall_seconds)
+        peaks.stop.set()
     text = log.read_text(errors="replace")
+    profiles_volume.commit()
     print(text[-20000:], flush=True)
     tuned = _write_fla_configs() if tune else []
     if node.kernel_volume is not None and not fresh_kernel_caches:
@@ -197,15 +218,45 @@ def replay(
         "Error",
         "saved checkpoint",
         "successfully saved",
+        "memory snapshot",
+        "memory history",
     )
     return {
         "exit_code": code,
         "seconds": round(time.monotonic() - started),
         "lines": [line[:400] for line in text.splitlines() if any(w in line for w in wanted)][-200:],
         "fla_configs": tuned,
+        "gpu_peak_mib": peaks.peaks,
+        "profile_files": sorted(str(f.relative_to(PROFILES)) for f in profile_dir.rglob("*") if f.is_file()),
         "stalled": stall is not None,
         "stall_stacks": stall,
     }
+
+
+class _GpuPeaks:
+    """Peak ``memory.used`` (MiB) per GPU, per step: the step is the number of rank 0's
+    ``Timer train start`` lines so far (``setup`` before the first)."""
+
+    def __init__(self, log: Path) -> None:
+        self.log, self.stop = log, threading.Event()
+        self.peaks: dict[str, dict[str, int]] = {}
+        self.offset, self.steps = 0, 0
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        while not self.stop.wait(2):
+            with self.log.open(errors="replace") as f:
+                f.seek(self.offset)
+                new = f.read()
+                self.offset = f.tell()
+            self.steps += sum("rank0]" in line and "Timer train start" in line for line in new.splitlines())
+            phase = f"step {self.steps - 1}" if self.steps else "setup"
+            query = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"]
+            used = subprocess.run(query, capture_output=True, text=True).stdout
+            peaks = self.peaks.setdefault(phase, {})
+            for line in used.splitlines():
+                index, mib = (x.strip() for x in line.split(","))
+                peaks[index] = max(peaks.get(index, 0), int(mib))
 
 
 def _wait_or_stall(trainer: subprocess.Popen[bytes], log: Path, stall_seconds: int) -> tuple[int, str | None]:
@@ -273,12 +324,21 @@ def main(
     env: str = "",
     fresh_kernel_caches: bool = False,
     stall_seconds: int = 0,
+    extra_args: str = "",
+    label: str = "",
+    groups: int = 0,
 ) -> None:
-    """``env`` is KEY=VALUE pairs, comma separated, for every rank (e.g. TORCHINDUCTOR_COMPILE_THREADS=1)."""
+    """``env`` is KEY=VALUE pairs, comma separated, for every rank (e.g. TORCHINDUCTOR_COMPILE_THREADS=1).
+    ``extra_args`` is appended to the Miles arguments; ``label`` names the run's profiles directory.
+    ``groups`` replaces the deployment's groups per step (one optimizer step each), for short
+    profiling runs: a micro-batch holds the same tokens at any batch size."""
     bounds = [list(map(int, s.split("-"))) for s in steps.split(",")] if steps else [list(s) for s in DEFAULT_STEPS]
     lines = (node.REPO / node.TRAINING.train_args).read_text()
-    batch = int(shlex.split(lines[lines.index("--rollout-batch-size") :])[1])
+    batch = groups or int(shlex.split(lines[lines.index("--rollout-batch-size") :])[1])
+    extra = shlex.split(extra_args)
+    if groups:
+        extra += ["--rollout-batch-size", str(groups), "--global-batch-size", str(groups * RUN.research.group_size)]
     overrides = dict(pair.split("=", 1) for pair in env.split(",") if pair)
-    result = replay.remote(bounds, batch, tune, overrides, fresh_kernel_caches, stall_seconds)
+    result = replay.remote(bounds, batch, tune, overrides, fresh_kernel_caches, stall_seconds, extra, label)
     Path(out).write_text(json.dumps(result, indent=2))
     print(f"[replay] exit {result['exit_code']} after {result['seconds']} s; details in {out}", flush=True)
