@@ -51,7 +51,7 @@ def _module_shape(shape: DenseDecoderShape, module: str) -> tuple[int, int]:
 
 
 def hf_target_modules(run: RunConfig) -> list[str]:
-    from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
+    from miles_plugins.proximal.lora_targets import convert_target_modules_to_hf
 
     modules = convert_target_modules_to_hf(list(run.research.lora.target_modules))
     unknown = set(modules) - set(_ATTENTION + _MLP)

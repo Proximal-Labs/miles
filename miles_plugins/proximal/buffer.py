@@ -220,7 +220,7 @@ class PlatformDataBuffer(DataBuffer):
         self._consumed_event.set()
         return False
 
-    def get_metrics(self) -> dict[str, float]:
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         metrics = {
             "rollout/platform/persisted_groups": float(self._persisted),
             "rollout/platform/consumed_groups": float(self._consumed),

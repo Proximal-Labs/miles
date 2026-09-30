@@ -14,7 +14,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import distributed_utils
 from miles.utils.ft_utils.process_group_utils import GroupInfo
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles_plugins.proximal import weight_update
 from miles_plugins.proximal.options import TRANSFER
 from miles_plugins.proximal.store import open_store

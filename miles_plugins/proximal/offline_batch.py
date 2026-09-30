@@ -539,6 +539,7 @@ def validate_train_args(args: argparse.Namespace, batch: Batch, checkpoint: Chec
     for name in (
         "fully_async",
         "rollout_external",
+        "rollout_external_opaque",
         "custom_weight_transfer_protocol_path",
         "load_debug_rollout_data",
         "load_debug_rollout_data_subsample",
@@ -730,10 +731,11 @@ def main() -> None:
 
         from train import train as run_train
 
+        from miles.utils.async_utils import with_disposer
         from miles.utils.tracking_utils.tracking import finish_tracking
 
         try:
-            asyncio.run(run_train(parsed))  # type: ignore[no-untyped-call]
+            asyncio.run(with_disposer(run_train, parsed))
         finally:
             finish_tracking()  # type: ignore[no-untyped-call]
         return

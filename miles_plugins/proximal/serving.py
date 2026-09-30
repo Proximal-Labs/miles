@@ -144,8 +144,7 @@ def engine_model_path(run: RunConfig, deployment: ServingDeployment) -> str:
 
 def lora_serving_targets(run: RunConfig) -> list[str]:
     """The SGLang LoRA target modules that serve the run's trained adapters."""
-    # Local import: pulls torch; only the renderer, the replica and the publisher need it.
-    from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
+    from miles_plugins.proximal.lora_targets import convert_target_modules_to_hf
 
     return [str(module) for module in convert_target_modules_to_hf(list(run.research.lora.target_modules))]
 
