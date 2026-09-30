@@ -15,7 +15,25 @@ The first run against the real Proximal platform. Miles trains `Qwen/Qwen3.8-27B
 ## Settings and why
 
 - **Chat template and parsers:** the template family is `qwen38small`, which Miles's own tests use with the 27B. The replicas use the `qwen3_coder` tool-call parser and the `qwen3` reasoning parser. Thinking is on, with reasoning effort `xhigh`. Capture renders the run's effort through the template, and a run config naming an effort the template can't render (it takes `xhigh`, `medium` or `low`) is rejected.
-- **MLP-only LoRA (rank 32).** In this Miles version, Qwen3.5 and Qwen3.8 train their attention and Gated DeltaNet projections as separate Hugging Face-style layers, while SGLang serves them fused (`in_proj_qkvz`, `in_proj_ba`, fused QKV). Adapters on those layers are not yet verified to load on the replicas. The MLP layers use the same mapping proven on Qwen3-0.6B.
+- **LoRA on every linear layer of the text decoder (rank 32).**
+  - **Targets.** The run config names the six Megatron modules by anchored path (`language_model.decoder.layers.*.…`):
+    - attention `self_attention.linear_qkv`, which includes the output gate, and `self_attention.linear_proj`;
+    - Gated DeltaNet `self_attention.in_proj` and `self_attention.out_proj`;
+    - MLP `mlp.linear_fc1` and `mlp.linear_fc2`.
+
+    Bare module names would also match the vision tower and any MTP layer.
+  - **Mapping.** In Bridge mode the trainer uses Megatron's fused modules. Megatron-Bridge exports each under the checkpoint's own names: `q_proj` (gate rows included), `k_proj`, `v_proj`, and `in_proj_qkv`/`in_proj_z`/`in_proj_b`/`in_proj_a`. SGLang stacks them back into `qkv_proj`, `in_proj_qkvz` and `in_proj_ba`, in the base weights' order. An earlier note gave "separate HF-style layers" as the reason to stay MLP-only; that described the raw `--spec` model, which Bridge mode never builds.
+  - **Proof.** `miles_plugins/proximal/e2e/lora_parity.py` checks the mapping end to end at the trainer's TP 4, with a random nonzero adapter on every module:
+    - **Export mapping, per module:** `merged − base` equals `(alpha/r)·B·A` from the published tensors to 1–6%, depending on the adapter's strength. That is bf16 rounding; a wrong mapping errs by about 140%.
+    - **Serving:** the attention/GDN adapters reproduce their merged checkpoint exactly as closely as the MLP adapters runs already used (on Qwen3.8, residual 0.112 vs 0.111 of the adapter's effect). Swapping GDN q and k, or attention q and gate, is caught at 3.7× and 5.0× that residual.
+    - **Coverage:** Qwen3.5-4B (GDN 2 value heads per key head) and Qwen3.8-27B (3).
+  - **Resume.** Runs before this change trained MLP-only. Their checkpoints don't resume under these targets: the adapter parameters differ, and the load fails.
+  - **Serving memory.** A replica's LoRA buffers grow by about 1.5 GiB (4 adapter slots), taken from the KV cache.
+  - **Speculative decoding.** The NEXTN draft stays unadapted, so watch the speculative accept length.
+- **An adapter is checked before it can serve.** SGLang files each adapter tensor under the first `layers.N.` in its name and keeps the last one written. Runs 004–013 published the MTP layer's adapter (`mtp.layers.0.mlp.*`) next to the decoder's, and SGLang served it as decoder layer 0's MLP adapter: those runs sampled from a policy that differed from the trained one at layer 0.
+  - The MTP head is now off in training (#23).
+  - The publisher refuses any adapter SGLang would serve differently from the trained one, at every publish including the startup one (`adapter_layout.py`). That covers tensors outside the text decoder layers, modules outside the serving targets, a missing lora_A or lora_B, a partial stacked group, and a target that matched no layer.
+  - Replicas load adapters with `lora_strict_loading`, so a tensor that matches no target fails the load instead of being dropped.
 - **Batch:** 8 tasks × 4 samples = 32 rollouts per step, one optimizer update per step. The Miles recipe uses 1 node × 8 GPUs at TP 4.
 - **Limits:** mini-swe with `max_turns` 30, 8k tokens per turn, 32k per sequence, and 64 samples in flight. At that concurrency, per-attempt polling is cheap.
 - **Routing:** `platform_route.endpoint_name` is unset, so the platform routes the model's calls to its *default* registry endpoint: the serving pool's URL, registered once per pool.

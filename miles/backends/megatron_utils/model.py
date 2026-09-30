@@ -34,6 +34,7 @@ from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.profile_utils import profile_microbatches
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -536,9 +537,14 @@ def run_forward_backward_pass(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    with torch.no_grad() if forward_only else nullcontext():
+    with (
+        (
+            nullcontext(forward_step) if forward_only else profile_microbatches(forward_step, args, name="train_actor")
+        ) as profiled_forward_step,
+        torch.no_grad() if forward_only else nullcontext(),
+    ):
         return forward_backward_func(
-            forward_step_func=forward_step,
+            forward_step_func=profiled_forward_step,
             data_iterator=data_iterator,
             model=model,
             num_microbatches=num_microbatches,

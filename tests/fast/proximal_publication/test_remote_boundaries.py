@@ -48,6 +48,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if method == "remote" and name in {
                 "e2e/stage_base.py",
                 "e2e/grad_attribution.py",
+                "e2e/lora_parity.py",
                 "e2e/stage_gsm8k.py",
                 "e2e/step_sizing.py",
                 "e2e/trainer_replay.py",
@@ -72,6 +73,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("capture_server.py", "post"),  # Recorded inference only; policy warm-up moved to the pool client.
         ("clients.py", "request"),  # The shared retrying request helper every client uses.
         ("e2e/grad_attribution.py", "remote"),  # Paid gradient attribution on a recorded step, run by hand.
+        ("e2e/lora_parity.py", "remote"),  # Paid LoRA serving parity check, run by hand.
         ("e2e/math_platform.py", "post"),  # The gsm8k platform's agent calling its capture session.
         ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
         ("e2e/stage_gsm8k.py", "remote"),  # Paid gsm8k data staging, run by hand.
