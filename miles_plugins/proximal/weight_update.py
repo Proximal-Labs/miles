@@ -83,8 +83,11 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         self._peft_config_json: str | None = None
 
     def configure_lora(self, config: dict[str, JsonValue]) -> None:
+        # Replicas load adapters into SGLang engines launched with lora_serving_targets; Miles's
+        # resolved adapter targets may name modules differently, so publish the served ones.
+        served: list[JsonValue] = list(lora_serving_targets(self.config))
         self._peft_config_json = peft_config_json(
-            config, rank=self.args.lora_rank, base_model_name=self.config.base_model.name
+            config | {"target_modules": served}, rank=self.args.lora_rank, base_model_name=self.config.base_model.name
         )
 
     def connect(

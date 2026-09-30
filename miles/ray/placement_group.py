@@ -371,7 +371,8 @@ class RolloutComponents(NamedTuple):
 async def create_rollout_components(args) -> RolloutComponents:
     capability = get_backend_capability(args)
 
-    if not args.debug_train_only or args.eval_num_gpus > 0:
+    # An opaque external fleet starts no engines and so has no router to wait for.
+    if (not args.debug_train_only or args.eval_num_gpus > 0) and not getattr(args, "rollout_external_opaque", False):
         await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
 
         session_server_provider = (

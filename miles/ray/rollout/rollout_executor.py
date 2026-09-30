@@ -77,7 +77,10 @@ class RolloutExecutor:
     @init_once
     async def init(self) -> None:
         args = self.args
-        if not args.debug_train_only or args.eval_num_gpus > 0:
+        # An opaque external fleet starts no engines and so has no router to wait for.
+        if (not args.debug_train_only or args.eval_num_gpus > 0) and not getattr(
+            args, "rollout_external_opaque", False
+        ):
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
 

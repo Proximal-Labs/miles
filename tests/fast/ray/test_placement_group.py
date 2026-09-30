@@ -191,6 +191,15 @@ class TestCreateRolloutComponents:
         assert fake_components.capability.requested_static_pool_ids == []
         assert args.sglang_router_ip is None
 
+    async def test_an_opaque_external_fleet_resolves_no_inference_addresses(self, fake_components):
+        """--rollout-external-opaque starts no engines, so there is no router to wait for."""
+        args = _make_args(num_rollout=1, rollout_external_opaque=True)
+
+        await create_rollout_components(args)
+
+        assert fake_components.capability.requested_static_pool_ids == []
+        assert args.sglang_router_ip is None
+
 
 class TestTakeOverInference:
     @staticmethod
