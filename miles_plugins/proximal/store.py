@@ -20,12 +20,22 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
     decode_samples_and_merge_input_sample,
     encode_samples,
 )
 from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import secret_env
-from miles_plugins.proximal.contracts import Contract, Policy, RunConfig, SafeId, digest, training_contract
+from miles_plugins.proximal.contracts import (
+    Contract,
+    Policy,
+    RunConfig,
+    SafeId,
+    Sampling,
+    digest,
+    replays_sampling_support,
+    training_contract,
+)
 from miles_plugins.proximal.snapshot import Digest
 from miles_plugins.proximal.state_artifacts import SCHEMA as OUTBOX_SCHEMA
 from miles_plugins.proximal.state_artifacts import ArtifactRecord, describe
@@ -152,23 +162,40 @@ class RolloutStore:
         *,
         run_id: str,
         contract_sha256: str,
+        sample_fields: tuple[str, ...],
         root: Path,
         sync: PayloadSync,
     ):
         self.connection, self.run_id, self.root, self.sync = connection, run_id, root, sync
         # Groups are selectable only by a trainer with the identical training contract.
         self.contract_sha256 = contract_sha256
+        # The contract fixes which sample fields a stored group carries (see sample_fields).
+        self.sample_fields = sample_fields
         # One connection runs one statement at a time; put/get share an event loop.
         self._lock = asyncio.Lock()
 
     @classmethod
     async def open(
-        cls, dsn: str, *, run_id: str, contract_sha256: str, root: Path, sync: PayloadSync
+        cls,
+        dsn: str,
+        *,
+        run_id: str,
+        contract_sha256: str,
+        sample_fields: tuple[str, ...],
+        root: Path,
+        sync: PayloadSync,
     ) -> "RolloutStore":
         import psycopg  # Runtime dependency of the training process only.
 
         connection = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
-        store = cls(connection, run_id=run_id, contract_sha256=contract_sha256, root=root, sync=sync)
+        store = cls(
+            connection,
+            run_id=run_id,
+            contract_sha256=contract_sha256,
+            sample_fields=sample_fields,
+            root=root,
+            sync=sync,
+        )
         async with store._lock:
             await connection.execute(SCHEMA + OUTBOX_SCHEMA)
         return store
@@ -288,8 +315,7 @@ class RolloutStore:
             group_id=group_id, contract_sha256=self.contract_sha256, policy=policy, identities=tuple(identities)
         )
         header_bytes = header.model_dump_json().encode()
-        # V2 fields: the codec's default v1 allowlist omits the reward.
-        body = encode_samples(list(samples), {}, fields=COMPUTED_FIELDS_V2)
+        body = encode_samples(list(samples), {}, fields=self.sample_fields)
         payload = len(header_bytes).to_bytes(8, "big") + header_bytes + body
         digest = hashlib.sha256(payload).hexdigest()
         path = self._payload_path(group_id)
@@ -379,10 +405,27 @@ class RolloutStore:
 
     async def load(self, row: GroupRow) -> tuple[StoredGroup, list[Sample]]:
         payload = await self._read_payload(row)
-        return decode_group(payload, row=row, contract_sha256=self.contract_sha256)
+        return decode_group(payload, row=row, contract_sha256=self.contract_sha256, fields=self.sample_fields)
 
 
-def decode_group(payload: bytes, *, row: GroupRow, contract_sha256: str) -> tuple[StoredGroup, list[Sample]]:
+def sample_fields(base: tuple[str, ...], sampling: Sampling) -> tuple[str, ...]:
+    """The samples-codec allowlist for a contract: a replayed rollout also carries each token's support.
+
+    ``base`` is the codec's v1 allowlist for capture payloads, or v2 (which adds the
+    reward) for stored groups. Encoder and decoder must use the same allowlist, so both
+    derive it from the contract.
+    """
+    return base + ROLLOUT_SAMPLING_MASK_FIELDS if replays_sampling_support(sampling) else base
+
+
+def stored_sample_fields(sampling: Sampling) -> tuple[str, ...]:
+    """The fields of a stored group; v2 because the codec's v1 allowlist omits the reward."""
+    return sample_fields(COMPUTED_FIELDS_V2, sampling)
+
+
+def decode_group(
+    payload: bytes, *, row: GroupRow, contract_sha256: str, fields: tuple[str, ...]
+) -> tuple[StoredGroup, list[Sample]]:
     """The same immutable group format for the online store and offline batches."""
     if hashlib.sha256(payload).hexdigest() != row.payload_sha256:
         raise ValueError(f"Stored payload for group {row.group_id} fails its checksum")
@@ -398,7 +441,7 @@ def decode_group(payload: bytes, *, row: GroupRow, contract_sha256: str) -> tupl
         or header.contract_sha256 != contract_sha256
     ):
         raise ValueError(f"Stored payload for group {row.group_id} names a different group, policy or contract")
-    reply = decode_samples_and_merge_input_sample(payload[8 + size :], Sample(), fields=COMPUTED_FIELDS_V2)
+    reply = decode_samples_and_merge_input_sample(payload[8 + size :], Sample(), fields=fields)
     if len(reply.samples) != len(header.identities):
         raise ValueError("Stored payload sample count differs from its identities")
     for sample, identity in zip(reply.samples, header.identities, strict=True):
@@ -428,6 +471,7 @@ async def open_store(config: RunConfig) -> RolloutStore:
         secret_env(config.store_dsn_env),
         run_id=config.run_id,
         contract_sha256=digest(training_contract(config)),
+        sample_fields=stored_sample_fields(config.research.sampling),
         root=config.artifact_directory,
         sync=payload_sync(config),
     )

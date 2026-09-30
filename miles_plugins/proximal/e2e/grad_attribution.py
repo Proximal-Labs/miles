@@ -47,10 +47,10 @@ app = modal.App(f"{node.TRAINING.app_name}-grad-attribution")
 
 def recorded_batch(step: int) -> list[Any]:
     """The samples production trained on at ``step``: groups its cursor consumed after step - 1."""
-    from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
+    from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
     from miles.utils.types import Sample
     from miles_plugins.proximal.data_source import Cursor
-    from miles_plugins.proximal.store import StoredGroup
+    from miles_plugins.proximal.store import StoredGroup, stored_sample_fields
 
     steps = node.SNAPSHOT / "steps"
     before = {c.group_id for c in _cursor(steps / f"{step - 1:07d}", Cursor).consumed}
@@ -60,7 +60,9 @@ def recorded_batch(step: int) -> list[Any]:
         payload = (node.SNAPSHOT / "artifacts" / RUN.run_id / "groups" / f"{consumed.group_id}.bin").read_bytes()
         size = int.from_bytes(payload[:8], "big")
         header = StoredGroup.model_validate_json(payload[8 : 8 + size])
-        decoded = decode_samples_and_merge_input_sample(payload[8 + size :], Sample(), fields=COMPUTED_FIELDS_V2)
+        decoded = decode_samples_and_merge_input_sample(
+            payload[8 + size :], Sample(), fields=stored_sample_fields(RUN.research.sampling)
+        )
         for sample, identity in zip(decoded.samples, header.identities, strict=True):
             sample.index, sample.group_index = identity.index, identity.group_index
             samples.append(sample)

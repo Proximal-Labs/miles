@@ -14,7 +14,7 @@ import httpx
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnInput, RolloutFnOutput
 from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, DataBufferInput
 from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
-from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS, decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
@@ -36,7 +36,7 @@ from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.options import add_arguments
 from miles_plugins.proximal.preflight import canary
 from miles_plugins.proximal.storage import write_immutable
-from miles_plugins.proximal.store import RolloutStore, open_store
+from miles_plugins.proximal.store import RolloutStore, open_store, sample_fields
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,10 @@ async def execute_attempt(
         handle = await capture.create(attempt)
         grade = await platform.execute(attempt, handle)
         receipt, payload = await capture.collect(handle, attempt)
-        decoded = decode_samples_and_merge_input_sample(payload, sample)
+        # Capture seals with SessionCore's v1 allowlist, plus the support when the attempt replays it.
+        decoded = decode_samples_and_merge_input_sample(
+            payload, sample, fields=sample_fields(COMPUTED_FIELDS, attempt.sampling)
+        )
         if len(decoded.samples) != 1:
             raise ValueError("A graded linear platform rollout must yield exactly one training sample")
         result = decoded.samples[0]

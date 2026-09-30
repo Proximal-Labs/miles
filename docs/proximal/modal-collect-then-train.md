@@ -84,6 +84,16 @@ configuration of a previous experiment.
   limits, base model, tokenizer/rendering, thinking/tool protocol, LoRA targets,
   rank/alpha, sampling, group size and behavior correction. Set
   `research.unused_groups` to `retry` for finite collection.
+- `research.sampling.logprob_semantics` fixes what a behavior logprob means.
+  `untransformed` samples the full distribution (`top_p` 1, `top_k` -1).
+  `sampling_support` samples with top-p/top-k (for example `top_p` 0.95 with `top_k`
+  20): collection then saves each generated token's surviving token set with the
+  rollout, and every training step here (`offline_batch train`, the sweep launcher)
+  replays it ([architecture](architecture.md)). It needs a serving SGLang build that
+  returns sampling masks; the preflight canary checks this before the first platform
+  rollout. The setting is part of the training contract, so batches collected under
+  the two settings never mix, and rollouts collected `untransformed` cannot be
+  trained with replay.
 - `serving.json` chooses the replica hardware, engine image, precision/cache
   settings, context ceiling and replica bounds. `max_in_flight_samples` in the run
   config bounds active rollout samples across the collector; Modal request

@@ -28,12 +28,14 @@ from miles_plugins.proximal.contracts import (
     behavior_correction_argv,
     digest,
     read_run_config,
+    sampling_args,
+    sampling_argv,
     training_contract,
 )
 from miles_plugins.proximal.initial_policy import copy_base_policy, verify_base_policy
 from miles_plugins.proximal.state_artifacts import copy_verified, describe
 from miles_plugins.proximal.state_checkpoints import CheckpointManifest, read_manifest
-from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, decode_group
+from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, decode_group, stored_sample_fields
 
 ROLLOUT = "miles_plugins.proximal.offline_batch.FrozenBatchRolloutFn"
 
@@ -156,7 +158,12 @@ def load_group(root: Path, index: GroupIndex, config: RunConfig) -> list[Sample]
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Expected regular group payload: {path}")
     row = GroupRow(index.header.group_id, index.header.policy.version, str(path), index.payload_sha256)
-    header, samples = decode_group(path.read_bytes(), row=row, contract_sha256=digest(training_contract(config)))
+    header, samples = decode_group(
+        path.read_bytes(),
+        row=row,
+        contract_sha256=digest(training_contract(config)),
+        fields=stored_sample_fields(config.research.sampling),
+    )
     if header != index.header or validate_group(config, samples) != header.policy:
         raise ValueError("Group payload, index and acceptance evidence disagree")
     if any(accepted(s).attempt.group_id != header.group_id for s in samples):
@@ -506,6 +513,7 @@ def validate_input_args(args: argparse.Namespace, batch: Batch) -> None:
         "rollout_batch_size": len(training_groups(batch)),
         "n_samples_per_prompt": batch.source.research.group_size,
         **behavior_correction_args(batch.source.research.behavior_correction),
+        **sampling_args(batch.source.research.sampling),
     }
     for name, value in required.items():
         if getattr(args, name, None) != value:
@@ -634,6 +642,7 @@ def train_argv(bundle: Path, batch: Batch, checkpoint_path: Path | None, *, fres
         "--n-samples-per-prompt", str(research.group_size),
         "--rollout-max-response-len", str(research.sampling.max_tokens),
         "--rollout-max-context-len", str(research.sampling.max_sequence_tokens),
+        *sampling_argv(research.sampling),
         *behavior_correction_argv(research.behavior_correction),
     ]  # fmt: skip
 

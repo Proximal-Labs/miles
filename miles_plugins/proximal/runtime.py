@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run
-from miles_plugins.proximal.contracts import RunConfig, behavior_correction_argv, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, behavior_correction_argv, read_run_config, sampling_argv
 from miles_plugins.proximal.options import BUFFER, ROLLOUT, SOURCE, TRANSFER
 
 if TYPE_CHECKING:
@@ -35,9 +35,6 @@ def training_argv(path: str) -> list[str]:
         "async-unused-samples-handler": config.research.unused_groups,
         "async-max-concurrent-samples": config.max_in_flight_samples,
         "rollout-submission-granularity": "sample",
-        "rollout-temperature": config.research.sampling.temperature,
-        "rollout-top-p": config.research.sampling.top_p,
-        "rollout-top-k": config.research.sampling.top_k,
         "rollout-max-response-len": config.research.sampling.max_tokens,
         "rollout-max-context-len": config.research.sampling.max_sequence_tokens,
         "hf-checkpoint": str(config.tokenizer_path),
@@ -49,7 +46,8 @@ def training_argv(path: str) -> list[str]:
         "megatron-to-hf-mode": "bridge",
     }
     correction = behavior_correction_argv(config.research.behavior_correction)
-    return ["--fully-async", "--rollout-external-opaque", *correction] + [
+    sampling = sampling_argv(config.research.sampling)
+    return ["--fully-async", "--rollout-external-opaque", *correction, *sampling] + [
         item for name, value in values.items() for item in (f"--{name}", str(value))
     ]
 

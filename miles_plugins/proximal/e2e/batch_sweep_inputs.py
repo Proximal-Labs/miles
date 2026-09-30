@@ -10,7 +10,14 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from miles_plugins.proximal.contracts import Contract, RunConfig, SafeId, behavior_correction_argv
+from miles_plugins.proximal.contracts import (
+    Contract,
+    RunConfig,
+    SafeId,
+    behavior_correction_argv,
+    sampling_args,
+    sampling_argv,
+)
 from miles_plugins.proximal.e2e.argv import set_flag
 from miles_plugins.proximal.initial_policy import verify_base_policy
 from miles_plugins.proximal.snapshot import Digest, Nonempty
@@ -139,6 +146,10 @@ def phase_command(
     for flag in ("--use-rollout-logprobs", "--use-tis", "--tis-clip", "--tis-clip-low"):
         args = set_flag(args, flag, None)
     args += behavior_correction_argv(research.behavior_correction)
+    # The batch's sampling decides whether Miles replays each token's recorded support.
+    for flag in ("--rollout-temperature", "--rollout-top-p", "--rollout-top-k"):
+        args = set_flag(args, flag, None)
+    args += sampling_argv(research.sampling)
     for flag in ("--debug-train-only", "--disable-rollout-global-dataset"):
         args = set_flag(args, flag, None) + [flag]
     return ["python", "/fork/train.py", *args]
@@ -156,6 +167,7 @@ def validate_phase_args(args: object, plan: SweepPlan, source: RunConfig, phase:
         "save_interval": 1,
         "lora_A_init_method": "xavier",
         "lora_B_init_method": "zero",
+        **sampling_args(source.research.sampling),
     }.items():
         # Bridge's initializer defaults are consumed by the builder, not CLI flags.
         actual = getattr(args, name, expected if name.startswith("lora_") else None)

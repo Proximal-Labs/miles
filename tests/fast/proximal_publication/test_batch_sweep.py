@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from miles_plugins.proximal.authorization import authorize_run
-from miles_plugins.proximal.contracts import RunConfig
+from miles_plugins.proximal.contracts import RunConfig, sampling_args
 from miles_plugins.proximal.e2e.batch_sweep_artifacts import finalize_step, publish_node_files
 from miles_plugins.proximal.e2e.batch_sweep_inputs import SweepPhase, SweepPlan, phase_command
 from miles_plugins.proximal.snapshot import SnapshotReference, read_snapshot
@@ -69,6 +69,9 @@ def test_two_configurations_start_fresh_with_identical_data_and_preserve_source(
         assert value("--load") == str(source.tokenizer_path)
         assert value("--save-interval") == "1"
         assert value("--target-modules") == ",".join(phase.target_modules)
+        # The trainer scores tokens under the batch's sampling (Miles replay follows top-p/top-k).
+        for name, expected in sampling_args(source.research.sampling).items():
+            assert value("--" + name.replace("_", "-")) == str(expected)
         assert "--lora-adapter-path" not in command and "--use-wandb" not in command
     assert source.model_dump_json() == before
 
