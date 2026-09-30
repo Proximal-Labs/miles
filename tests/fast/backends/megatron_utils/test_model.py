@@ -2,6 +2,7 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -73,6 +74,7 @@ def make_train_one_step_args(**overrides: Any) -> Namespace:
         ci_test=False,
         enable_mtp_training=False,
         rollout_max_response_len=512,
+        use_sampling_support_replay=False,
         enable_witness=False,
         save_local_weight_checksum=False,
     )
@@ -156,3 +158,57 @@ class TestRequireFiniteUpdate:
         from miles.backends.megatron_utils.model import _require_finite_update
 
         _require_finite_update([self._chunk(1.0), self._chunk(float("nan"), trainable=False)], 0.5)
+
+
+def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampling_support(monkeypatch):
+    from miles.backends.megatron_utils import model as model_module
+
+    def forward_backward(**kwargs):
+        output, callback = kwargs["forward_step_func"](kwargs["data_iterator"][0], kwargs["model"][0])
+        return [callback(output)]
+
+    callback_kwargs = {}
+
+    def critic_callback(_output, **kwargs):
+        callback_kwargs.update(kwargs)
+        return {}
+
+    args = Namespace(
+        data_pad_size_multiplier=1,
+        qkv_format="thd",
+        allgather_cp=False,
+        enable_witness=False,
+        use_rollout_entropy=False,
+        custom_megatron_before_log_prob_hook_path=None,
+        seq_length=8,
+        micro_batch_size=1,
+    )
+    batch = {
+        "tokens": None,
+        "input_loss_masks": None,
+        "multimodal_train_inputs": None,
+        "unconcat_tokens": [],
+        "total_lengths": [],
+        "response_lengths": [],
+        "max_seq_lens": None,
+    }
+    dumper = Mock()
+    dumper.wrap_forward_step.side_effect = lambda fn: fn
+
+    monkeypatch.setattr(model_module, "DumperMegatronUtil", lambda *_args, **_kwargs: dumper)
+    monkeypatch.setattr(model_module, "get_model_config", lambda _model: Mock(timers=None))
+    monkeypatch.setattr(model_module, "get_batch", lambda *_args, **_kwargs: batch)
+    monkeypatch.setattr(model_module, "get_packed_seq_params", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward)
+    monkeypatch.setattr(model_module, "mpu", FakeMpu())
+
+    model_module.forward_only(
+        critic_callback,
+        args,
+        [Mock()],
+        [Mock()],
+        [1],
+        rollout_id=0,
+    )
+
+    assert "rollout_sampling_mask" not in callback_kwargs

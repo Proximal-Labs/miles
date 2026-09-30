@@ -26,7 +26,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
 from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.clients import ServingPoolClient
@@ -83,8 +83,11 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         self._peft_config_json: str | None = None
 
     def configure_lora(self, config: dict[str, JsonValue]) -> None:
+        # Replicas load adapters into SGLang engines launched with lora_serving_targets; Miles's
+        # resolved adapter targets may name modules differently, so publish the served ones.
+        served: list[JsonValue] = list(lora_serving_targets(self.config))
         self._peft_config_json = peft_config_json(
-            config, rank=self.args.lora_rank, base_model_name=self.config.base_model.name
+            config | {"target_modules": served}, rank=self.args.lora_rank, base_model_name=self.config.base_model.name
         )
 
     def connect(

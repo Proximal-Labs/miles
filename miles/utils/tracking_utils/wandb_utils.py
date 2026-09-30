@@ -5,7 +5,7 @@ from copy import deepcopy
 import wandb
 from wandb.sdk.lib.runid import generate_id
 
-from miles.utils.env_report import decode_env_report
+from miles.utils.env_report.launcher_report import read_launcher_report
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,6 @@ def init_wandb_primary(args):
     if not args.use_wandb:
         args.wandb_run_id = None
         return
-    # A requested run id resumes that run (a restarted job continues its history);
-    # otherwise W&B picks one. Either way the chosen id is handed to the other processes.
-    requested_run_id = args.wandb_run_id
 
     # Set W&B mode if specified (overrides WANDB_MODE env var)
     if args.wandb_mode:
@@ -67,9 +64,8 @@ def init_wandb_primary(args):
         "name": run_name,
         "config": _compute_config_for_logging(args),
     }
-    if requested_run_id is not None:
-        init_kwargs["id"] = requested_run_id
-        init_kwargs["resume"] = "allow"
+    if args.wandb_run_id is not None:
+        init_kwargs |= {"id": args.wandb_run_id, "resume": "allow"}
 
     # Configure settings based on offline/online mode
     if offline:
@@ -102,7 +98,7 @@ def _compute_config_for_logging(args):
     output["env_vars"] = {k: v for k, v in os.environ.items() if k in whitelist_env_vars}
 
     if env_report_raw := args.env_report:
-        if launcher_report := decode_env_report(env_report_raw):
+        if launcher_report := read_launcher_report(env_report_raw):
             output["launcher_env_report"] = launcher_report
 
     return output

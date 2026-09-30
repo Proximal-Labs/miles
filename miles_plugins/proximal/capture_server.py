@@ -193,6 +193,8 @@ def session_config(config: RunConfig) -> SessionServerConfig:
         hf_checkpoint=str(config.tokenizer_path),
         chat_template_path=fixed_chat_template(config.tito_model)[0],
         tito_model=config.tito_model,
+        # The run contract pins top_p=1 and top_k=-1 (Sampling), which is when Miles disables replay.
+        use_sampling_support_replay=False,
         apply_chat_template_kwargs=_template_kwargs(config),
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,

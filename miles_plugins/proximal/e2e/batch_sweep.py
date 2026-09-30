@@ -62,7 +62,7 @@ def _paths(plan: SweepPlan) -> tuple[Path, Path]:
 
 def _check_commands(plan: SweepPlan, bundle: Path, *, hardware: bool) -> None:
     from miles.utils.arguments import get_miles_extra_args_provider, hf_validate_args, parse_args
-    from miles.utils.hf_config import load_hf_config
+    from miles.utils.hf_utils.config import load_hf_config
 
     before = sys.argv
     try:

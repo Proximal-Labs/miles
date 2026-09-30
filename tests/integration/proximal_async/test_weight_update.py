@@ -14,9 +14,10 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import distributed_utils
 from miles.utils.ft_utils.process_group_utils import GroupInfo
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles_plugins.proximal import weight_update
 from miles_plugins.proximal.options import TRANSFER
+from miles_plugins.proximal.serving import lora_serving_targets
 from miles_plugins.proximal.store import open_store
 
 
@@ -115,6 +116,9 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         tensors = load_file(str(snapshot.directory / "adapter_model.safetensors"))
         assert len(tensors) == 2 * len(MODULES)
         assert next(tensor for name, tensor in tensors.items() if ".lora_A." in name).shape == (2, 3)
+        # The trainer's sync config names only q_proj; the published adapter names what replicas serve.
+        published = json.loads((snapshot.directory / "adapter_config.json").read_text())
+        assert published["target_modules"] == lora_serving_targets(config)
         events.append(("upload", snapshot.reference.sha256))
 
     def http(request):

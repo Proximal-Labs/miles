@@ -382,6 +382,13 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         raise ValueError("Platform eval needs a separately pinned evaluation contract; training-only first pass")
 
+    async def dispose(self) -> None:
+        # Miles's executor disposes from its own loop; the worker, store and clients live on the worker's.
+        if (worker := self._worker) is None:
+            await self.close()
+            return
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self.close(), worker.get_loop()))
+
     async def close(self) -> None:
         await super().close()
         await wait_for_releases()

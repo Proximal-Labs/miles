@@ -42,7 +42,7 @@ def validate_args(args: Namespace) -> None:
         "train_backend": "megatron",
         **behavior_correction_args(config.research.behavior_correction),
         "fully_async": True,
-        "rollout_external": True,
+        "rollout_external_opaque": True,
         "rollout_num_gpus": 0,
         "update_weights_interval": 1,
         "rollout_function_path": ROLLOUT,

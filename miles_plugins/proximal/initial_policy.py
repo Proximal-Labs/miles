@@ -36,7 +36,7 @@ class BasePolicyConfig(Contract):
 
 
 def _targets(run: RunConfig) -> tuple[str, ...]:
-    from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
+    from miles_plugins.proximal.lora_targets import convert_target_modules_to_hf
 
     # A path/wildcard scopes training to particular layers; a leaf-only bootstrap
     # cannot certify that contract. Fail before publishing or launching rollouts.

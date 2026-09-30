@@ -49,7 +49,7 @@ def training_argv(path: str) -> list[str]:
         "megatron-to-hf-mode": "bridge",
     }
     correction = behavior_correction_argv(config.research.behavior_correction)
-    return ["--fully-async", "--rollout-external", *correction] + [
+    return ["--fully-async", "--rollout-external-opaque", *correction] + [
         item for name, value in values.items() for item in (f"--{name}", str(value))
     ]
 
@@ -183,6 +183,7 @@ def main() -> None:
     from train_async import train
 
     from miles.utils.arguments import parse_args
+    from miles.utils.async_utils import with_disposer
     from miles.utils.tracking_utils.tracking import finish_tracking
 
     extra = remaining[1:] if remaining[:1] == ["--"] else remaining
@@ -195,7 +196,7 @@ def main() -> None:
     ]
     train_args = parse_args()  # type: ignore[no-untyped-call]  # Existing Miles CLI boundary.
     try:
-        asyncio.run(train(train_args))  # type: ignore[no-untyped-call]  # Existing Miles driver.
+        asyncio.run(with_disposer(train, train_args))
     finally:
         finish_tracking()  # type: ignore[no-untyped-call]  # Existing Miles tracking boundary.
 

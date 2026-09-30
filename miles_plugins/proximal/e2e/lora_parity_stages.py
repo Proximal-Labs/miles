@@ -38,14 +38,15 @@ def export(out: Path, *, seed: int, strength: float) -> None:
     from miles.backends.megatron_utils.checkpoint import _load_checkpoint_hf
     from miles.backends.megatron_utils.initialize import init
     from miles.backends.megatron_utils.lora.bridge import _setup_lora_model_via_bridge
-    from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
     from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
     from miles.utils import megatron_bridge_utils
     from miles.utils.arguments import parse_args
     from miles.utils.distributed_utils import init_gloo_group
-    from miles.utils.hf_config import load_hf_config
-    from miles.utils.lora import LORA_ADAPTER_NAME
+    from miles.utils.hf_utils.config import load_hf_config
+    from miles.utils.lora.hf_lora_targets import parse_lora_targets
+    from miles.utils.lora.utils import LORA_ADAPTER_NAME, build_lora_config
     from miles_plugins.proximal.adapter_layout import adapter_layout_problem
+    from miles_plugins.proximal.lora_targets import convert_target_modules_to_hf
     from miles_plugins.proximal.weight_update import (
         ModalVolumeTransfer,
         peft_config_json,
@@ -82,7 +83,8 @@ def export(out: Path, *, seed: int, strength: float) -> None:
     exported = iterator.materialize_adapter(None)
     if dist.get_rank() == 0:
         tensors = dict(staged_adapter_tensor(f"{LORA_ADAPTER_NAME}:{name}", t) for name, t in exported.items())
-        targets = [str(m) for m in build_lora_sync_config(args)["target_modules"]]
+        targets = convert_target_modules_to_hf(parse_lora_targets(args.target_modules) or [])
+        sync_config = build_lora_config(args, target_modules=targets)  # type: ignore[no-untyped-call]
         report["adapter_tensors"] = len(tensors)
         report["layout_problem"] = adapter_layout_problem(
             {name: tuple(t.shape) for name, t in tensors.items()}, serving_targets=targets, rank=args.lora_rank
@@ -90,7 +92,7 @@ def export(out: Path, *, seed: int, strength: float) -> None:
         report["serving_targets"] = targets
         adapter = out / "adapter"
         adapter.mkdir(parents=True)
-        config = peft_config_json(build_lora_sync_config(args), rank=args.lora_rank, base_model_name=checkpoint.name)
+        config = peft_config_json(sync_config, rank=args.lora_rank, base_model_name=checkpoint.name)
         write_adapter(adapter, tensors=tensors, config_json=config)
 
     merged = out / "merged"

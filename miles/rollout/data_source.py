@@ -15,6 +15,10 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
+def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
+    return os.path.join(directory, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+
+
 class DataSource(abc.ABC):
     @abc.abstractmethod
     def get_samples(self, num_samples: int) -> list[list[Sample]]:
@@ -133,21 +137,23 @@ class RolloutDataSource(DataSource):
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
-        path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+        path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
+            logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
         checkpoint_dir = resume_checkpoint_dir(self.args)
         if checkpoint_dir is None:
+            logger.warning("no --load: the dataset starts where a fresh run's would")
             return
 
-        path = os.path.join(checkpoint_dir, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+        path = compute_global_dataset_state_path(checkpoint_dir, rollout_id=rollout_id)
         if not os.path.exists(path):
-            logger.info(f"Checkpoint {path} does not exist.")
+            logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
             return
 
         logger.info(f"load metadata from {path}")

@@ -7,9 +7,10 @@ from scripts.run_inkling_small_sft import ScriptArgs, execute
 
 def test_lora_resume_keeps_base_checkpoint_and_restores_adapter_optimizer(monkeypatch):
     import miles.utils.external_utils.command_utils as U
+    from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
     calls = []
-    monkeypatch.setattr(U, "execute_train", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(RayCommandBackend, "execute_train", lambda self, **kwargs: calls.append(kwargs))
     monkeypatch.setattr(U, "get_default_wandb_args", lambda *args, **kwargs: "")
     adapter = "/mnt/inkling/checkpoints/test/iter_0000010/adapter"
     execute(resume=True, lora_adapter_path=adapter, run_id="test")

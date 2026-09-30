@@ -140,11 +140,12 @@ def train(config_json: str):
     print(
         f"EXPERIMENTAL: LoRA rank {args.lora_rank} / 8 B300 / TP4 PP2 EP4 / cap {args.max_length}; fit is unvalidated"
     )
+    backend = args.create_backend()
     try:
         # Bound subprocess time independently of Modal's outer 24-hour timeout,
         # leaving time to commit completed checkpoints after a failure.
         config_path = destination / "launch.json"
-        U.exec_command_cpu(
+        backend.exec_command_cpu(
             shlex.join(
                 [
                     "timeout",
@@ -161,7 +162,7 @@ def train(config_json: str):
         # Ray workers outlive the submitting CLI. Stop them before committing,
         # including when timeout killed the CLI while its job was still active.
         try:
-            U.exec_command_cpu("ray stop --force")
+            backend.exec_command_cpu("ray stop --force")
         finally:
             volume.commit()
 
