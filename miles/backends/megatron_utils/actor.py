@@ -132,7 +132,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         dashboard_hooks.register_train_actor(args)
 
-        unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
+        # train_actor steps per micro-batch (profile_microbatches); the log-prob pass has no hook yet.
+        unsupported = {"train_log_probs"} & set(args.profile_target)
         if unsupported and args.use_pytorch_profiler:
             raise NotImplementedError(
                 f"--profile-target {' '.join(sorted(unsupported))} is not supported for Megatron backend"
