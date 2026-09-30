@@ -138,6 +138,19 @@ class ServingDeployment(Contract):
         return self
 
 
+SGLANG_PATCH = Path(__file__).resolve().parents[2] / "docker" / "patch" / "sglang_spec_sampling_mask.patch"
+SGLANG_ROOT = "/sgl-workspace/sglang"
+
+
+def sglang_patch_command(patch: str, root: str) -> str:
+    """Apply the patch, skip it if the image already carries it, fail the build otherwise."""
+    return (
+        f"if patch --dry-run --reverse --force --silent --fuzz=0 -p1 -d {root} < {patch} > /dev/null 2>&1; "
+        "then echo 'SGLang image already carries the patch'; "
+        f"else patch --forward --fuzz=0 -p1 -d {root} < {patch}; fi"
+    )
+
+
 def engine_model_path(run: RunConfig, deployment: ServingDeployment) -> str:
     return str(deployment.base_mount / Path(run.tokenizer_path).name)
 
