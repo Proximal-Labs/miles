@@ -142,15 +142,20 @@ def engine_model_path(run: RunConfig, deployment: ServingDeployment) -> str:
     return str(deployment.base_mount / Path(run.tokenizer_path).name)
 
 
+def lora_serving_targets(run: RunConfig) -> list[str]:
+    """The SGLang LoRA target modules that serve the run's trained adapters."""
+    # Local import: pulls torch; only the renderer, the replica and the publisher need it.
+    from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
+
+    return [str(module) for module in convert_target_modules_to_hf(list(run.research.lora.target_modules))]
+
+
 def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[str, object]:
     """SGLang ServerArgs fields for one replica, derived from the run's LoRA contract.
 
     Mirrors Miles's multi-LoRA engine settings: named adapters are loaded at
     runtime by the gateway, so no startup ``lora_paths``.
     """
-    # Local import: pulls torch; only the renderer and the replica need it.
-    from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
-
     return {
         "model_path": engine_model_path(run, deployment),
         "served_model_name": run.base_model.name,
@@ -162,7 +167,9 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
         "tp_size": deployment.tensor_parallel,
         "enable_lora": True,
         "max_lora_rank": run.research.lora.rank,
-        "lora_target_modules": convert_target_modules_to_hf(list(run.research.lora.target_modules)),
+        "lora_target_modules": lora_serving_targets(run),
+        # An adapter tensor matching no target is an error, not a silently dropped weight.
+        "lora_strict_loading": True,
         "max_loras_per_batch": deployment.max_loaded_adapters,
         "max_loaded_loras": deployment.max_loaded_adapters,
         "reasoning_parser": run.model_protocol.reasoning_parser,

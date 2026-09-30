@@ -65,6 +65,7 @@ def test_engine_arguments_follow_the_run_lora_contract(config):
     }
     assert args.max_loras_per_batch == serving.max_loaded_adapters
     assert args.lora_paths is None  # Named versions are loaded at runtime by the gateway.
+    assert args.lora_strict_loading is True  # An unmatched adapter tensor fails its load.
     assert args.served_model_name == config.base_model.name
     assert args.model_path == f"/models/{config.tokenizer_path.name}"
     assert args.host == "127.0.0.1" and args.tp_size == 2

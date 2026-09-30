@@ -65,6 +65,7 @@ def make_train_one_step_args(**overrides: Any) -> Namespace:
         custom_megatron_before_train_step_hook_path=None,
         dumper_enable=False,
         dumper_fwd_bwd=[],
+        use_pytorch_profiler=False,
         seq_length=8,
         decoder_seq_length=8,
         micro_batch_size=1,
