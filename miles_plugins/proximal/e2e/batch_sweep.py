@@ -83,11 +83,9 @@ def _check_commands(plan: SweepPlan, bundle: Path, *, hardware: bool) -> None:
                 # Megatron's full validator queries the CUDA device architecture
                 # for TP > 1. Use its real parser on CPU, then validate the pinned
                 # model and sweep contract. Full validation runs on the live gang.
-                from megatron.training.arguments import (  # type: ignore[import-not-found,unused-ignore]
-                    parse_args as parse_megatron_args,
-                )
+                import megatron.training.arguments as megatron_args  # type: ignore[import-not-found,unused-ignore]
 
-                args = parse_megatron_args(extra_args_provider=get_miles_extra_args_provider())  # type: ignore[no-untyped-call]
+                args = megatron_args.parse_args(extra_args_provider=get_miles_extra_args_provider())  # type: ignore[no-untyped-call]
                 hf_validate_args(args, load_hf_config(args.hf_checkpoint))  # type: ignore[no-untyped-call]
             validate_phase_args(args, plan, RUN, phase)
             if resume:
