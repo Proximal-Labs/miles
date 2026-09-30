@@ -127,7 +127,14 @@ if PROFILE == "qwen38":
                 .apt_install("postgresql", *_EFA_PACKAGES)
                 .pip_install("psycopg[binary]")
                 .run_commands(_EFA)
-                .env({**node.MEGATRON_ENV, node._TRAINING_PATH: node._CONTAINER_TRAINING_CONFIG, **_SIZING_ENV})
+                .env(
+                    {
+                        **node.MEGATRON_ENV,
+                        node._TRAINING_PATH: node._CONTAINER_TRAINING_CONFIG,
+                        "PROXIMAL_CODE_SHA256": node.CODE_SHA256,
+                        **_SIZING_ENV,
+                    }
+                )
             )
         )
         .add_local_file(os.environ[node._TRAINING_PATH], node._CONTAINER_TRAINING_CONFIG)
@@ -502,10 +509,28 @@ def _run_phase(
     data_s = round(time.monotonic() - started)
     state["phase"] = label
     command = build_command(directory, nodes=nodes, samples=samples, steps=steps, extra=extra)
-    env = {**os.environ, "NCCL_DEBUG": "INFO", "NCCL_DEBUG_SUBSYS": "INIT,NET"}
-    log = Path(f"/tmp/sizing-{label}.log")
-    print(f"[sizing] phase {label}: {samples} x {length} tokens, {steps} steps\n  {shlex.join(command)}", flush=True)
     print(f"[sizing] phase {label}: mock data written in {data_s}s", flush=True)
+    result = run_command(
+        command, label=label, nodes=nodes, samples=samples, state=state, log=Path(f"/tmp/sizing-{label}.log")
+    )
+    return {
+        **result,
+        "samples_per_step": samples,
+        "steps": steps,
+        "length": length,
+        "tokens_per_step": samples * length,
+        "mock_data_s": data_s,
+    }
+
+
+def run_command(
+    command: list[str], *, label: str, nodes: int, samples: int, state: "_State", log: Path
+) -> dict[str, Any]:
+    """Run a native Miles invocation on the already-owned cluster, with stall diagnostics."""
+    state["phase"] = label
+    env = {**os.environ, "NCCL_DEBUG": "INFO", "NCCL_DEBUG_SUBSYS": "INIT,NET"}
+    log.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[sizing] phase {label}: {shlex.join(command)}", flush=True)
     t0 = time.monotonic()
     per_group = -(-samples // _data_parallel_size(command, nodes))
     dump_after, kill_after = (
@@ -521,6 +546,9 @@ def _run_phase(
         dump again, then end the phase rather than wait for the 60-min NCCL timeout."""
         episode = 0
         while not done.wait(15):
+            if state.get("error"):
+                process.terminate()
+                return
             quiet = time.monotonic() - progress["last"]
             grace = FIRST_PROGRESS_S if not progress["seen"] else 0
             if quiet > grace + dump_after and episode == 0:
@@ -582,8 +610,7 @@ def _run_phase(
         flush=True,
     )
     return {
-        "label": label, "samples_per_step": samples, "steps": steps, "length": length,
-        "tokens_per_step": samples * length, "exit_code": code, "wall_s": wall, "mock_data_s": data_s,
+        "label": label, "exit_code": code, "wall_s": wall,
         "perf": perf, "net": net, "errors": errors, "command": shlex.join(command),
         "stalled": stall["killed"], "stack_dumps": dumps,
     }  # fmt: skip
