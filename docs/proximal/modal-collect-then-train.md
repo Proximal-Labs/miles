@@ -221,7 +221,9 @@ path does. Keep the saved training recipe alongside any assembled batch.
 
 ## 4. Run one separate optimizer step
 
-Allocate the intended Miles/Megatron/Ray cluster separately. Provide the pinned
+Allocate the intended Miles/Megatron/Ray cluster separately; the
+[Modal training cluster guide](modal-training-clusters.md) covers the existing
+launchers, allocation, warm recovery and verified shutdown. Provide the pinned
 base weights/tokenizer, frozen batch, saved recipe and (for resume) native checkpoint
 at paths available to all workers. Provision host RAM for the full decoded batch.
 For resume, the native checkpoint's parallel layout must match; optimizer resharding
