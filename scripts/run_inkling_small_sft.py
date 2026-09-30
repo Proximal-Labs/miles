@@ -100,7 +100,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    U.convert_checkpoint(
+    args.create_backend().convert_checkpoint(
         model_name="Inkling-Small",
         megatron_model_type="inkling-small",
         num_gpus_per_node=args.num_gpus_per_node,
@@ -149,7 +149,7 @@ def execute(args: ScriptArgs):
         del parts[index : index + 2]
         parts[parts.index("--wandb-project") + 1] = args.wandb_project
         wandb_args = shlex.join(parts)
-    U.execute_train(
+    args.create_backend().execute_train(
         train_args=f"{checkpoint_args} {lora_args} {sft_args} {perf_args} {optimizer_args} {misc_args} {wandb_args}",
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="inkling-small",
@@ -179,7 +179,7 @@ def launch(args: ScriptArgs):
             json.dumps(asdict(args)),
         ]
     )
-    U.exec_command_cpu(
+    args.create_backend().exec_command_cpu(
         f"MODAL_PROFILE={shlex.quote(args.profile)} INKLING_MODAL_IMAGE={shlex.quote(args.image)} {command}"
     )
 
