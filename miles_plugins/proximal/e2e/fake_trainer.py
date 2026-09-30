@@ -113,6 +113,8 @@ def miles_args(config_path: Path, config: RunConfig, checkpoints: Path, *, batch
         rollout_global_dataset=True,
         async_max_concurrent_samples=config.max_in_flight_samples,
         custom_async_data_buffer_path="miles_plugins.proximal.buffer.PlatformDataBuffer",
+        dynamic_sampling_filter_path=None,
+        reward_key=None,
         save=str(checkpoints),
         load=str(checkpoints),
     )

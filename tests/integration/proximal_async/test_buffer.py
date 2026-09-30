@@ -14,7 +14,7 @@ from miles_plugins.proximal.snapshot import SnapshotReference
 from miles_plugins.proximal.store import PayloadSync, PolicyConflict, open_store
 
 
-def sample_for(attempt):
+def sample_for(attempt, reward=0.0):
     proof = AcceptedAttempt(
         attempt=attempt,
         capture=CaptureReceipt(
@@ -29,7 +29,7 @@ def sample_for(attempt):
             run_id=attempt.attempt_id,
             rollout_id="rollout-1",
             request_sha256=digest(attempt),
-            reward=0.0,
+            reward=reward,
             status="success",
             artifacts_url=None,
         ),
@@ -38,7 +38,7 @@ def sample_for(attempt):
         tokens=[1, 2, 3],
         response_length=2,
         response="ok",
-        reward=0.0,
+        reward=reward,
         status=Sample.Status.COMPLETED,
         loss_mask=[1, 1],
         rollout_log_probs=[-0.2, -0.4],
@@ -56,7 +56,7 @@ def versioned(policy, version, sha="d"):
     return policy.model_copy(update={"version": version, "snapshot": SnapshotReference(sha256=sha * 64)})
 
 
-def entry(attempt, policy, group="g", group_index=0):
+def entry(attempt, policy, group="g", group_index=0, rewards=(0.0, 0.0)):
     samples = []
     for i in range(2):
         sample, _ = sample_for(
@@ -67,19 +67,20 @@ def entry(attempt, policy, group="g", group_index=0):
                     "group_id": group,
                     "policy": policy,
                 }
-            )
+            ),
+            reward=rewards[i],
         )
         sample.index, sample.group_index = group_index * 2 + i, group_index
         samples.append(sample)
     return DataBufferInput(prompt_group=samples, group=samples)
 
 
-def make_buffer(config, tmp_path, store, ledger, unused=None):
+def make_buffer(config, tmp_path, store, ledger, unused=None, filter_path=None):
     path = tmp_path / "run.json"
     path.write_text(config.model_dump_json())
     buffer = PlatformDataBuffer(
         DataBufferConstructorInput(
-            args=Namespace(proximal_config=str(path)),
+            args=Namespace(proximal_config=str(path), dynamic_sampling_filter_path=filter_path, reward_key=None),
             unused_handler_fn=(unused if unused is not None else []).append,
         )
     )
@@ -257,7 +258,7 @@ async def test_payload_is_committed_before_indexing_and_reloaded_on_miss(config,
         await store.commit_policy(policy)
         await store.add_group("g", policy, entry(attempt, policy, group="g").group)
         assert events == [("commit", 0)]  # The payload is committed while no row exists yet.
-        [row] = await store.select(min_version=1, max_version=1, exclude=[], limit=1)
+        [row] = await store.select(min_version=1, max_version=1, exclude=[], limit=1, filter_path=None)
         target = Path(row.payload_path)
         target.rename(hidden)  # A reader whose mount view predates the commit.
         _, samples = await store.load(row)
