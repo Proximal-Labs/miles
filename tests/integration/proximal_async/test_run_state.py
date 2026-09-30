@@ -143,7 +143,7 @@ async def test_groups_after_snapshot_are_reconciled_without_reviving_policy(
     store = await open_store(config)
     try:
         assert await store.policy(2) is None  # Missing policy metadata is imported abandoned.
-        rows = await store.select(min_version=1, max_version=2, exclude=["consumed"], limit=10)
+        rows = await store.select(min_version=1, max_version=2, exclude=["consumed"], limit=10, filter_path=None)
         assert [row.group_id for row in rows] == ["after"]
         assert not (config.artifact_directory / config.run_id / "groups/consumed.bin").exists()
         with psycopg.connect(dsn) as db:
@@ -152,10 +152,10 @@ async def test_groups_after_snapshot_are_reconciled_without_reviving_policy(
                 == times
             )
         checkpoints.reconcile_groups(snapshot_root=root, artifacts=config.artifact_directory, dsn=dsn, context=context)
-        assert await store.count(min_version=1, max_version=2, exclude=["consumed"]) == 1
+        assert await store.count(min_version=1, max_version=2, exclude=["consumed"], filter_path=None) == 1
         # Existing publisher alone may revive identical future weights.
         await store.commit_policy(versioned(policy, 2))
-        assert await store.count(min_version=1, max_version=2, exclude=["consumed"]) == 2
+        assert await store.count(min_version=1, max_version=2, exclude=["consumed"], filter_path=None) == 2
     finally:
         await store.close()
 
@@ -388,9 +388,9 @@ async def test_completed_group_before_first_checkpoint_survives_restart(
     ) == (None, None)
     store = await open_store(config)
     try:
-        assert await store.count(min_version=1, max_version=1, exclude=[]) == 0
+        assert await store.count(min_version=1, max_version=1, exclude=[], filter_path=None) == 0
         await store.commit_policy(policy)
-        assert await store.count(min_version=1, max_version=1, exclude=[]) == 1
+        assert await store.count(min_version=1, max_version=1, exclude=[], filter_path=None) == 1
     finally:
         await store.close()
 

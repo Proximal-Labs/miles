@@ -198,6 +198,9 @@ count, then closes the producer. It neither initializes an optimizer nor
 publishes weights. Finite admission prevents speculative extra groups beyond the
 requested batch. Retries can still incur additional paid attempts; all are retained,
 and the requested count is the accepted batch size, not a billing limit.
+Finite collection explicitly disables the online dynamic-sampling hook: every
+complete group is retained and counted toward its requested total. Optional
+variance selection happens during subsequent explicit frozen-batch assembly.
 
 Later, `FrozenBatchRolloutFn` reads only the bundle through the ordinary Miles
 rollout-function seam. Miles still performs reward normalization, advantages,

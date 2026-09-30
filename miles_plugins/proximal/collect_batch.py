@@ -151,6 +151,9 @@ async def collect_batch(
         n_samples_per_prompt=config.research.group_size,
         async_unused_samples_handler=config.research.unused_groups,
         rollout_sample_filter_path=None,
+        # Finite collection retains every completed group. Variance selection
+        # belongs to the later explicit frozen-batch assembly, not admission.
+        dynamic_sampling_filter_path=None,
         rollout_batch_size=1,
         rollout_global_dataset=True,
         async_max_concurrent_samples=config.max_in_flight_samples,
