@@ -292,7 +292,13 @@ async def test_task_to_captured_and_graded_miles_sample(
                 if not graded:
                     with pytest.raises(IneligibleAttempt):
                         await execute_attempt(attempt, sample, **kwargs)
-                    assert not directory.exists()
+                    from miles_plugins.proximal.contracts import FailedAttempt
+
+                    failure = FailedAttempt.model_validate_json((directory / "failed.json").read_bytes())
+                    assert failure.attempt == attempt and failure.grade is None
+                    assert failure.capture is not None
+                    assert (directory / "partial.safetensors").is_file()
+                    assert not (directory / "accepted.json").exists()
                     assert "StopEnvironmentRun" in methods
                 else:
                     result = await execute_attempt(attempt, sample, **kwargs)

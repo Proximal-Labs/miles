@@ -10,6 +10,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.lora import checkpoint_state
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
@@ -446,6 +447,8 @@ def save_lora_checkpoint(
     global_rank = dist.get_rank() if dist.is_initialized() else 0
 
     save_path.mkdir(parents=True, exist_ok=True)
+    if global_rank == 0:
+        (save_path / checkpoint_state.MARKER).unlink(missing_ok=True)
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
 
@@ -531,6 +534,7 @@ def save_lora_checkpoint(
         torch.save(
             {
                 "iteration": iteration,
+                "rng": checkpoint_state.rng_state() if not getattr(args, "no_save_rng", False) else None,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
                 "optimizer_parameter_state": _parameter_state(optimizer) if save_optimizer else None,
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
@@ -542,6 +546,17 @@ def save_lora_checkpoint(
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
 
+    if global_rank == 0:
+        checkpoint_state.complete(
+            save_path,
+            args,
+            iteration=iteration,
+            optimizer=optimizer is not None and not getattr(args, "no_save_optim", False),
+            scheduler=opt_param_scheduler is not None,
+            rng=optimizer is not None and not getattr(args, "no_save_rng", False),
+        )
+    if dist.is_initialized():
+        dist.barrier(group=get_gloo_group())
     return str(save_path)
 
 
@@ -552,6 +567,7 @@ def load_lora_adapter(
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
     load_optimizer: bool = True,
+    load_rng: bool = True,
 ) -> tuple[bool, int | None]:
     """Load LoRA adapter weights from a saved checkpoint into the model.
 
@@ -621,7 +637,7 @@ def load_lora_adapter(
             optimizer.reload_model_params()
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer)
+        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer, load_rng)
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
@@ -643,6 +659,7 @@ def _load_training_state(
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
     load_optimizer: bool = True,
+    load_rng: bool = True,
 ) -> int | None:
     """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
     if optimizer is None:
@@ -669,6 +686,9 @@ def _load_training_state(
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
         logger.info("Restored LR scheduler state from LoRA checkpoint")
+
+    if load_rng and training_state.get("rng") is not None:
+        checkpoint_state.restore_rng(training_state["rng"])
 
     iteration = training_state.get("iteration")
     if iteration is not None:

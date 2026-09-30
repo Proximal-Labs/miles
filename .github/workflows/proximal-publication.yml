@@ -10,6 +10,7 @@ on:
     paths:
       - "miles_plugins/proximal/**"
       - "tests/fast/proximal_publication/**"
+      - "tests/fast/backends/megatron_utils/test_lora_utils.py"
       - "tests/integration/proximal_async/**"
       - ".github/workflows/proximal-publication.yml"
 
@@ -32,7 +33,7 @@ jobs:
           # Pushes to main are already filtered by `on.push.paths`.
           if [ "$EVENT" != "pull_request" ]; then echo "proximal=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')
-          pattern='^(miles_plugins/proximal/|miles/|train_async\.py$|tests/fast/test_train_async\.py$|tests/fast/proximal_publication/|tests/integration/proximal_async/|\.github/workflows/proximal-publication\.yml$)'
+          pattern='^(miles_plugins/proximal/|miles/|train_async\.py$|tests/fast/test_train_async\.py$|tests/fast/proximal_publication/|tests/fast/backends/megatron_utils/test_lora_utils\.py$|tests/integration/proximal_async/|\.github/workflows/proximal-publication\.yml$)'
           if grep -qE "$pattern" <<< "$files"; then proximal=true; else proximal=false; fi
           echo "proximal=$proximal" | tee -a "$GITHUB_OUTPUT"
 
@@ -60,6 +61,7 @@ jobs:
             -v "$PWD:/work:ro" -v "$PWD/.cpu-sglang:/sglang:ro" -v "$PWD/.cpu-tokenizer:/tokenizer:ro" \
             proximal-cpu python -m pytest --confcutdir=tests/integration/proximal_async \
             tests/integration/proximal_async tests/fast/proximal_publication \
+            tests/fast/backends/megatron_utils/test_lora_utils.py \
             tests/fast/rollout/test_fully_async_rollout.py tests/fast/utils/test_arguments.py \
             tests/fast/backends/training_utils/weight_update/test_connection_contract.py \
             tests/fast/backends/training_utils/weight_update/test_dist_weight_update_lifecycle.py \

@@ -159,6 +159,7 @@ def engine_server_args(run: RunConfig, deployment: ServingDeployment) -> dict[st
     return {
         "model_path": engine_model_path(run, deployment),
         "served_model_name": run.base_model.name,
+        "context_length": run.research.sampling.max_sequence_tokens,
         "trust_remote_code": False,
         "device": "cuda",  # Explicit: replicas are GPU hosts; rendering must not probe this machine.
         "host": "127.0.0.1",
@@ -216,6 +217,7 @@ OPERATIONAL_ENGINE_SETTINGS = frozenset(
         "log_level",
         "log_requests",
         "enable_cache_report",
+        "tokenizer_worker_num",
         "watchdog_timeout",
     }
 )
@@ -251,6 +253,10 @@ def engine_argv(run: RunConfig, deployment: ServingDeployment) -> list[str]:
     changed = sorted(name for name in names if getattr(resolved, name) != getattr(baseline, name))
     if not_operational := [name for name in changed if name not in OPERATIONAL_ENGINE_SETTINGS]:
         raise ValueError(f"Extra engine flags change non-operational settings: {not_operational}")
+    # serving_app always authenticates its loopback engine. SGLang only checks
+    # this incompatibility in HTTP-server startup, after allocating GPU memory.
+    if resolved.tokenizer_worker_num != 1:
+        raise ValueError("The authenticated serving engine requires tokenizer_worker_num=1")
     return argv
 
 

@@ -459,7 +459,7 @@ class TestSaveLoraCheckpointTrainingState:
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
         files = self._save(tmp_path, monkeypatch, no_save_optim=False, scheduler=scheduler)
 
-        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        assert files == ["adapter_megatron_rank0.pt", "native_checkpoint.json", "training_state_rank0.pt"]
         state = self._state(tmp_path)
         assert state["optimizer"] == {"step": 7}
         assert state["opt_param_scheduler"] == {"lr": 0.5}
@@ -471,7 +471,7 @@ class TestSaveLoraCheckpointTrainingState:
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
         files = self._save(tmp_path, monkeypatch, no_save_optim=True, scheduler=scheduler)
 
-        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        assert files == ["adapter_megatron_rank0.pt", "native_checkpoint.json", "training_state_rank0.pt"]
         state = self._state(tmp_path)
         assert state["optimizer"] is None
         assert state["opt_param_scheduler"] == {"lr": 0.5}
@@ -658,3 +658,75 @@ class TestLoadTrainingStateOptimizerGate:
         assert (loaded, iteration) == (True, 11)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
+
+
+def test_native_checkpoint_rng_round_trip_restores_next_draw():
+    import random
+
+    import numpy as np
+
+    from miles.backends.megatron_utils.lora.checkpoint_state import restore_rng, rng_state
+
+    saved = rng_state()
+    expected = (random.random(), np.random.rand(), torch.rand(8))
+    random.random()
+    np.random.rand()
+    torch.rand(8)
+    restore_rng(saved)
+    actual = (random.random(), np.random.rand(), torch.rand(8))
+    assert expected[:2] == actual[:2]
+    assert torch.equal(expected[2], actual[2])
+
+
+def test_native_resume_matches_next_adam_update_on_cpu(tmp_path, monkeypatch):
+    """A real optimizer, tensors, scheduler and random gradient; no GPU equivalence claim."""
+    rank0 = SimpleNamespace(rank=0)
+    monkeypatch.setattr(
+        lora_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(
+            effective_dp=rank0,
+            cp=rank0,
+            tp=rank0,
+            pp=rank0,
+        ),
+    )
+    args = Namespace(
+        megatron_to_hf_mode="raw",
+        lora_rank=2,
+        lora_alpha=2,
+        target_modules=["linear_qkv"],
+        lora_dropout=0.0,
+        experts_shared_outer_loras=False,
+    )
+
+    def training_objects():
+        model = _AdapterModel()
+        with torch.no_grad():
+            model.lora_A.fill_(1.0)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+        optimizer.reload_model_params = lambda: None  # CPU Adam has no separate master parameter copy.
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+        return model, optimizer, scheduler
+
+    def update(model, optimizer, scheduler):
+        optimizer.zero_grad()
+        (model.lora_A * torch.rand_like(model.lora_A)).square().sum().backward()
+        optimizer.step()
+        scheduler.step()
+
+    torch.manual_seed(19)
+    model, optimizer, scheduler = training_objects()
+    update(model, optimizer, scheduler)
+    save_lora_checkpoint([model], args, str(tmp_path), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=1)
+    update(model, optimizer, scheduler)
+    expected = model.lora_A.detach().clone()
+    resumed, resumed_optim, resumed_scheduler = training_objects()
+    assert load_lora_adapter(
+        [resumed], str(tmp_path), optimizer=resumed_optim, opt_param_scheduler=resumed_scheduler
+    ) == (True, 1)
+    update(resumed, resumed_optim, resumed_scheduler)
+    assert torch.equal(resumed.lora_A, expected)
+    assert resumed_scheduler.state_dict() == scheduler.state_dict()
+    for key, value in optimizer.state[model.lora_A].items():
+        assert torch.equal(resumed_optim.state[resumed.lora_A][key], value)

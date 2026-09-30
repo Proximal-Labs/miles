@@ -24,23 +24,35 @@ optimizer state). After each saved step a thread copies a self-contained snapsho
 ``e2e.snapshots``) to the deployment's state Volume. On start, the latest snapshot is
 restored before any service runs and Miles resumes from it; Modal retries the function
 after a crash, up to the deployment's ``max_retries``.
+
+Detached collection: ``--collect-rollouts N --rollouts-persist-to-volume`` runs
+the same producer and artifact publisher on CPU, without starting a trainer GPU.
+Choose ``--fresh`` or ``--policy-file`` and explicitly authorize rollout/publication.
+Completed results are saved incrementally; the selected batch is finalized on the
+state Volume for a later independent training step. See docs/proximal/offline-batches.md.
 """
 
+import asyncio
+import hashlib
+import json
 import os
 import secrets
 import shlex
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path, PurePosixPath
 
 import modal
 
+from miles_plugins.proximal.contracts import RunConfig, RunStateArtifacts, canonical_bytes, digest, training_contract
 from miles_plugins.proximal.modal_sources import add_fork_sources
-from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, RUN_JSON, base_volume, with_configs
+from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume, with_configs
+from miles_plugins.proximal.state_checkpoints import RecoveryContext
+from miles_plugins.proximal.storage import write_atomic
 from miles_plugins.proximal.training import (
     Gsm8kPlatform,
     RealPlatform,
@@ -58,6 +70,8 @@ _CONTAINER_TRAINING_CONFIG = "/proximal-config/training.json"
 REPO = Path(__file__).resolve().parents[2]
 TRAINING = read_training_deployment(os.environ[_TRAINING_PATH])
 check_deployment(RUN, TRAINING)
+if TRAINING.state_volume == DEPLOYMENT.base_volume:
+    raise ValueError("Training state must not share the serving base-weight Volume")
 if modal.is_local():
     check_train_args(TRAINING, (REPO / TRAINING.train_args).read_text())
 
@@ -110,16 +124,32 @@ MEGATRON_ENV = {
     **(TRAINING.kernel_cache.env() if TRAINING.kernel_cache is not None else {}),
 }
 
+
+def _source_digest() -> str:
+    if not modal.is_local():
+        return os.environ["PROXIMAL_CODE_SHA256"]
+    result = hashlib.sha256()
+    paths = [REPO / "train_async.py"]
+    for directory in ("miles", "miles_plugins", "scripts/models"):
+        paths.extend(path for path in (REPO / directory).rglob("*") if path.suffix in {".py", ".jinja"})
+    for path in sorted(paths):
+        result.update(str(path.relative_to(REPO)).encode() + b"\0" + path.read_bytes() + b"\0")
+    return result.hexdigest()
+
+
+CODE_SHA256 = _source_digest()
+
 image = add_fork_sources(
     with_configs(
         modal.Image.from_registry(DEPLOYMENT.image)
         .entrypoint([])
         .apt_install("postgresql")
         .pip_install("psycopg[binary]")
-        .env({**MEGATRON_ENV, _TRAINING_PATH: _CONTAINER_TRAINING_CONFIG})
+        .env({**MEGATRON_ENV, _TRAINING_PATH: _CONTAINER_TRAINING_CONFIG, "PROXIMAL_CODE_SHA256": CODE_SHA256})
     )
     .add_local_file(os.environ[_TRAINING_PATH], _CONTAINER_TRAINING_CONFIG)
     .add_local_file(REPO / "train_async.py", str(FORK / "train_async.py"))
+    .add_local_file(REPO / "train.py", str(FORK / "train.py"))
     .add_local_dir(REPO / "scripts/models", str(FORK / "scripts/models"))
     .add_local_file(REPO / TRAINING.train_args, str(FORK / "train_args.txt"))
 )
@@ -202,29 +232,44 @@ def training_command(resume_step: int | None) -> list[str]:
     ]
 
 
-def _snapshot_loop(dsn: str, pg_bin: Path, stop: threading.Event, taken: int | None) -> None:
-    from miles_plugins.proximal.e2e import snapshots
+def _recovery_context() -> RecoveryContext:
+    from miles.utils.external_utils.model_args_utils import load_model_args
 
-    while not stop.wait(15):
-        steps = [step for step in snapshots.complete_steps(STATE / "checkpoints") if taken is None or step > taken]
-        if not steps:
-            continue
-        step = steps[-1]
-        try:
-            snapshots.take(
-                step,
-                checkpoints=STATE / "checkpoints",
-                artifacts=Path(RUN.artifact_directory),
-                dsn=dsn,
-                snapshot_root=SNAPSHOT,
-                pg_bin=pg_bin,
-            )
-            state_volume.commit()
-        except Exception as exc:  # A failed snapshot is retried next tick; a dead thread never snapshots again.
-            print(f"[training] snapshot of step {step} failed ({type(exc).__name__}: {exc}); retrying", flush=True)
-            continue
-        taken = step
-        print(f"[training] snapshot of step {step} committed", flush=True)
+    args = tuple(
+        token
+        for line in (FORK / "train_args.txt").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+        for token in shlex.split(line)
+    )
+    return RecoveryContext(
+        run_id=RUN.run_id,
+        contract_sha256=digest(training_contract(RUN)),
+        world_size=TRAINING.num_gpus,
+        max_policy_lag=RUN.research.max_policy_lag,
+        model_args=tuple(shlex.split(load_model_args(TRAINING.model_args, model_script_dir=FORK / "scripts/models"))),
+        train_args=args,
+        image=DEPLOYMENT.image,
+        code_sha256=CODE_SHA256,
+    )
+
+
+def _record_launch(context: RecoveryContext, launch_id: str, run: RunConfig) -> None:
+    root_record = SNAPSHOT / "run.json"
+    if root_record.exists():
+        previous = RecoveryContext.model_validate_json(root_record.read_bytes())
+        for field in ("run_id", "contract_sha256", "world_size", "max_policy_lag", "model_args"):
+            if getattr(previous, field) != getattr(context, field):
+                raise ValueError(f"Run namespace has incompatible {field}")
+    else:
+        write_atomic(root_record, canonical_bytes(context))
+    # No secrets: configs contain environment-variable names, not their values.
+    value = {
+        "context": context.model_dump(mode="json"),
+        "run": run.model_dump(mode="json"),
+        "training": TRAINING.model_dump(mode="json"),
+    }
+    write_atomic(SNAPSHOT / "launches" / launch_id / "config.json", json.dumps(value, sort_keys=True).encode())
+    state_volume.commit()
 
 
 def _run_trainer(command: list[str]) -> int:
@@ -322,13 +367,18 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     retries=modal.Retries(max_retries=TRAINING.max_retries, initial_delay=30.0) if TRAINING.max_retries else None,
     secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
     timeout=24 * 3600,
+    max_containers=1,
 )
 def train() -> int:
+    from miles_plugins.proximal import state_artifacts, state_checkpoints
     from miles_plugins.proximal.e2e import snapshots
     from miles_plugins.proximal.e2e.local_postgres import local_postgres
+    from miles_plugins.proximal.state_writer import StateWriter, checkpoint_publisher
 
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(RUN_JSON)
+    # Only this composition root supplies run_state: its writer acknowledges the outbox.
+    runtime_run = RUN.model_copy(update={"artifact_storage": RunStateArtifacts(kind="run_state")})
+    CONFIG.write_text(runtime_run.model_dump_json())
     _set_keys()
     # A retry may land in the container of the failed attempt: clear its Ray and state.
     subprocess.run(["ray", "stop", "--force"], check=False, capture_output=True)
@@ -337,20 +387,42 @@ def train() -> int:
     logs.mkdir(parents=True, exist_ok=True)
     processes: list[subprocess.Popen[bytes]] = []
     pg_bin = sorted(Path("/usr/lib/postgresql").glob("*/bin"))[-1]
-    stop = threading.Event()
+    context = _recovery_context()
+    launch_id = uuid.uuid4().hex
+    state_volume.reload()
     with local_postgres(STATE / "postgres") as dsn:
         os.environ[RUN.store_dsn_env] = dsn
         # Before any service connects: the store must be restored into an empty database.
-        resume_step = snapshots.restore(
+        resume_step, parent = state_checkpoints.restore(
             snapshot_root=SNAPSHOT,
             checkpoints=STATE / "checkpoints",
             artifacts=Path(RUN.artifact_directory),
             dsn=dsn,
             pg_bin=pg_bin,
-            max_policy_lag=RUN.research.max_policy_lag,
+            context=context,
+            selection=TRAINING.resume,
         )
         print(f"[training] {'resuming from step ' + str(resume_step) if resume_step is not None else 'fresh start'}")
-        snapshotter = threading.Thread(target=_snapshot_loop, args=(dsn, pg_bin, stop, resume_step))
+        _record_launch(context, launch_id, runtime_run)
+        state_artifacts.initialize(dsn)
+        writer = StateWriter(
+            dsn=dsn,
+            run_id=RUN.run_id,
+            artifacts=RUN.artifact_directory,
+            snapshot_root=SNAPSHOT,
+            commit=state_volume.commit,
+            publish_checkpoint=checkpoint_publisher(
+                dsn=dsn,
+                pg_bin=pg_bin,
+                checkpoints=STATE / "checkpoints",
+                snapshot_root=SNAPSHOT,
+                context=context,
+                launch_id=launch_id,
+                parent=parent,
+                taken=resume_step,
+                commit=state_volume.commit,
+            ),
+        )
         try:
             for name, command, health in _service_commands():
                 log = (logs / f"{name}.log").open("ab")
@@ -376,7 +448,7 @@ def train() -> int:
             os.environ["RAY_ADDRESS"] = "127.0.0.1:6379"
             command = training_command(resume_step)
             print("[training] " + shlex.join(command), flush=True)
-            snapshotter.start()
+            writer.start()
             code = _run_trainer(command)
             if code != 0:  # Raise so Modal retries from the latest snapshot.
                 raise RuntimeError(f"Trainer exited with {code}")
@@ -385,25 +457,163 @@ def train() -> int:
             # Stop everything that can still write a checkpoint, then the snapshot thread,
             # before re-raising: a retry must never overlap this attempt's writes.
             subprocess.run(["ray", "stop", "--force"], check=False)
-            stop.set()
-            if snapshotter.is_alive():
-                snapshotter.join()
-            for process in reversed(processes):
-                process.terminate()
-            for process in processes:
+            # Every producer has stopped; drain paid captures and the last complete
+            # optimizer boundary before the local Postgres context exits.
+            try:
+                writer.close()
+            finally:
+                for process in reversed(processes):
+                    process.terminate()
+                for process in processes:
+                    try:
+                        process.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                # Compiled kernels this attempt built, for the next run; losing them costs only time.
+                if kernel_volume is not None:
+                    try:
+                        kernel_volume.commit()
+                    except Exception as exc:
+                        print(f"[training] kernel cache commit failed ({type(exc).__name__})", flush=True)
+
+
+@app.function(
+    image=image,
+    cpu=float(TRAINING.cpu),
+    memory=TRAINING.memory_mib,
+    volumes={
+        str(DEPLOYMENT.base_mount): base_volume.with_mount_options(read_only=True),
+        str(SNAPSHOT_MOUNT): state_volume,
+    },
+    secrets=[modal.Secret.from_name(name, environment_name=RUN.volume.environment_name) for name in TRAINING.secrets],
+    timeout=24 * 3600,
+    max_containers=1,
+)
+def collect(
+    samples: int,
+    fresh: bool,
+    policy_json: str,
+    yes_rollouts: bool,
+    yes_publish: bool,
+    rollouts_persist_to_volume: bool,
+) -> str:
+    """CPU-only producer; the persistence flag uses TrainingDeployment.state_volume."""
+    import httpx
+
+    from miles_plugins.proximal.authorization import authorize_run
+    from miles_plugins.proximal.clients import ServingPoolClient
+    from miles_plugins.proximal.collect_batch import collect_persisted, validate_collection_request
+    from miles_plugins.proximal.contracts import Policy
+    from miles_plugins.proximal.e2e.local_postgres import local_postgres
+    from miles_plugins.proximal.initial_policy import prepare_base_policy
+    from miles_plugins.proximal.modal_volume import authorize_volume_publication, modal_publish_snapshot
+    from miles_plugins.proximal.store import open_store
+
+    policy = validate_collection_request(
+        RUN,
+        samples=samples,
+        fresh=fresh,
+        policy_json=policy_json,
+        persist_to_volume=rollouts_persist_to_volume,
+    )
+    runtime_run = RUN.model_copy(update={"artifact_storage": RunStateArtifacts(kind="run_state")})
+    authorization = authorize_run(runtime_run, yes_rollouts=yes_rollouts, yes_publish=yes_publish)
+    state_volume.reload()
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(runtime_run.model_dump_json())
+    _set_keys()
+    collection_id = uuid.uuid4().hex
+    work = STATE / "collections" / collection_id
+    base_policy = prepare_base_policy(runtime_run, output=work / "initial-policy") if fresh else None
+    collection_root = SNAPSHOT / "collections" / collection_id
+    print(f"Rollouts persist to {TRAINING.state_volume.volume_name}:/{RUN.run_id}/artifacts/{RUN.run_id}", flush=True)
+    print(f"Collection ID: {collection_id}", flush=True)
+    processes: list[subprocess.Popen[bytes]] = []
+    logs = work / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    try:
+        for name, command, health in _service_commands():
+            with (logs / f"{name}.log").open("ab") as log:
+                process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            processes.append(process)
+            _wait_healthy(health, process, logs / f"{name}.log")
+        if isinstance(TRAINING.platform, RealPlatform):
+            _wait_for_registration(TRAINING.platform)
+        _check_serving()
+        if base_policy is not None:
+            modal_publish_snapshot(authorize_volume_publication(RUN.volume, yes_publish=yes_publish), base_policy)
+            policy = Policy(run_id=RUN.run_id, version=1, base_model=RUN.base_model, snapshot=base_policy.reference)
+        assert policy is not None
+        with local_postgres(work / "postgres") as dsn:
+            os.environ[RUN.store_dsn_env] = dsn
+
+            async def run() -> None:
+                recipe = _recovery_context()
+                store = await open_store(runtime_run)
                 try:
-                    process.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            # Compiled kernels this attempt built, for the next run; losing them costs only time.
-            if kernel_volume is not None:
-                try:
-                    kernel_volume.commit()
-                except Exception as exc:
-                    print(f"[training] kernel cache commit failed ({type(exc).__name__})", flush=True)
+                    async with httpx.AsyncClient(timeout=RUN.request_timeout_seconds) as client:
+                        await ServingPoolClient(authorization, client).prepare(policy)
+                    await store.commit_policy(policy)
+                finally:
+                    await store.close()
+                await collect_persisted(
+                    authorization,
+                    config_path=CONFIG,
+                    policy=policy,
+                    num_samples=samples,
+                    out=work / "collected",
+                    snapshot_root=SNAPSHOT,
+                    collection_root=collection_root,
+                    commit=state_volume.commit,
+                    base_policy=None if base_policy is None else base_policy.directory,
+                    train_args=(*recipe.train_args, *recipe.model_args),
+                )
+
+            asyncio.run(run())
+    finally:
+        for process in processes:
+            process.terminate()
+        for process in processes:
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    print(f"Ready: {samples} rollouts at {collection_root / 'batch'}", flush=True)
+    return collection_id
 
 
 @app.local_entrypoint()
-def main() -> None:
+def main(
+    collect_rollouts: int | None = None,
+    rollouts_persist_to_volume: bool = False,
+    fresh: bool = False,
+    policy_file: str = "",
+    yes_rollouts: bool = False,
+    yes_publish: bool = False,
+) -> None:
+    if collect_rollouts is not None:
+        from miles_plugins.proximal.collect_batch import validate_collection_request
+
+        if not rollouts_persist_to_volume or not yes_rollouts or not yes_publish:
+            raise ValueError("Collection requires --rollouts-persist-to-volume --yes-rollouts --yes-publish")
+        policy_json = Path(policy_file).read_text() if policy_file else ""
+        validate_collection_request(
+            RUN,
+            samples=collect_rollouts,
+            fresh=fresh,
+            policy_json=policy_json,
+            persist_to_volume=rollouts_persist_to_volume,
+        )
+        identity = collect.remote(
+            collect_rollouts, fresh, policy_json, yes_rollouts, yes_publish, rollouts_persist_to_volume
+        )
+        print(f"Collection ready: {identity}")
+        return
+    if fresh or policy_file or yes_rollouts or yes_publish:
+        raise ValueError("Collection options require --collect-rollouts N")
+    # Online training already enables the same acknowledged Volume persistence.
+    if rollouts_persist_to_volume:
+        print(f"Rollout persistence enabled: {TRAINING.state_volume.volume_name}, run {RUN.run_id}")
     code = train.remote()
     print(f"Trainer exited with {code}")
