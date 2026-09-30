@@ -34,6 +34,7 @@ from miles_plugins.proximal.offline_batch import (
     publish_batch,
     read_checkpoint,
     train_argv,
+    training_groups,
     validate_batch,
     validate_train_args,
 )
@@ -74,7 +75,7 @@ def args_for(batch, bundle, checkpoint_path, checkpoint, save):
         rollout_global_dataset=False,
         rollout_function_path=ROLLOUT,
         global_batch_size=batch.num_samples,
-        rollout_batch_size=len(batch.groups),
+        rollout_batch_size=len(training_groups(batch)),
         n_samples_per_prompt=batch.source.research.group_size,
         num_rollout=checkpoint.step + 2,
         start_rollout_id=checkpoint.step + 1,
