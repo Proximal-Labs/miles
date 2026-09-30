@@ -222,6 +222,9 @@ async def test_real_async_worker_replenishes_filtered_groups_into_full_batch(con
     gate = asyncio.Event()
 
     class Producer(PlatformRolloutFn):
+        async def _preflight(self):  # No capture here; test_preflight covers the canary.
+            return None
+
         async def _generate_group(self, prompt_group):
             nonlocal generated
             index = generated
