@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import shutil
 import sys
 
 import pytest
@@ -131,12 +132,19 @@ def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatc
         importlib.import_module("miles_plugins.proximal.serving_app")
 
 
+def test_every_serving_image_gets_the_sglang_patch():
+    from miles_plugins.proximal.serving import SGLANG_PATCH
+
+    assert SGLANG_PATCH.is_file()
+
+
+# The Miles image carries patch(1); some CPU runners do not.
+@pytest.mark.skipif(shutil.which("patch") is None, reason="needs patch(1)")
 def test_sglang_patch_applies_once_then_is_skipped_and_fails_on_other_sources(tmp_path):
     import subprocess
 
-    from miles_plugins.proximal.serving import SGLANG_PATCH, sglang_patch_command
+    from miles_plugins.proximal.serving import sglang_patch_command
 
-    assert SGLANG_PATCH.is_file()
     root = tmp_path / "sglang"
     root.mkdir()
     (root / "f.py").write_text("a = 1\n")
