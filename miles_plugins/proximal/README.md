@@ -1,11 +1,13 @@
 # Proximal async RL integration
 
-Miles trains a LoRA while Proximal continuously executes feature tasks against independently served immutable policy versions on Modal. Miles uses one fleet URL; replica count, placement and sandbox/container teardown belong to the platform.
+Miles trains a LoRA while Proximal continuously executes feature tasks against independently served immutable policy versions on Modal. Miles uses one fleet URL; the serving deployment config controls replica hardware and bounds, and the platform owns rollout sandbox teardown.
 
-For detached collection, use `modal_training --collect-rollouts 1024 --rollouts-persist-to-volume --fresh`
-with the usual configs and rollout/publication consent flags. The CPU job saves
-rollouts incrementally to the configured state Volume, then returns a batch for a
-later fresh or native-resume step. See [the two-command runbook](../../docs/proximal/offline-batches.md#p0-one-flag-enables-durable-rollout-storage).
+For sampling without a training cluster and a separate optimizer step later, start
+with the [Modal collect-then-train guide](../../docs/proximal/modal-collect-then-train.md). It explains replica
+ownership, policy selection, automatic Volume persistence, batch validation, and
+what the later training launcher must provide. The
+[offline-batch reference](../../docs/proximal/offline-batches.md) covers detailed
+selection and recovery commands.
 
 Read the [architecture](../../docs/proximal/architecture.md), [investigation](../../docs/proximal/investigation.md), and exact [remaining platform changes](../../docs/proximal/platform-contract.md). The first pass supports DeepSWE/Qwen3, one Megatron actor cell, text-only linear TITO, complete prompt groups, and rollout-logprob importance ratios. It includes code and CPU tests; live numerical/Modal validation is still required.
 
