@@ -537,6 +537,7 @@ def save_lora_checkpoint(
                 "rng": checkpoint_state.rng_state() if not getattr(args, "no_save_rng", False) else None,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
                 "optimizer_parameter_state": _parameter_state(optimizer) if save_optimizer else None,
+                "optimizer_parameter_names": _parameter_names(optimizer) if save_optimizer else None,
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             },
             save_path / f"training_state_rank{rank}.pt",
@@ -712,6 +713,28 @@ def _parameter_state(optimizer: Any) -> list[Any]:
     return [
         _unpadded(_to_cpu(part.get_parameter_state_dp_reshardable())) for part in _distributed_optimizers(optimizer)
     ]
+
+
+def _parameter_names(optimizer: Any) -> list[Any] | None:
+    """Model parameter names of the ``_parameter_state`` elements, in the same nesting.
+
+    The parameter state is bucket-ordered and unnamed; the names let an offline reader
+    attribute moments (and the gradients they imply) to model parameters.
+    """
+    names = []
+    for part in _distributed_optimizers(optimizer):
+        chunks = getattr(part, "model_chunks", None)
+        if chunks is None:
+            return None
+        by_id = {id(param): name for chunk in chunks for name, param in chunk.named_parameters()}
+        names.append(
+            {
+                gbuf_idx: [[by_id.get(id(p), "?") for p in bucket["param_map"]] for bucket in buckets]
+                for gbuf_idx, dtype_buckets in enumerate(part.gbuf_ranges)
+                for buckets in dtype_buckets.values()
+            }
+        )
+    return names
 
 
 def _checked_parameter_states(optimizer: Any, training_state: dict[str, Any], state_path: Path) -> list[Any]:
