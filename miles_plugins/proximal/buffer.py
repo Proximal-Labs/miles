@@ -14,6 +14,7 @@ from miles_plugins.proximal.contracts import (
     digest,
     pinned_dataset,
     read_run_config,
+    replays_sampling_support,
 )
 from miles_plugins.proximal.data_source import ConsumptionLedger
 from miles_plugins.proximal.options import load_dynamic_filter
@@ -42,6 +43,10 @@ def validate_sample(sample: Sample, evidence: AcceptedAttempt) -> None:
         raise ValueError("Missing assistant-token loss mask")
     if sample.rollout_log_probs is None or any(not math.isfinite(x) or x > 1e-6 for x in sample.rollout_log_probs):
         raise ValueError("Missing/invalid behavior logprobs")
+    # The logprobs above are over each token's surviving set exactly when that set was recorded;
+    # sample.validate() already checked a recorded set covers every response token.
+    if replays_sampling_support(evidence.attempt.sampling) != (sample.rollout_sampling_mask is not None):
+        raise ValueError("Sampling support presence does not match the attempt's logprob convention")
     spans = sample.all_weight_version_spans
     covered: set[int] = set()
     for span in spans:

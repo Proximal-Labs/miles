@@ -8,7 +8,9 @@ first step, so each boundary it crosses is checked before the stage that depends
 - ``canary``, after the first policy is published and before any platform run: a real
   capture session answers a model call and seals it as a sample, and a turn past the
   sequence budget reaches the agent as OpenAI's context-limit error, which agent-px
-  ends as a graded rollout instead of a failed one.
+  ends as a graded rollout instead of a failed one. When the contract replays the
+  sampling support, the sealed sample must carry each generated token's support: an
+  SGLang build without ``return_sampling_mask`` fails here, not after a paid rollout.
 """
 
 import asyncio
@@ -18,9 +20,20 @@ import uuid
 
 import httpx
 
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS, decode_samples_and_merge_input_sample
+from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
 from miles_plugins.proximal.clients import CaptureClient
-from miles_plugins.proximal.contracts import Attempt, Policy, affinity_headers, pinned_dataset, serving_mismatches
+from miles_plugins.proximal.contracts import (
+    Attempt,
+    Policy,
+    Sampling,
+    affinity_headers,
+    pinned_dataset,
+    replays_sampling_support,
+    serving_mismatches,
+)
+from miles_plugins.proximal.store import sample_fields
 
 # agent-px's recognizer for a provider's context-window rejection
 # (packages/agent-px/contract/src/errors.ts, isProviderContextLimitError).
@@ -29,6 +42,16 @@ AGENT_PX_CONTEXT_LIMIT = re.compile(r"\bmaximum context length is [\d,]+ tokens\
 
 class PreflightFailed(RuntimeError):
     """The run cannot work as configured; nothing paid has started."""
+
+
+def _require_sampling_support(payload: bytes, sampling: Sampling) -> None:
+    """The sealed sample records a support for every generated token, as the trainer will replay it."""
+    samples = decode_samples_and_merge_input_sample(
+        payload, Sample(), fields=sample_fields(COMPUTED_FIELDS, sampling)
+    ).samples
+    mask = samples[0].rollout_sampling_mask if len(samples) == 1 else None
+    if mask is None or len(mask) != samples[0].response_length:
+        raise PreflightFailed("The sealed sample lacks a sampling support for every generated token")
 
 
 async def check_serving(authorization: AuthorizedRun, client: httpx.AsyncClient, *, probes: int = 24) -> int:
@@ -92,9 +115,11 @@ async def canary(authorization: AuthorizedRun, client: httpx.AsyncClient, policy
         seconds = time.monotonic() - started
         if reply.status_code != 200:
             raise PreflightFailed(f"A model call through capture failed ({reply.status_code}): {reply.text[:300]}")
-        receipt, _ = await capture.collect(handle, first)
+        receipt, payload = await capture.collect(handle, first)
         if receipt.num_calls != 1 or receipt.num_tokens <= 0:
             raise PreflightFailed("Capture sealed no model call")
+        if replays_sampling_support(sampling):
+            _require_sampling_support(payload, sampling)
     finally:
         await capture.release(handle)
 

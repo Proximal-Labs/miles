@@ -3,7 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, ConfigDict, Field, FiniteFloat, model_validator
@@ -65,18 +65,38 @@ class Sampling(Contract):
     top_k: int
     max_tokens: Positive
     max_sequence_tokens: Positive
-    # This first pass trains on untransformed model logprobs. Restrict the
-    # sampling distribution so a serving flag cannot silently change their meaning.
-    logprob_semantics: Literal["untransformed"]
+    # What a behavior logprob means, pinned with the distribution so a serving flag
+    # cannot silently change it:
+    # - untransformed: the full-vocabulary softmax; sampling is unfiltered.
+    # - sampling_support: the softmax renormalized over the tokens that survived
+    #   top-p/top-k. SGLang returns each generated token's surviving set, and the
+    #   trainer masks its logits to that same set (Miles sampling-support replay).
+    logprob_semantics: Literal["untransformed", "sampling_support"]
     budget_policy: Literal["cap_to_remaining_context"]
 
     @model_validator(mode="after")
     def _supported_distribution(self) -> "Sampling":
-        if self.temperature != 1 or self.top_p != 1 or self.top_k != -1:
-            raise ValueError("First pass requires temperature=1, top_p=1, top_k=-1 for exact behavior logprobs")
+        # Temperature 1 is the only one verified end to end; the trainer divides the same logits by it.
+        if self.temperature != 1:
+            raise ValueError("Sampling requires temperature=1")
+        match self.logprob_semantics:
+            case "untransformed":
+                if self.top_p != 1 or self.top_k != -1:
+                    raise ValueError("untransformed logprobs require top_p=1, top_k=-1 (unfiltered sampling)")
+            case "sampling_support":
+                # A top-k bound keeps each token's recorded support small; top-p alone does not.
+                if self.top_k <= 0:
+                    raise ValueError("sampling_support logprobs require a positive top_k to bound the support")
+            case _ as unreachable:
+                assert_never(unreachable)
         if self.max_tokens > self.max_sequence_tokens:
             raise ValueError("Per-turn token budget exceeds sequence budget")
         return self
+
+
+def replays_sampling_support(sampling: Sampling) -> bool:
+    """Whether rollouts record each token's surviving set and the trainer renormalizes over it."""
+    return sampling.logprob_semantics == "sampling_support"
 
 
 class LoRA(Contract):

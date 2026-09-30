@@ -33,7 +33,7 @@ from miles_plugins.proximal.contracts import (
 from miles_plugins.proximal.initial_policy import copy_base_policy, verify_base_policy
 from miles_plugins.proximal.state_artifacts import copy_verified, describe
 from miles_plugins.proximal.state_checkpoints import CheckpointManifest, read_manifest
-from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, decode_group
+from miles_plugins.proximal.store import GroupIndex, GroupRow, StoredGroup, decode_group, stored_sample_fields
 
 ROLLOUT = "miles_plugins.proximal.offline_batch.FrozenBatchRolloutFn"
 
@@ -156,7 +156,12 @@ def load_group(root: Path, index: GroupIndex, config: RunConfig) -> list[Sample]
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Expected regular group payload: {path}")
     row = GroupRow(index.header.group_id, index.header.policy.version, str(path), index.payload_sha256)
-    header, samples = decode_group(path.read_bytes(), row=row, contract_sha256=digest(training_contract(config)))
+    header, samples = decode_group(
+        path.read_bytes(),
+        row=row,
+        contract_sha256=digest(training_contract(config)),
+        fields=stored_sample_fields(config.research.sampling),
+    )
     if header != index.header or validate_group(config, samples) != header.policy:
         raise ValueError("Group payload, index and acceptance evidence disagree")
     if any(accepted(s).attempt.group_id != header.group_id for s in samples):

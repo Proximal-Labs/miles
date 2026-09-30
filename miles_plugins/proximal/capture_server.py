@@ -45,6 +45,7 @@ from miles_plugins.proximal.contracts import (
     canonical_bytes,
     digest,
     platform_rollout_id,
+    replays_sampling_support,
     serving_contract,
 )
 from miles_plugins.proximal.storage import write_immutable
@@ -193,7 +194,9 @@ def session_config(config: RunConfig) -> SessionServerConfig:
         hf_checkpoint=str(config.tokenizer_path),
         chat_template_path=fixed_chat_template(config.tito_model)[0],
         tito_model=config.tito_model,
-        # The run contract pins top_p=1 and top_k=-1 (Sampling), which is when Miles disables replay.
+        # SessionCore applies this default only to sessions it creates itself. Capture creates each
+        # session through the registry with the attempt's own replay setting (_create_session), so one
+        # replica serves attempts under either logprob convention.
         use_sampling_support_replay=False,
         apply_chat_template_kwargs=_template_kwargs(config),
         use_rollout_routing_replay=False,
@@ -522,7 +525,9 @@ class CaptureServer:
             # Do not truncate a trajectory after its grade was earned.
             response = await self.core.collect_samples(session_id, max_seq_len=None)
             if response.status_code != 200:
-                raise HTTPException(422, "TITO sample assembly failed")
+                # SessionCore's reason, e.g. an SGLang build that returned no sampling support.
+                detail = bytes(response.body)[:300].decode(errors="replace")
+                raise HTTPException(422, f"TITO sample assembly failed: {detail}")
             payload = bytes(response.body)
             receipt = CaptureReceipt(
                 session_id=session_id,
@@ -552,7 +557,17 @@ class CaptureServer:
                     raise HTTPException(410, "Attempt was lost or released; create a new execution identity")
                 if len(self.sessions) >= self.config.max_in_flight_samples:
                     raise HTTPException(429, "Capture session capacity reached")
-                session_id = self.core.registry.create_session()
+                sampling = attempt.sampling
+                session_id = self.core.registry.create_session(
+                    # Registered so SessionCore can check each request's temperature against the trainer's.
+                    sampling_defaults={
+                        "temperature": sampling.temperature,
+                        "top_p": sampling.top_p,
+                        "top_k": sampling.top_k,
+                    },
+                    # Replay asks SGLang for each token's surviving set and seals it with the sample.
+                    sampling_support_replay=replays_sampling_support(sampling),
+                )
                 write_immutable(
                     index, json.dumps({"session_id": session_id, "request_sha256": digest(attempt)}).encode()
                 )

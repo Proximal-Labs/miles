@@ -245,12 +245,13 @@ async def test_payload_is_committed_before_indexing_and_reloaded_on_miss(config,
         hidden.rename(target)  # This container's view catches up with the writer's commit.
 
     from miles_plugins.proximal.contracts import digest, training_contract
-    from miles_plugins.proximal.store import RolloutStore
+    from miles_plugins.proximal.store import RolloutStore, stored_sample_fields
 
     store = await RolloutStore.open(
         os.environ[config.store_dsn_env],
         run_id=config.run_id,
         contract_sha256=digest(training_contract(config)),
+        sample_fields=stored_sample_fields(config.research.sampling),
         root=config.artifact_directory,
         sync=PayloadSync(commit=commit, reload=reload),
     )
