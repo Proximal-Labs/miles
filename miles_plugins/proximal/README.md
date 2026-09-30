@@ -3,7 +3,7 @@
 Miles trains a LoRA while Proximal continuously executes feature tasks against independently served immutable policy versions on Modal. Miles uses one fleet URL; the serving deployment config controls replica hardware and bounds, and the platform owns rollout sandbox teardown.
 
 For sampling without a training cluster and a separate optimizer step later, start
-with the [manual-step runbook](../../docs/proximal/runbook.md). It explains replica
+with the [Modal collect-then-train guide](../../docs/proximal/modal-collect-then-train.md). It explains replica
 ownership, policy selection, automatic Volume persistence, batch validation, and
 what the later training launcher must provide. The
 [offline-batch reference](../../docs/proximal/offline-batches.md) covers detailed

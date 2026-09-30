@@ -1,6 +1,6 @@
 # Collect now, train later
 
-Start with the [manual-step runbook](runbook.md) for the collection-to-training
+Start with the [Modal collect-then-train guide](modal-collect-then-train.md) for the collection-to-training
 workflow, replica and Volume ownership, prerequisites, and current launch limits.
 This page is the detailed batch-format, selection and recovery reference.
 
@@ -345,7 +345,7 @@ out-of-core loader. Provision host RAM for actual lengths as in the sizing work.
   That establishes the large-model collection/storage/replay path, not bit-identical
   multi-node continuation or a generic automatic cluster launcher. CPU fresh-policy
   bootstrap still rejects scoped/wildcard full-LoRA targets; see the
-  [manual-step runbook](runbook.md#1-prepare-the-contract-and-the-serving-fleet).
+  [Modal collect-then-train guide](modal-collect-then-train.md#1-prepare-the-contract-and-the-serving-fleet).
 
 Adversarial CPU coverage injects repeated cancellation during logical cancellation,
 capture retrieval and terminal publication; disk-full errors; failed commits and

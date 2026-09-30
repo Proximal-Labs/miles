@@ -1,4 +1,4 @@
-# Manual RL step: collect on replicas, save a batch, train later
+# Modal collect-then-train: platform rollouts, frozen batches and independent Miles steps
 
 Use this workflow to collect expensive platform rollouts once, keep their exact
 training data on a Modal Volume, and run an optimizer step in a separate job.
