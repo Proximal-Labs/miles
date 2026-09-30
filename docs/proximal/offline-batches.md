@@ -1,5 +1,9 @@
 # Collect now, train later
 
+Start with the [Modal collect-then-train guide](modal-collect-then-train.md) for the collection-to-training
+workflow, replica and Volume ownership, prerequisites, and current launch limits.
+This page is the detailed batch-format, selection and recovery reference.
+
 ## Combining a saved batch and a top-up
 
 Use `assemble` when the top-up has a different pinned task subset. It does not
@@ -333,9 +337,15 @@ out-of-core loader. Provision host RAM for actual lengths as in the sizing work.
   also trained 1,024 real saved rollouts across separate Modal containers and
   reproduced native weights, optimizer/scheduler/RNG, training data and serving
   exports exactly. That evidence is for BF16 Qwen3-0.6B, rank 32, one H100;
-  large-model and multi-GPU continuation remain separate gates. The new CPU-only
-  bootstrap and persistence flag have CPU coverage; they have not yet been used
-  for a new live 1,024-rollout platform collection/GPU step.
+  arbitrary-model and cross-topology continuation remain separate gates. Subsequent
+  Qwen3.8-27B platform collection persisted real rollouts and an explicitly assembled
+  1,024-sample batch that the [bounded sweep launcher](../../miles_plugins/proximal/e2e/batch_sweep.py)
+  trained on 64 B300s, retaining native checkpoints and serving exports
+  ([implementation and evidence](https://github.com/Proximal-Labs/miles/pull/38)).
+  That establishes the large-model collection/storage/replay path, not bit-identical
+  multi-node continuation or a generic automatic cluster launcher. CPU fresh-policy
+  bootstrap still rejects scoped/wildcard full-LoRA targets; see the
+  [Modal collect-then-train guide](modal-collect-then-train.md#1-prepare-the-contract-and-the-serving-fleet).
 
 Adversarial CPU coverage injects repeated cancellation during logical cancellation,
 capture retrieval and terminal publication; disk-full errors; failed commits and

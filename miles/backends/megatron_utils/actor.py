@@ -228,6 +228,7 @@ class MegatronTrainRayActor(TrainRayActor):
             load_output = self._load_state_core(
                 checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
             )
+            self._default_start_rollout_id(load_output)
             if self.args.offload_train:
                 self.sleep()
             return load_output.start_rollout_id
@@ -248,6 +249,7 @@ class MegatronTrainRayActor(TrainRayActor):
         load_output = self._load_state_core(
             checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
         )
+        self._default_start_rollout_id(load_output)
 
         self._init_training_state()
 
@@ -398,6 +400,12 @@ class MegatronTrainRayActor(TrainRayActor):
         logger.info(f"load_state rolled this trainer back to checkpoint iteration {load_output.loaded_rollout_id}")
         return load_output.start_rollout_id
 
+    def _default_start_rollout_id(self, load_output: LoadCheckpointOutput) -> None:
+        # A LoRA resume leaves the start to the trainer (resolve_args_checkpoint_load); plugins on
+        # this process read it from args, so record the step the checkpoint resumes at.
+        if self.args.start_rollout_id is None:
+            self.args.start_rollout_id = load_output.start_rollout_id
+
     def _load_state_core(
         self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
     ) -> LoadCheckpointOutput:
@@ -410,8 +418,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 role=self.role,
                 checkpointing_context=checkpointing_context,
             )
-        if self.args.start_rollout_id is None:
-            self.args.start_rollout_id = load_output.start_rollout_id
 
         if self.role != "critic":
             self._load_auxiliary_checkpoints()

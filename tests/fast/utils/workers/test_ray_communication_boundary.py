@@ -42,6 +42,7 @@ RAY_USING_MODULES = {
     "miles/backends/training_utils/weight_update/protocols/broadcast.py": "node ip lookup for a collective, not a call to another worker",
     "miles/backends/training_utils/weight_update/protocols/p2p_transfer_utils.py": "node ip lookup for a collective, not a call to another worker",
     "miles/utils/debug_utils/replay_reward_fn.py": "tooling: a standalone debugging script",
+    "miles_plugins/proximal/e2e/step_sizing.py": "tooling: a Modal harness that starts its own ray cluster and waits for its nodes",
     "miles/utils/test_utils/mock_sglang_engine.py": "tooling: a test double that stands in for a ray-launched engine",
     "tools/convert_torch_dist_to_hf_ray.py": "tooling: a standalone conversion script that fans out over a ray cluster",
     "examples/experimental/formal_math/single_round/kimina_wrapper.py": "user example: a verifier pool of its own, outside the worker layer",
