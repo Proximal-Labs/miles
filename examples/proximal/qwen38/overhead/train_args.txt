@@ -26,6 +26,10 @@
 --recompute-num-layers 1
 --log-probs-chunk-size 4096
 --recompute-loss-function
+# One optimizer step per rollout (12 x 8 = 96 = global batch), so the old-policy log-probs equal
+# those of the training forward: reuse them, detached, instead of a separate forward-only pass
+# (27% of a replayed step). TIS still compares them with the rollout log-probs.
+--skip-actor-forward-only
 --advantage-estimator grpo
 --kl-loss-coef 0.00
 --kl-loss-type low_var_kl
