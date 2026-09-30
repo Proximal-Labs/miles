@@ -48,6 +48,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if method == "remote" and name in {
                 "e2e/batch_sweep.py",
                 "e2e/stage_base.py",
+                "e2e/grad_attribution.py",
                 "e2e/lora_parity.py",
                 "e2e/stage_gsm8k.py",
                 "e2e/state_gpu_check.py",
@@ -75,6 +76,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("clients.py", "request"),  # The shared retrying request helper every client uses.
         ("e2e/batch_sweep.py", "ephemeral"),  # One run-scoped coordination store.
         *(("e2e/batch_sweep.py", "remote"),) * 2,  # CPU preflight, then explicitly authorized GPU sweep.
+        ("e2e/grad_attribution.py", "remote"),  # Paid gradient attribution on a recorded step, run by hand.
         ("e2e/lora_parity.py", "remote"),  # Paid LoRA serving parity check, run by hand.
         ("e2e/math_platform.py", "post"),  # The gsm8k platform's agent calling its capture session.
         ("e2e/stage_base.py", "remote"),  # Paid Stage A base-weight staging, run by hand.
