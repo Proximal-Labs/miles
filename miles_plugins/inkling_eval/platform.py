@@ -103,7 +103,6 @@ class Platform:
             runId=run_id,
             instances=1,
             ensureRolloutLaunchWorkflows=True,
-            deploymentConfig=self.config.deployment_config,
             autoTriggerAnalysis=False,
             # Explicit false overrides environment-level QA defaults on the platform.
             autoTriggerPostQa=False,

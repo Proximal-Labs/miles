@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -27,7 +27,8 @@ class EvalConfig:
     serving_tokenizer_workers: int = 1
     serving_cpu: int = 32
     context_length: int = 1048576
-    deployment_config: dict = field(default_factory=lambda: {"modal": {}})
+    # Accept old saved plans; sandbox selection now belongs to Proximal.
+    deployment_config: dict | None = None
 
     def __post_init__(self):
         if not self.platform_url.startswith("https://"):
@@ -67,7 +68,9 @@ class EvalConfig:
         return cls(**json.loads(Path(path).read_text()))
 
     def to_dict(self):
-        return asdict(self)
+        result = asdict(self)
+        result.pop("deployment_config")
+        return result
 
 
 def write_json(path: Path, value) -> None:

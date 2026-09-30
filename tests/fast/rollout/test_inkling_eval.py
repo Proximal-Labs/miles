@@ -85,8 +85,11 @@ def platform_server(monkeypatch):
     return state
 
 
-def test_platform_pins_images_routes_endpoint_and_keeps_zero_reward(platform_server):
-    client = Platform(EvalConfig(platform_url="https://api.example.com", sets={"coding": [1]}))
+@pytest.mark.parametrize("legacy_deployment", [None, {"modal": {}}, {"fargate": {}}])
+def test_platform_pins_images_routes_endpoint_and_keeps_zero_reward(platform_server, legacy_deployment):
+    config = EvalConfig(platform_url="https://api.example.com", sets={"coding": [1]}, deployment_config=legacy_deployment)
+    assert "deployment_config" not in config.to_dict()
+    client = Platform(config)
     pins = client.resolve_suite()
     assert pins == {"1": {"environmentId": 1, "imageId": 11, "sourceCommitSha": "abc", "imageDigest": "sha256:one"}}
     endpoint = {"mode": "dedicated", "baseURL": "https://eval.modal.direct/v1", "model": "snapshot"}
@@ -95,6 +98,7 @@ def test_platform_pins_images_routes_endpoint_and_keeps_zero_reward(platform_ser
     result = client.rollout(pins["1"], identity="run:1:1:0", endpoint="epoch-1")
     assert result["reward"] == 0.0
     payload = platform_server["runs"][result["run_id"]]
+    assert "deploymentConfig" not in payload
     assert payload["imageId"] == 11 and payload["sourceCommitSha"] == "abc"
     assert payload["config"]["agents"][0]["endpointName"] == "epoch-1"
     client.rollout(pins["1"], identity="run:1:1:0", endpoint="epoch-1")
@@ -251,6 +255,7 @@ def test_baseline_async_named_sets_and_resume(tmp_path, monkeypatch, platform_se
         suite_path = runner.root / "suite.json"
         suite = json.loads(suite_path.read_text())
         suite["contract"]["config"].pop("max_concurrent_evaluations")
+        suite["contract"]["config"]["deployment_config"] = {"modal": {}}
         suite_path.write_text(json.dumps(suite))
         args.start_rollout_id = 30
         resumed = EvaluationRunner(args, Actor(), 5)
