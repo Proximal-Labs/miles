@@ -357,7 +357,9 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             # A failed rollout does not revoke the paid work of its siblings.
             # Let each finish and persist before rejecting/retrying the group.
             for outcome in outcomes:
-                if isinstance(outcome, BaseException) and not isinstance(outcome, (IneligibleAttempt, httpx.HTTPError)):
+                if isinstance(outcome, BaseException) and not isinstance(
+                    outcome, (IneligibleAttempt, httpx.HTTPError)
+                ):
                     raise outcome
             result = []
             for outcome in outcomes:
