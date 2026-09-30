@@ -35,6 +35,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -101,7 +102,7 @@ def write_mock_rollouts(steps: tuple[tuple[int, int], ...], *, groups: int, grou
         )
 
 
-def replay_command(num_steps: int, extra_args: list[str]) -> list[str]:
+def replay_command(num_steps: int, extra_args: Sequence[str] = ()) -> list[str]:
     from miles.utils.external_utils.model_args_utils import load_model_args
 
     run, training = RUN, node.TRAINING
@@ -237,7 +238,8 @@ class _GpuPeaks:
     ``Timer train start`` lines so far (``setup`` before the first)."""
 
     def __init__(self, log: Path) -> None:
-        self.log, self.stop, self.peaks = log, threading.Event(), {}
+        self.log, self.stop = log, threading.Event()
+        self.peaks: dict[str, dict[str, int]] = {}
         self.offset, self.steps = 0, 0
         threading.Thread(target=self._run, daemon=True).start()
 
