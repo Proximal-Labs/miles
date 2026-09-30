@@ -91,7 +91,10 @@ configuration of a previous experiment.
   rollout, and every training step here (`offline_batch train`, the sweep launcher)
   replays it ([architecture](architecture.md)). It needs a serving SGLang build that
   returns sampling masks; the preflight canary checks this before the first platform
-  rollout. The setting is part of the training contract, so batches collected under
+  rollout. Speculative serving (NEXTN/EAGLE, `speculative_eagle_topk` 1, default
+  verification) returns them through `docker/patch/sglang_spec_sampling_mask.patch`;
+  SGLang rejects mask requests under rejection sampling or tree drafts, which fails the
+  canary. The setting is part of the training contract, so batches collected under
   the two settings never mix, and rollouts collected `untransformed` cannot be
   trained with replay.
 - `serving.json` chooses the replica hardware, engine image, precision/cache

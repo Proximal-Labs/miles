@@ -1,0 +1,539 @@
+diff --git a/python/sglang/srt/layers/logits_processor.py b/python/sglang/srt/layers/logits_processor.py
+index d828d7e23e..5add2496e4 100644
+--- a/python/sglang/srt/layers/logits_processor.py
++++ b/python/sglang/srt/layers/logits_processor.py
+@@ -101,6 +101,9 @@ class SamplingMaskOutput:
+     lengths: torch.Tensor
+     selected_logprobs: torch.Tensor
+     statuses: torch.Tensor
++    # Speculative verify emits up to this many tokens per request: rows are
++    # request-major, one per emitted position, zero-length past the accept length.
++    tokens_per_request: int = 1
+ 
+     def map_device_tensors(self, fn) -> None:
+         self.token_ids = fn(self.token_ids)
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 8b2176f1af..6bfb076347 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -324,6 +324,9 @@ from sglang.srt.speculative.eagle_utils import (
+     get_draft_recurrent_hidden_state_spec_from_config,
+ )
+ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++from sglang.srt.speculative.spec_sampling_mask import (
++    spec_sampling_mask_unsupported_reason,
++)
+ from sglang.srt.speculative.uno_validation import validate_uno_request
+ from sglang.srt.state_capturer.indexer_topk import destroy_global_indexer_capturer
+ from sglang.srt.state_capturer.routed_experts import destroy_global_experts_capturer
+@@ -2940,14 +2943,19 @@ class Scheduler(
+                 return
+ 
+         if req.return_sampling_mask and not self.spec_algorithm.is_none():
+-            # Spec workers do not emit one sampling support per accepted token, so
+-            # the returned mask would not align 1:1 with generated tokens. Reject
+-            # the combination instead of silently returning a misaligned mask.
+-            error_msg = (
+-                "return_sampling_mask is not supported with speculative decoding."
++            error_msg = spec_sampling_mask_unsupported_reason(
++                spec_algorithm=self.spec_algorithm,
++                eagle_topk=get_spec().speculative_eagle_topk,
++                use_rejection_sampling=get_spec().speculative_use_rejection_sampling,
++                accept_thresholds=(
++                    get_spec().speculative_accept_threshold_single,
++                    get_spec().speculative_accept_threshold_acc,
++                ),
++                min_p=req.sampling_params.min_p,
+             )
+-            self._reject_sampling_mask_request(req, error_msg)
+-            return
++            if error_msg is not None:
++                self._reject_sampling_mask_request(req, error_msg)
++                return
+ 
+         if req.return_sampling_mask and get_exec().kernel.sampling_backend == "ascend":
+             # The ascend backend samples from logits directly and never builds the
+diff --git a/python/sglang/srt/managers/scheduler_components/batch_result_processor.py b/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
+index 386e8d10f6..8199b84967 100644
+--- a/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
++++ b/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
+@@ -1033,9 +1033,15 @@ class SchedulerBatchResultProcessor:
+                 )
+ 
+             if req.return_sampling_mask:
+-                # return_sampling_mask + speculative decoding is rejected at
+-                # request entry, so this remains one support mask per token.
+-                self.add_sampling_mask_return_values(i, req, logits_output)
++                if is_spec:
++                    # One support per committed token; grammar keeps a prefix of the run.
++                    n = len(next_token_id)
++                    masks = logits_output.next_token_sampling_mask_idx[i]
++                    logprobs = logits_output.next_token_sampling_logprobs[i]
++                    req.output_token_sampling_mask.extend(masks[:n])
++                    req.output_token_sampling_logprobs.extend(logprobs[:n])
++                else:
++                    self.add_sampling_mask_return_values(i, req, logits_output)
+ 
+             if req.return_hidden_states and logits_output.hidden_states is not None:
+                 # hidden_states is [bs * stride, hidden_dim], one row per emitted
+@@ -1180,6 +1186,13 @@ class SchedulerBatchResultProcessor:
+ 
+         sampling_output = output.sampling_mask_output
+         batch_indices = [i for i, req in enumerate(reqs) if req.return_sampling_mask]
++        if sampling_output.tokens_per_request > 1:
++            SchedulerBatchResultProcessor._materialize_speculative_sampling_masks(
++                reqs=reqs,
++                output=output,
++                batch_indices=batch_indices,
++            )
++            return
+         lengths = sampling_output.lengths.tolist()
+         selected_logprobs = sampling_output.selected_logprobs.tolist()
+         statuses = sampling_output.statuses.tolist()
+@@ -1206,6 +1219,40 @@ class SchedulerBatchResultProcessor:
+         output.next_token_sampling_mask_status = status_by_batch
+         output.sampling_mask_output = None
+ 
++    @staticmethod
++    def _materialize_speculative_sampling_masks(
++        *,
++        reqs: List[Req],
++        output: LogitsProcessorOutput,
++        batch_indices: List[int],
++    ) -> None:
++        """Per request, one support per verify position; its status is the worst position's."""
++        sampling_output = output.sampling_mask_output
++        stride = sampling_output.tokens_per_request
++        lengths = sampling_output.lengths.tolist()
++        selected_logprobs = sampling_output.selected_logprobs.tolist()
++        statuses = sampling_output.statuses.tolist()
++        token_ids = sampling_output.token_ids.cpu()
++        assert len(batch_indices) * stride == len(lengths)
++
++        masks = [None] * len(reqs)
++        logprobs = [None] * len(reqs)
++        status_by_batch = [None] * len(reqs)
++        for slot, batch_index in enumerate(batch_indices):
++            rows = range(slot * stride, (slot + 1) * stride)
++            status = max(int(statuses[row]) for row in rows)
++            status_by_batch[batch_index] = status
++            if status == SamplingMaskStatus.OK:
++                masks[batch_index] = [
++                    token_ids[row, : lengths[row]].tolist() for row in rows
++                ]
++                logprobs[batch_index] = [selected_logprobs[row] for row in rows]
++
++        output.next_token_sampling_mask_idx = masks
++        output.next_token_sampling_logprobs = logprobs
++        output.next_token_sampling_mask_status = status_by_batch
++        output.sampling_mask_output = None
++
+     def get_sampling_mask_finish_reason(
+         self,
+         *,
+diff --git a/python/sglang/srt/managers/scheduler_components/output_streamer.py b/python/sglang/srt/managers/scheduler_components/output_streamer.py
+index 8020a85e14..2ddd883ff6 100644
+--- a/python/sglang/srt/managers/scheduler_components/output_streamer.py
++++ b/python/sglang/srt/managers/scheduler_components/output_streamer.py
+@@ -630,7 +630,11 @@ class _GenerationStreamAccumulator:
+         if self.return_sampling_mask:
+             if req.return_sampling_mask:
+                 send_output_sampling_mask_offset = req.send_output_sampling_mask_offset
+-                sampling_mask_end = len(req.output_token_sampling_mask)
++                # A speculative accept run can overshoot finished_len; emit only
++                # the supports of tokens that are emitted, like output_ids.
++                sampling_mask_end = min(
++                    len(req.output_token_sampling_mask), len(output_ids_)
++                )
+                 self.output_token_sampling_mask.append(
+                     req.output_token_sampling_mask[
+                         send_output_sampling_mask_offset:sampling_mask_end
+diff --git a/python/sglang/srt/speculative/eagle_utils.py b/python/sglang/srt/speculative/eagle_utils.py
+index 616f808d7b..f67b1acb0e 100644
+--- a/python/sglang/srt/speculative/eagle_utils.py
++++ b/python/sglang/srt/speculative/eagle_utils.py
+@@ -19,7 +19,11 @@ from sglang.srt.mem_cache.allocation_sizing import (
+     get_alloc_reserve_per_decode,
+     page_aligned_decode_alloc_lens,
+ )
+-from sglang.srt.runtime_context import get_parallel, get_spec
++from sglang.srt.runtime_context import get_exec, get_parallel, get_spec
++from sglang.srt.speculative.spec_sampling_mask import (
++    joint_filtered_verify_probs,
++    verify_sampling_mask_output,
++)
+ from sglang.srt.utils import (
+     is_cpu,
+     is_cuda,
+@@ -781,6 +785,8 @@ def eagle_sample(
+ 
+     # Sample tokens
+     target_predict = None
++    mask_req_rows = sampling_info.sampling_mask_batch_indices
++    mask_probs = None
+     if sampling_info.is_all_greedy or _is_cpu or _is_hip or _is_xpu:
+         target_predict = torch.argmax(next_token_logits, dim=-1)
+         target_predict = target_predict.reshape(bs, verify_input.draft_token_num)
+@@ -881,6 +887,20 @@ def eagle_sample(
+             next_token_logits / expanded_temperature, dim=-1
+         )  # (bs * num_draft_tokens, vocab_size)
+         maybe_detect_nan(target_probs, "v2 verify: target_probs after softmax")
++        if mask_req_rows is not None:
++            mask_rows, mask_probs = joint_filtered_verify_probs(
++                target_probs=target_probs,
++                mask_req_rows=mask_req_rows,
++                top_ks=sampling_info.top_ks
++                if sampling_info.need_top_k_sampling
++                else None,
++                top_ps=sampling_info.top_ps
++                if sampling_info.need_top_p_sampling
++                else None,
++                draft_token_num=verify_input.draft_token_num,
++                top_k_renorm_prob=top_k_renorm_prob,
++                top_p_renorm_prob=top_p_renorm_prob,
++            )
+         if sampling_info.need_top_k_sampling:
+             target_probs = top_k_renorm_prob(
+                 target_probs,
+@@ -897,6 +917,8 @@ def eagle_sample(
+                 ),
+             )
+             maybe_detect_nan(target_probs, "v2 verify: target_probs after top_p_renorm")
++        if mask_probs is not None:
++            target_probs = target_probs.index_copy(0, mask_rows, mask_probs)
+         target_probs = target_probs.reshape(bs, verify_input.draft_token_num, -1)
+         draft_probs = (
+             verify_input.draft_probs
+@@ -921,6 +943,9 @@ def eagle_sample(
+             candidates=candidates,
+             device=device,
+         )
++        # The kernel accepts a draft when coin <= p(draft); a coin of exactly 0 would
++        # accept a draft that top-k/top-p filtered out (p == 0).
++        coins.clamp_(min=torch.finfo(coins.dtype).tiny)
+         sampling_fn(
+             predicts=predict,  # mutable
+             accept_index=accept_index,  # mutable
+@@ -960,6 +985,24 @@ def eagle_sample(
+             tp_group.broadcast(accept_index, src=0)
+             tp_group.broadcast(num_correct_drafts, src=0)
+ 
++    if mask_req_rows is not None:
++        if mask_probs is None and not sampling_info.is_all_greedy:
++            raise RuntimeError("This verify sampler cannot return sampling masks.")
++        tp_group = get_tp_group().device_group
++        cp_group = None
++        if is_dp_attention_enabled():
++            tp_group = get_parallel().attn_tp_group.device_group
++            cp_group = get_parallel().attn_cp_group.device_group
++        logits_output.sampling_mask_output = verify_sampling_mask_output(
++            mask_req_rows=mask_req_rows,
++            mask_probs=mask_probs,
++            predict=predict,
++            accept_index=accept_index,
++            draft_token_num=verify_input.draft_token_num,
++            max_tokens=get_exec().features.sampling_mask_max_tokens,
++            sync_groups=(tp_group, cp_group),
++        )
++
+     if SIMULATE_ACC_LEN > 0:
+         # Do simulation. The helper builds (and returns) a replacement
+         # accept_index of width spec_steps + 1, so pass max_tree_depth - 1
+diff --git a/python/sglang/srt/speculative/spec_sampling_mask.py b/python/sglang/srt/speculative/spec_sampling_mask.py
+new file mode 100644
+index 0000000000..89bfb29b03
+--- /dev/null
++++ b/python/sglang/srt/speculative/spec_sampling_mask.py
+@@ -0,0 +1,132 @@
++"""return_sampling_mask for chain EAGLE verify (speculative_eagle_topk == 1).
++
++Target-only verify accepts draft ``d`` at verify row ``r`` with probability
++``p_r(d)`` and otherwise samples ``p_r`` without ``d``, writing the emitted
++token to ``predict[r]``; ``accept_index`` lists those rows in emission order.
++Each emitted token's support is therefore the positive support of its row of
++``target_probs``. Opted-in rows use the joint top-k/top-p filter of the
++non-speculative sampler instead of verify's top-p over the top-k-renormalized
++distribution, so both paths sample from the same support.
++"""
++
++from typing import Optional, Tuple
++
++import torch
++import torch.distributed as dist
++
++from sglang.srt.layers.logits_processor import SamplingMaskOutput, SamplingMaskStatus
++
++
++def spec_sampling_mask_unsupported_reason(
++    *, spec_algorithm, eagle_topk, use_rejection_sampling, accept_thresholds, min_p
++) -> Optional[str]:
++    if not spec_algorithm.is_eagle() or spec_algorithm.is_frozen_kv_mtp():
++        return "return_sampling_mask with speculative decoding requires EAGLE/NEXTN."
++    if eagle_topk != 1 or use_rejection_sampling:
++        return (
++            "return_sampling_mask with speculative decoding requires "
++            "--speculative-eagle-topk 1 without rejection sampling."
++        )
++    if accept_thresholds != (1.0, 1.0):
++        # Lower thresholds accept drafts the target distribution would not sample.
++        return (
++            "return_sampling_mask with speculative decoding requires the default "
++            "speculative accept thresholds."
++        )
++    if min_p > 0:
++        return "return_sampling_mask with speculative decoding does not support min_p."
++    return None
++
++
++def joint_filtered_verify_probs(
++    *,
++    target_probs: torch.Tensor,
++    mask_req_rows: torch.Tensor,
++    top_ks: Optional[torch.Tensor],
++    top_ps: Optional[torch.Tensor],
++    draft_token_num: int,
++    top_k_renorm_prob,
++    top_p_renorm_prob,
++) -> Tuple[torch.Tensor, torch.Tensor]:
++    """Opted-in verify rows (``req * draft_token_num + j``) and their normalized joint distribution."""
++    offsets = torch.arange(draft_token_num, device=mask_req_rows.device)
++    rows = (mask_req_rows.view(-1, 1) * draft_token_num + offsets).view(-1)
++    probs = target_probs.index_select(0, rows)
++    filtered = probs
++    if top_ks is not None:
++        ks = top_ks.index_select(0, mask_req_rows).repeat_interleave(draft_token_num)
++        filtered = top_k_renorm_prob(probs, ks)
++    if top_ps is not None:
++        ps = top_ps.index_select(0, mask_req_rows).repeat_interleave(draft_token_num)
++        top_p_probs = top_p_renorm_prob(probs, ps)
++        filtered = (
++            top_p_probs
++            if filtered is probs
++            else filtered.masked_fill(top_p_probs <= 0, 0)
++        )
++    # The verify kernel compares a coin with a draft's probability, so rows must sum to 1.
++    return rows, filtered / filtered.sum(dim=-1, keepdim=True)
++
++
++def verify_sampling_mask_output(
++    *,
++    mask_req_rows: torch.Tensor,
++    mask_probs: Optional[torch.Tensor],
++    predict: torch.Tensor,
++    accept_index: torch.Tensor,
++    draft_token_num: int,
++    max_tokens: int,
++    sync_groups: Tuple,
++) -> SamplingMaskOutput:
++    """One support row per verify position of each opted-in request, request-major.
++
++    ``mask_probs`` is ``None`` for greedy verify, whose support is the emitted token.
++    Positions past the accept length are padding: status OK, length 0.
++    """
++    accept_rows = accept_index.index_select(0, mask_req_rows).long()
++    valid_2d = accept_rows >= 0
++    valid = valid_2d.view(-1)
++    accept_rows = accept_rows.clamp(min=0)
++    tokens = predict.index_select(0, accept_rows.view(-1)).long().view(-1, 1)
++    num_rows = tokens.shape[0]
++    statuses = torch.full(
++        (num_rows,), SamplingMaskStatus.OK, dtype=torch.int32, device=tokens.device
++    )
++    if mask_probs is None:
++        token_ids = tokens.int()
++        lengths = valid.int()
++        selected_logprobs = torch.zeros(num_rows, device=tokens.device)
++    else:
++        # Row of mask_probs: request slot * draft_token_num + position within the request.
++        slot_first_row = (
++            torch.arange(mask_req_rows.numel(), device=tokens.device).view(-1, 1)
++            - mask_req_rows.view(-1, 1)
++        ) * draft_token_num
++        local_rows = torch.where(valid_2d, accept_rows + slot_first_row, 0)
++        rows = mask_probs.index_select(0, local_rows.view(-1))
++        selected = rows.gather(1, tokens).squeeze(1).float()
++        selected_logprobs = torch.log(selected / rows.sum(dim=-1, dtype=torch.float32))
++        realized_lengths = (rows > 0).sum(dim=-1, dtype=torch.int32)
++        statuses[realized_lengths > max_tokens] = SamplingMaskStatus.OVERFLOW
++        statuses[~((selected > 0) & torch.isfinite(selected_logprobs))] = (
++            SamplingMaskStatus.INVALID
++        )
++        statuses[~valid] = SamplingMaskStatus.OK
++        packed_size = min(max_tokens, rows.shape[-1])
++        token_ids = rows.topk(packed_size, dim=-1).indices.int()
++        lengths = torch.where(valid, realized_lengths.clamp(max=packed_size), 0).int()
++    # All replicas must make the same request-abort decision.
++    for group in sync_groups:
++        if (
++            dist.is_initialized()
++            and group is not None
++            and dist.get_world_size(group) > 1
++        ):
++            dist.all_reduce(statuses, op=dist.ReduceOp.MAX, group=group)
++    return SamplingMaskOutput(
++        token_ids=token_ids,
++        lengths=lengths,
++        selected_logprobs=selected_logprobs,
++        statuses=statuses,
++        tokens_per_request=accept_index.shape[1],
++    )
+diff --git a/test/registered/unit/managers/test_batch_result_processor_hidden_states.py b/test/registered/unit/managers/test_batch_result_processor_hidden_states.py
+index 363515e103..1afafed05c 100644
+--- a/test/registered/unit/managers/test_batch_result_processor_hidden_states.py
++++ b/test/registered/unit/managers/test_batch_result_processor_hidden_states.py
+@@ -64,6 +64,7 @@ class TestSamplingMaskMaterialization(CustomTestCase):
+                 lengths=torch.tensor([2, 1]),
+                 selected_logprobs=torch.tensor([-0.5, -0.25]),
+                 statuses=torch.tensor([SamplingMaskStatus.OK, SamplingMaskStatus.OK]),
++                tokens_per_request=1,
+             ),
+         )
+         SchedulerBatchResultProcessor.materialize_sampling_mask_output(
+diff --git a/test/registered/unit/spec/test_spec_sampling_mask.py b/test/registered/unit/spec/test_spec_sampling_mask.py
+new file mode 100644
+index 0000000000..4c2242c660
+--- /dev/null
++++ b/test/registered/unit/spec/test_spec_sampling_mask.py
+@@ -0,0 +1,142 @@
++"""Per-token sampling supports for chain EAGLE verify (return_sampling_mask)."""
++
++import math
++import unittest
++from types import SimpleNamespace
++
++import torch
++
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase, maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()
++
++from sglang.srt.layers.logits_processor import SamplingMaskStatus
++from sglang.srt.managers.scheduler_components.batch_result_processor import (
++    SchedulerBatchResultProcessor,
++)
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++from sglang.srt.speculative.spec_sampling_mask import (
++    joint_filtered_verify_probs,
++    spec_sampling_mask_unsupported_reason,
++    verify_sampling_mask_output,
++)
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++def _top_k_renorm(probs, top_ks):
++    out = torch.zeros_like(probs)
++    for i, k in enumerate(top_ks.tolist()):
++        values, idx = probs[i].topk(int(k))
++        out[i, idx] = values / values.sum()
++    return out
++
++
++def _top_p_renorm(probs, top_ps):
++    out = torch.zeros_like(probs)
++    for i, p in enumerate(top_ps.tolist()):
++        values, idx = probs[i].sort(descending=True)
++        keep = (values.cumsum(0) - values) < p
++        out[i, idx[keep]] = values[keep] / values[keep].sum()
++    return out
++
++
++class TestSpecSamplingMask(CustomTestCase):
++    def test_joint_filter_keeps_what_the_non_speculative_sampler_keeps(self):
++        """Top-p over the top-k-renormalized distribution (verify's order) drops token 2."""
++        probs = torch.tensor([[0.40, 0.30, 0.20, 0.10]] * 2)
++        rows, joint = joint_filtered_verify_probs(
++            target_probs=probs,
++            mask_req_rows=torch.tensor([1]),
++            top_ks=torch.tensor([4, 3]),
++            top_ps=torch.tensor([1.0, 0.75]),
++            draft_token_num=1,
++            top_k_renorm_prob=_top_k_renorm,
++            top_p_renorm_prob=_top_p_renorm,
++        )
++        sequential = _top_p_renorm(
++            _top_k_renorm(probs[1:], torch.tensor([3])), torch.tensor([0.75])
++        )
++        self.assertEqual(rows.tolist(), [1])
++        self.assertEqual((joint[0] > 0).tolist(), [True, True, True, False])
++        self.assertEqual((sequential[0] > 0).tolist(), [True, True, False, False])
++        torch.testing.assert_close(joint[0, :3], probs[1, :3] / 0.9)
++
++    def test_supports_follow_accept_index_rows(self):
++        """Opted-in requests 0 and 2 of 3; padding past the accept run; out-of-support is invalid."""
++        draft_token_num = 2
++        mask_probs = torch.tensor(
++            [
++                [0.0, 0.6, 0.3, 0.1],  # req 0, position 0
++                [1.0, 0.0, 0.0, 0.0],  # req 0, position 1
++                [0.5, 0.5, 0.0, 0.0],  # req 2, position 0
++                [0.0, 0.0, 1.0, 0.0],  # req 2, position 1
++            ]
++        )
++        accept_index = torch.tensor([[0, 1], [2, 3], [4, -1]], dtype=torch.int32)
++        predict = torch.tensor([2, 0, 9, 9, 3, 7], dtype=torch.int32)
++        out = verify_sampling_mask_output(
++            mask_req_rows=torch.tensor([0, 2]),
++            mask_probs=mask_probs,
++            predict=predict,
++            accept_index=accept_index,
++            draft_token_num=draft_token_num,
++            max_tokens=16,
++            sync_groups=(),
++        )
++        self.assertEqual(out.tokens_per_request, 2)
++        self.assertEqual(out.lengths.tolist(), [3, 1, 2, 0])
++        self.assertEqual(sorted(out.token_ids[0, :3].tolist()), [1, 2, 3])
++        self.assertAlmostEqual(out.selected_logprobs[0].item(), math.log(0.3), places=5)
++        self.assertEqual(
++            out.statuses.tolist(),
++            [SamplingMaskStatus.OK, SamplingMaskStatus.OK]
++            + [SamplingMaskStatus.INVALID, SamplingMaskStatus.OK],
++        )
++
++    def test_materialize_one_support_per_position(self):
++        mask = SimpleNamespace(
++            tokens_per_request=2,
++            token_ids=torch.tensor([[5, 6], [7, 0], [8, 0], [0, 0]], dtype=torch.int32),
++            lengths=torch.tensor([2, 1, 1, 0]),
++            selected_logprobs=torch.tensor([-0.5, 0.0, -0.25, 0.0]),
++            statuses=torch.tensor([0, 0, 0, SamplingMaskStatus.OVERFLOW]),
++        )
++        output = SimpleNamespace(sampling_mask_output=mask)
++        reqs = [SimpleNamespace(return_sampling_mask=x) for x in (True, False, True)]
++        SchedulerBatchResultProcessor.materialize_sampling_mask_output(reqs, output)
++        self.assertEqual(
++            output.next_token_sampling_mask_idx, [[[5, 6], [7]], None, None]
++        )
++        self.assertEqual(output.next_token_sampling_logprobs[0], [-0.5, 0.0])
++        self.assertEqual(
++            output.next_token_sampling_mask_status,
++            [SamplingMaskStatus.OK, None, SamplingMaskStatus.OVERFLOW],
++        )
++
++    def test_only_exact_chain_eagle_verify_is_supported(self):
++        supported = dict(
++            spec_algorithm=SpeculativeAlgorithm.EAGLE,
++            eagle_topk=1,
++            use_rejection_sampling=False,
++            accept_thresholds=(1.0, 1.0),
++            min_p=0.0,
++        )
++        self.assertIsNone(spec_sampling_mask_unsupported_reason(**supported))
++        for field, value in (
++            ("spec_algorithm", SpeculativeAlgorithm.NGRAM),
++            ("spec_algorithm", SpeculativeAlgorithm.FROZEN_KV_MTP),
++            ("eagle_topk", 4),
++            ("use_rejection_sampling", True),
++            ("accept_thresholds", (0.9, 1.0)),
++            ("min_p", 0.05),
++        ):
++            with self.subTest(field=field, value=value):
++                self.assertIsNotNone(
++                    spec_sampling_mask_unsupported_reason(**{**supported, field: value})
++                )
++
++
++if __name__ == "__main__":
++    unittest.main()

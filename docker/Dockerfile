@@ -17,7 +17,8 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 # ======================================== Arguments =============================================
 
 ARG SGLANG_BRANCH=sglang-miles
-ARG SGLANG_COMMIT=""
+# docker/patch/sglang_spec_sampling_mask.patch applies to exactly this commit.
+ARG SGLANG_COMMIT=67e4cd1885155bf9b08366b348c59d5b79a7fb7b
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
@@ -238,6 +239,13 @@ RUN cd /sgl-workspace/sglang && \
       sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
     fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
+
+# return_sampling_mask with EAGLE/NEXTN speculation (chain drafts, default verification):
+# one target-model sampling support per emitted token, so Miles sampling-support replay
+# can serve with speculative decoding. Drop the patch once sglang-miles carries the change.
+COPY docker/patch/sglang_spec_sampling_mask.patch /tmp/sglang_spec_sampling_mask.patch
+RUN patch --fuzz=0 -p1 -d /sgl-workspace/sglang < /tmp/sglang_spec_sampling_mask.patch && \
+    rm /tmp/sglang_spec_sampling_mask.patch
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
