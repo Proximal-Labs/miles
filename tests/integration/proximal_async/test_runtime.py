@@ -192,20 +192,103 @@ async def test_each_finished_rollout_frees_its_submission_slot(config, tmp_path,
     await producer.close()
 
 
-async def test_a_failed_group_frees_every_slot(config, tmp_path, policy, store, monkeypatch):
+async def test_a_failed_group_waits_for_siblings_before_retry(config, tmp_path, policy, store, monkeypatch):
     calls = 0
+    slow = asyncio.Event()
+    started = asyncio.Event()
+    completed = []
 
     async def execute(attempt, sample, **_):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise IneligibleAttempt("platform rollout is ineligible")
-        await asyncio.Event().wait()  # Cancelled when its group-mate fails.
+        started.set()
+        await slow.wait()
+        completed.append(sample.index)
+        return replace(sample, reward=1.0)
 
     producer, running, freed = await _run_group(config, tmp_path, policy, store, monkeypatch, execute)
+    await asyncio.wait_for(started.wait(), 2)
+    await asyncio.sleep(0)
+    assert not running.done()
+    slow.set()
     result = await asyncio.wait_for(running, 2)
+    assert len(completed) == 1
     assert len(freed) == 2 and {sample.status for sample in result.group} == {Sample.Status.ABORTED}
     await producer.close()
+
+
+def test_finite_source_retries_without_skipping_or_overproducing(config, tmp_path):
+    tasks = tuple(config.dataset.tasks[0].model_copy(update={"environment_id": i}) for i in (7, 8, 9))
+    config = config.model_copy(update={"dataset": config.dataset.model_copy(update={"tasks": tasks})})
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    source = PlatformTaskSource(_producer_args(path), num_groups=3)
+    first = source.get_samples(1)
+    source.add_samples(first)
+    retry = source.get_samples(1)
+    assert retry[0][0].metadata["proximal_task_index"] == 0
+    rest = source.get_samples(2)
+    assert [g[0].metadata["proximal_task_index"] for g in rest] == [1, 2]
+    assert not source.has_samples
+    with pytest.raises(ValueError, match="exhausted"):
+        source.get_samples(1)
+    source.add_samples([rest[1]])
+    assert source.has_samples
+    assert source.get_samples(1)[0][0].metadata["proximal_task_index"] == 2
+    assert not source.has_samples
+
+
+async def test_finite_worker_drains_stragglers_and_retries_without_backfill(config, tmp_path, attempt, policy, store):
+    from miles.rollout.fully_async_data_buffer import DataBufferInput
+
+    await store.commit_policy(policy)
+    path = tmp_path / "finite.json"
+    path.write_text(config.model_dump_json())
+    args = _producer_args(path)
+    args.async_unused_samples_handler = "retry"
+    args.async_max_concurrent_samples = 16
+    started = []
+    cancelled = []
+    slow = asyncio.Event()
+
+    class Producer(PlatformRolloutFn):
+        async def _preflight(self):
+            pass
+
+        async def _generate_group(self, prompt_group):
+            index = prompt_group[0].group_index
+            started.append(index)
+            try:
+                if index == 0:
+                    return DataBufferInput(
+                        prompt_group=prompt_group,
+                        group=[replace(s, status=Sample.Status.ABORTED) for s in prompt_group],
+                    )
+                if index == 1:
+                    await slow.wait()
+                return entry(attempt, policy, group=f"finite-{index}")
+            except asyncio.CancelledError:
+                cancelled.append(index)
+                raise
+            finally:
+                for _ in prompt_group:
+                    self._scheduler.sample_done_callback()
+
+    source = PlatformTaskSource(args, num_groups=2)
+    producer = Producer(RolloutFnConstructorInput(args=args, data_source=source))
+    try:
+        first = await asyncio.wait_for(producer(RolloutFnTrainInput(rollout_id=0, weight_version=1)), 2)
+        assert len(first.samples) == 1 and started == [0, 1, 2]
+        second = asyncio.create_task(producer(RolloutFnTrainInput(rollout_id=1, weight_version=1)))
+        await asyncio.sleep(0.02)
+        assert not second.done() and started == [0, 1, 2]
+        slow.set()
+        assert len((await asyncio.wait_for(second, 2)).samples) == 1
+    finally:
+        await producer.close()
+    assert started == [0, 1, 2] and not cancelled
 
 
 def test_rollback_rewrites_step_state_and_refuses_partial_checkpoints(config, tmp_path):

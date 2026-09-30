@@ -1,6 +1,6 @@
 # Async platform RL with Miles and immutable Modal policies
 
-This fork runs Miles's existing fully asynchronous trainer against Proximal feature tasks. The concrete target is a DeepSWE/Qwen3 LoRA hillclimb: one training cluster, a CPU rollout/capture plane, and independently managed Modal inference replicas. The standalone `trainer` repository is not another loop around Miles.
+This fork runs Miles's existing fully asynchronous trainer against Proximal feature tasks. The concrete target is a DeepSWE/Qwen3 LoRA hillclimb: one training cluster, a CPU rollout plane and independently managed Modal inference replicas with capture. The standalone `trainer` repository is not another loop around Miles.
 
 The implementation lives in `miles_plugins/proximal`. See [investigation](investigation.md), [platform contract](platform-contract.md), and [runbook](../../miles_plugins/proximal/README.md). This is executable integration code, with CPU tests of the actual Miles async worker, TITO core, sample codec, argument parser, and weight updater. It still requires the documented platform binding changes and live train/serve verification.
 
@@ -12,9 +12,10 @@ The implementation lives in `miles_plugins/proximal`. See [investigation](invest
 | Pinned feature-task selection and cursor | `DataSource` → `PlatformTaskSource` | Miles CPU |
 | Continuous bounded production | `FullyAsyncRolloutFn` → `PlatformRolloutFn` | Miles CPU |
 | Harness, tools, sandbox, verifier, operational logs | EnvironmentRun RPC + shared agent-px completion seam | Platform |
-| Exact prompt/completion IDs and assistant loss masks | `SessionCore` + Qwen3 TITO + existing sample codec | Miles CPU capture service |
+| Exact prompt/completion IDs and assistant loss masks | `SessionCore` + Qwen3 TITO + existing sample codec | Miles capture service on each inference replica |
 | Complete-group acceptance, durable storage, batch query with consumption-time staleness | `DataBuffer` → `PlatformDataBuffer` over `RolloutStore` (Postgres index + payloads on a durable mount) | Miles |
 | Consumption ledger (which groups this run trained on) | `DataSource` checkpoint → `PlatformTaskSource` | Miles |
+| Finite collection and later independent training | Existing `PlatformRolloutFn` producer; immutable group selection → `FrozenBatchRolloutFn`; native `train.py` | Miles |
 | Policy registry: which immutable adapter each version names, and lineage on resume | `RolloutStore` policies table | Miles |
 | Train-to-serving transfer | `WeightUpdater` → `ModalVolumeTransfer` | Miles |
 | Shared artifact transport | Immutable snapshot + existing Modal Volume | Miles publishes; platform mounts |
@@ -27,23 +28,25 @@ The trainer can cancel a logical run. It never deletes a platform container or m
 
 ```mermaid
 flowchart LR
-    D["Pinned project environments, images, commits"] --> P["Miles continuous CPU producer"]
-    P --> S["Platform: agent-px + sandboxes + verifier"]
-    S -->|"Scoped Chat Completions credential"| C["CPU capture: immutable policy + real TITO"]
-    C --> F["One Modal fleet endpoint"]
-    F --> R1["Replica 1: verified named LoRA"]
-    F --> R2["Replica 2: verified named LoRA"]
-    T["Miles async trainer"] --> W["WeightUpdater: complete HF adapter tensors"]
-    W --> V["Shared Modal Volume: immutable snapshots"]
-    V -->|"reload / verify / local copy / load"| R1
-    V -->|"reload / verify / local copy / load"| R2
-    W -->|"Commit version only after artifact and serving acknowledgement"| DB["Rollout store: policies + stored groups"]
-    DB -->|"Committed policy"| C
-    S -->|"Grade + task and harness provenance"| J["Accepted attempt + sealed safetensors"]
-    C -->|"Exact IDs / logprobs / masks / policy"| J
-    J -->|"DataBuffer.put: persist"| DB
-    DB -->|"DataBuffer.get: batch query (fresh, live lineage, unconsumed)"| T
-    DB -.->|"Backpressure"| P
+    D["Pinned project tasks"] --> P["Miles continuous producer"]
+    P --> S["Platform: agent-px, sandbox, verifier"]
+    S -->|"Chat Completions"| F["Modal serving pool"]
+    F --> R1["Replica: capture/TITO + gateway + SGLang"]
+    F --> R2["Replica: capture/TITO + gateway + SGLang"]
+    T["Miles async trainer"] --> W["WeightUpdater"]
+    W --> AV["Adapter Volume: immutable serving policies"]
+    AV --> R1
+    AV --> R2
+    W -->|"Verified serving acknowledgement"| DB["Local Postgres: policies, groups, publication outbox"]
+    DB -->|"Current policy"| P
+    R1 -->|"Sealed tokens, masks, logprobs"| P
+    R2 -->|"Sealed tokens, masks, logprobs"| P
+    S -->|"Grade and provenance"| P
+    P -->|"Accepted captures and complete groups"| DB
+    DB -->|"Fresh, live, unconsumed groups"| T
+    DB --> SW["Run-owned state writer"]
+    T -->|"Native checkpoint + matching cursor"| SW
+    SW --> SV["State Volume / run ID: captures, groups, recovery bundles"]
 ```
 
 ## Policy publication and the shared Volume
@@ -84,7 +87,7 @@ The artifact mount is an explicit choice. For a Modal Volume, the writer commits
 
 The training-contract digest covers everything that changes what a group means as training data: base model, pinned dataset, harness revision and limits, sampling, LoRA shape, tokenizer, TITO/thinking settings and the model's reasoning/tool-call parsers. The batch query only selects groups with the consuming trainer's digest, and `get` re-validates each loaded group's full evidence, for every member, against the run config before training on it. The producer then pauses while more than `completed_group_capacity` fresh, unconsumed groups are waiting, matching Miles's default bounded buffer.
 
-`get` is the batch query. It selects the oldest group that is within `max_policy_lag` of the trainer's committed version, was sampled from live (not abandoned) weights, and is not in this run's consumption ledger. It records the group in the ledger and returns it. Staleness is evaluated at consumption; stale groups are simply never selected, so nothing needs deleting or recycling. There is no ownership tag and no global "consumed" flag. The query is scoped to one training run and its policy lineage; reusing stored groups in another experiment would need its own query and is not supported here.
+`get` is the batch query. It selects the oldest group that is within `max_policy_lag` of the trainer's committed version, was sampled from live (not abandoned) weights, and is not in this run's consumption ledger. It records the group in the ledger and returns it. Staleness is evaluated at consumption; stale groups are simply never selected, so nothing needs deleting or recycling. There is no ownership tag and no global "consumed" flag. The query is scoped to one training run and its policy lineage. An independent experiment can explicitly freeze a selection into an offline bundle; this never changes the online consumption ledger or makes an abandoned policy live.
 
 The consumption ledger is trainer state, saved through the task source alongside the dataset fingerprint, cursor, and retry task indices. Miles saves this state immediately after the weights for the same step, and it is overwritten when a resumed run saves that step again. Resuming a complete checkpoint restores the ledger saved with its weights, so groups consumed by discarded steps become selectable again if still fresh. A step whose weights exist but whose state does not (an interrupted save) refuses to resume; the operator resumes the previous complete step. Restoring a step first deletes any saved state for later steps (all steps, on a fresh start) before training writes new weights, so a crash between re-saving a step's weights and its state cannot pair them with the abandoned timeline's ledger. This is not exactly-once consumption across a crash between optimizer step and save: the steps after the last complete checkpoint are retrained, possibly on different groups. A restarted process sees every stored group, so completed paid rollouts survive a crash. Groups still in flight when a process dies are regenerated. Entries below the staleness window are pruned because staleness only grows.
 
@@ -98,12 +101,142 @@ One trainer consumes each run's store, so no row locking or leases are needed. T
 
 Decided: the capture service (Miles's session code) stays in the inference path. The platform's endpoint registry points agent-px at it with a per-rollout base URL, `<capture>/rollouts/<platform rollout id>/v1`, and a static credential; the capture service renders exact prompt tokens (TITO), calls the serving pool non-streaming, and records output tokens and logprobs. The platform returns only the grade; it never handles tokens. Miles creates runs with existing run API fields only. See [platform-contract.md](platform-contract.md) for the one platform change and for how agent-px's requests are normalized (cache hints ignored, reasoning effort pinned, `strict` tools unconstrained, loose tool-call matching).
 
-The capture service is one stateful process per run today. Its memory grows with turns times context (Miles keeps each turn's full prompt IDs); sharding by run ID across several instances, as Miles itself shards session servers, is the known scaling step.
+Capture runs with each inference replica. Its session memory grows with turns times context (Miles keeps each turn's full prompt IDs). The trainer collects the sealed result there and releases it after the state publisher acknowledges the durable copy.
 
-The platform owns sandbox retention. The operator owns retention for stored groups, local accepted samples, replica disk caches, and immutable Volume versions; this pass never deletes artifact history. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
+The platform owns sandbox retention. The operator owns retention for stored groups, local accepted samples, replica disk caches, and immutable Volume versions; accepted captures and group payloads are retained; the run-state writer prunes only recovery bundles under its run namespace. Size storage for the run and measure high-rank adapter export/upload/refresh latency. Replace the transport only if measurements justify it.
 
 ## First-pass limits and verification
 
-The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/replay payloads. Unsupported modes fail during free argument validation.
+The supported path is a single Megatron actor cell, bridge-exported LoRA, an independent external serving fleet, complete prompt groups, and explicit rollout-logprob correction. No critic, multi-LoRA trainer, independent-DP failover, shared in-process inference, separate evaluation fleet, compaction, multimodal samples, or speculative/routing-replay payloads. Unsupported modes fail during free argument validation.
+
+The serving engine retains its loopback API-key authentication. The pinned SGLang
+build does not support that authentication with multiple tokenizer workers, so
+serving argument validation requires one worker before allocating replicas.
+
+## Disjoint rollout collection and a training step
+
+P0: storage happens at the shared attempt/result and group-store seams, whether
+the producer belongs to online training or a CPU-only collection job. Each launch
+first archives its immutable request; accepted results archive the existing exact
+sample codec and grade evidence before releasing capture. Failed/cancelled attempts
+retain an explicit outcome and any sealed capture that can be recovered. A request
+without a terminal record after a crash is unknown, never a fabricated zero reward.
+Training eligibility and batch selection do not control artifact retention.
+Repeated graceful shutdown signals do not interrupt accepted or failed-result
+handoffs. A local storage error preserves a recoverable replica capture; it is
+never reclassified as unavailable capture. Batch and initial-policy copies verify
+bytes against the already validated manifest hashes before publishing readiness.
+
+The CPU collector owns an artifact-only instance of the existing state publisher.
+`modal_training --rollouts-persist-to-volume` uses the deployment's configured
+state Volume; `--collect-rollouts N` selects a CPU-only run. Online training already
+uses the same persistence path. No additional store service or manual commit is
+exposed to the operator.
+It commits results incrementally and automatically publishes a self-contained
+batch when the requested complete groups have arrived. Finite collection admits
+only the requested number of new prompt groups through `PlatformTaskSource`;
+failed groups retry the same task after all their launched siblings finish.
+The existing submission scheduler idles when that source has no remaining work.
+Successful collection therefore waits for every admitted rollout and its durable
+handoff before the run owner stops serving. Failure or explicit cancellation still
+reaches the run's bounded cleanup path. An interrupted collection
+can select already committed groups later without the old database. The P0 format
+keeps the proven lossless codec and self-contained group/batch copies; replacing
+those copies with references is a later storage optimization, not a prerequisite
+for correct detached training.
+
+The durable data unit is the existing complete-group payload, including rewards,
+exact tokens, assistant masks, behavior logprobs and typed acceptance evidence.
+An immutable `FrozenBatch` manifest orders those groups, hashes their payloads,
+records the source run contract and explicitly names the behavior policy. It is
+an artifact at the existing data-plane seam, not another training coordinator.
+This first pass selects one exact policy per batch. Raw ungraded captures and
+partial groups cannot be frozen as training batches.
+
+`collect_batch` composes `PlatformTaskSource`, `PlatformRolloutFn` and its existing
+buffer on CPU. It drains complete groups incrementally, freezes the requested
+count, then closes the producer. It neither initializes an optimizer nor
+publishes weights. Finite admission prevents speculative extra groups beyond the
+requested batch. Retries can still incur additional paid attempts; all are retained,
+and the requested count is the accepted batch size, not a billing limit.
+
+Later, `FrozenBatchRolloutFn` reads only the bundle through the ordinary Miles
+rollout-function seam. Miles still performs reward normalization, advantages,
+logprob recomputation/correction, partitioning, backward and optimizer updates.
+The offline launcher owns checkpoint validation and invokes native `train.py`
+in train-only mode, without Postgres, platform or serving clients. A batch of
+1,024 trajectories at group size 8 means 128 groups and global batch size 1,024
+for one optimizer update; microbatching remains Miles's responsibility.
+
+Training initialization is separate from the data artifact. Explicit fresh mode
+loads the pinned base and initializes trainable LoRA plus a new optimizer. CPU
+collection can publish a zero-delta serving adapter, constructed from the base
+checkpoint's tensor shapes without loading its weights into a GPU. The immutable
+serving snapshot is retained with the batch; fresh training verifies its identity,
+shape and zero delta. It never loads that serving-only adapter as trainable weights.
+Native resume requires a retained, verified recovery checkpoint from the source
+run, the same parallel layout, and explicit optimizer-state resume.
+Serving PEFT exports are not training checkpoints: this fork's Megatron loader
+does not import them. The selected batch must fit the checkpoint's policy-lag
+window. A policy version number alone is not proof of equal weights across
+abandoned histories; source checkpoint/behavior lineage must be chosen deliberately.
+No automatic 8-to-64-GPU resharding or creation of an initial trainer checkpoint
+from a serving-only adapter is implemented. See [offline batch runbook](offline-batches.md).
 
 CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.
+
+
+## Durable Modal run state (PRO-1075)
+
+The run composition root mounts a state Volume at `/snapshot`, with a namespace
+per run ID. This is separate from the serving adapter Volume. Postgres and working
+files stay on local disk; replicas and sandboxes never mount the state Volume.
+
+The `run_state` artifact-storage variant uses a small publication outbox in the
+existing local Postgres. It is transport bookkeeping, not another training queue.
+Completed captures stage their exact codec bytes and typed acceptance record, then
+wait for the run's one publisher to commit payloads and commit completion records
+in that order. Only that acknowledgement permits capture release. Pending work is
+bounded by the existing rollout concurrency and token limits; publication batches
+have a byte ceiling. A storage outage backpressures completion, without rerunning
+paid inference. Checkpoint publication shares the same writer.
+
+Complete groups also publish an immutable index (policy, contract, membership,
+checksum and stable ordering time). Restore reconciles indexes missing from the
+selected database dump without reviving policies or importing a newer consumption
+ledger. Only eligible group payloads return to local disk. Historical accepted
+captures remain in the Volume.
+
+New recovery checkpoints are immutable `checkpoints/<step>-<digest>` bundles.
+Their manifest binds every native rank shard, optimizer/scheduler/RNG shard,
+task cursor and database dump to the run, launch and parent checkpoint. Data is
+committed before the manifest and the manifest before `LATEST`. Readers verify
+hashes, completeness and the compatible training layout before restoring. The
+native LoRA writer owns the all-ranks completion record and RNG state. Serving
+exports do not certify a training checkpoint.
+
+The Modal launcher records each launch's config and supports explicit fresh/latest/
+checkpoint selection. Existing integer `LATEST` snapshots retain a compatibility
+reader; legacy state cannot acquire missing RNG/completeness evidence retroactively.
+The state writer performs a final drain and snapshot on graceful shutdown. Abrupt
+loss resumes only the last committed optimizer boundary. Async scheduling and
+nondeterministic kernels prevent a bit-identical whole-run continuation guarantee.
+Capture-release shutdown explicitly removes finished tasks and awaits only work
+owned by its event loop, so queued completion callbacks cannot stall the drain.
+
+Checkpoint retention keeps the newest two published bundles and explicit pins;
+accepted captures and group payloads are not deleted. Volume deletion is never
+compute cleanup. One active trainer per run remains a launch invariant: a Volume
+file is not a distributed lease. Automated failover with a possibly live old owner
+is unsupported. Platform artifact registration/CPU downloads are a separate change.
+
+Durability starts at the acknowledged Volume handoff, not at model generation.
+A failed capture read (including timeout or invalid payload) records an unknown
+capture and does not authorize replica release, unless the platform explicitly
+certifies that the rollout never started (`LaunchFailed`). This preserves the replica's
+existing recovery opportunity; it does not extend its session expiry or provide
+automatic reconciliation. Capture sessions are still volatile until sealed on
+replica-local disk and handed off. A hard collector/replica loss before handoff can
+lose generated tokens, including an already graded result. Complete-group indexes
+are independently recoverable; individual accepted captures survive without them,
+but recovery does not yet reconstruct missing group indexes from those captures.

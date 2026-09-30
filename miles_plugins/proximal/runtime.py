@@ -131,6 +131,7 @@ async def _run_control(
         capture=capture,
         platform=PlatformClient(authorization, http),
         artifact_root=config.artifact_directory / config.run_id / "accepted",
+        store=store,
     )
     print(
         json.dumps(

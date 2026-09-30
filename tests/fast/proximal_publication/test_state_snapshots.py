@@ -61,3 +61,28 @@ def test_any_dot_directory_is_scratch(tmp_path, name):
     snapshots._copy_new(source, target)
 
     assert not (target / name).exists()
+
+
+def test_recovery_configuration_imports_without_trainer_dependencies():
+    """modal run loads config locally before its GPU image supplies torch/psycopg/SGLang."""
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import importlib.abc
+import sys
+class NoTrainerDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'torch', 'psycopg', 'sglang', 'ray'}:
+            raise AssertionError('Trainer-only dependency loaded on the launch host: ' + fullname)
+sys.meta_path.insert(0, NoTrainerDependencies())
+from miles_plugins.proximal.training import TrainingDeployment
+from miles_plugins.proximal.state_checkpoints import RecoveryContext
+""",
+        ],
+        check=True,
+    )

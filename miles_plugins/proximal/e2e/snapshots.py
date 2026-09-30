@@ -141,9 +141,17 @@ ORDER BY group_id
 """
 
 
-def _trainable_groups(dsn: str, *, oldest_version: int, consumed: list[str]) -> list[GroupRow]:
+def _trainable_groups(
+    dsn: str, *, oldest_version: int, consumed: list[str], run_id: str | None = None
+) -> list[GroupRow]:
     with psycopg.connect(dsn) as connection:
-        rows = connection.execute(_TRAINABLE, (oldest_version, consumed)).fetchall()
+        query = (
+            _TRAINABLE.replace("ORDER BY group_id", "AND training_run_id = %s ORDER BY group_id")
+            if run_id
+            else _TRAINABLE
+        )
+        parameters = (oldest_version, consumed, run_id) if run_id else (oldest_version, consumed)
+        rows = connection.execute(query, parameters).fetchall()
     return [GroupRow(str(r[0]), int(r[1]), str(r[2]), str(r[3])) for r in rows]
 
 
