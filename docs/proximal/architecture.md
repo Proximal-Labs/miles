@@ -218,6 +218,46 @@ abandoned histories; source checkpoint/behavior lineage must be chosen deliberat
 No automatic 8-to-64-GPU resharding or creation of an initial trainer checkpoint
 from a serving-only adapter is implemented. See [offline batch runbook](offline-batches.md).
 
+An explicitly authorized two-update comparison can reuse one verified base-policy
+batch across fresh LoRA parameterizations. The bounded `e2e.batch_sweep` composes
+`ReferenceReplay`, the existing clustered sizing lifecycle, and native `train.py`.
+This is deliberate experimental replay; the production frozen consumer still admits
+one update, and native resume still requires an identical target layout. The batch's
+original contract, tokens, masks, behavior logprobs and provenance remain unchanged.
+The sweep records its own target list and optimizer recipe alongside the source
+manifest hash and verifies the original zero-delta policy proof before allocation.
+CPU preflight uses the pinned image's native argument parser, HF model validation,
+and sweep-contract checks. Megatron's full validator queries the CUDA architecture
+for tensor parallelism; it runs on the allocated gang before model loading.
+Each configuration explicitly declares fresh initialization or a hash-pinned prior
+sweep completion receipt. Native continuation restores the identical targets, recipe,
+parallel layout, optimizer, scheduler and RNG, and starts at the next update. A
+continuation uses a new experiment namespace and never rewrites its parent. Fresh
+configurations execute their two consecutive updates on live workers. The run retains its Modal nodes, Ray cluster and local kernel
+caches across configurations. Native saves remain a training capability; the existing
+snapshot helper separately packages each completed PEFT export for evaluation.
+Every node commits its own global-rank native/optimizer shards after the native save
+barrier. Only after all nodes' receipts and hashes validate does the owner certify the
+native checkpoint and commit an evaluation snapshot plus a per-step completion receipt.
+Batch bytes and resume shards are hash-verified onto each node's local disk before
+any trainer can read them. The publishing thread alone reloads the state Volume;
+training never reads a mount whose contents can disappear during that reload.
+Publication failure never reports an incomplete export as ready.
+
+The composition root distinguishes failed training subprocesses from the allocation
+lifetime. Bounded retries retain the Modal nodes and kernel caches, stop/restart Ray
+on every node to discard failed workers, and load only a committed native boundary.
+Each attempt has a separate output directory; committed updates are never reapplied.
+Independent fresh configurations may run after another configuration exhausts its
+retries. Completion requires the expected optimizer-step IDs AND durable receipts,
+not the number of generic metric rows. After unrecovered errors every cluster
+function stays alive for the plan's recorded hold budget (at most six hours and
+within the eight-hour function lifetime), or until explicit release through its
+recorded coordination Dict. No automatic gang relaunch is allowed. The local
+supervisor cleans up only when the remote function has ended. Successful runs release
+compute after every requested update is durable. Cleanup preserves all artifacts.
+
+
 CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.
 
 
