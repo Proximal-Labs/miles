@@ -34,13 +34,13 @@ from miles_plugins.proximal.e2e.batch_sweep_inputs import (
     validate_phase_args,
     validate_source,
 )
-from miles_plugins.proximal.serving_app import RUN
 from miles_plugins.proximal.e2e.batch_sweep_recovery import (
     completed_training_steps,
     read_resume,
     stage_batch,
     stage_resume,
 )
+from miles_plugins.proximal.serving_app import RUN
 from miles_plugins.proximal.state_artifacts import StateFile, describe
 from miles_plugins.proximal.state_checkpoints import NativeCompletion
 from miles_plugins.proximal.storage import write_atomic
