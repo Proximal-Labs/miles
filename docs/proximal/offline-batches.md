@@ -1,5 +1,81 @@
 # Collect now, train later
 
+## Combining a saved batch and a top-up
+
+Use `assemble` when the top-up has a different pinned task subset. It does not
+rewrite dataset fingerprints or weaken the online buffer. Every selected group
+keeps its original codec bytes and is checked against its own source contract.
+Task membership may differ within the same project; the run, exact policy
+hash, base, harness, sampling, LoRA and token/rendering contracts must agree.
+The first bundle is the training/checkpoint anchor. Fresh training retains its
+verified zero-delta base-policy proof; native resume still validates that anchor's
+checkpoint contract and staleness window.
+
+Write an explicit selection JSON (paths are local mounted bundle directories):
+
+```json
+[
+  {"bundle": "/data/original/batch", "group_ids": ["old-group-1", "old-group-2"]},
+  {"bundle": "/data/topup/batch", "group_ids": ["new-group-1"]}
+]
+```
+
+For 96 existing and 32 new groups of eight, enumerate all 128 IDs, then run:
+
+```bash
+python -m miles_plugins.proximal.offline_batch assemble \
+  --selection selection.json --samples 1024 \
+  --require-nonzero-reward-variance --out /data/assembled/batch
+python -m miles_plugins.proximal.offline_batch check --bundle /data/assembled/batch
+```
+
+Assembly rejects duplicate groups/attempts, missing or corrupted payloads,
+zero-variance selected groups and incompatible source contracts. The new v2
+manifest records the ordered groups and both source contracts; existing v1
+bundles remain readable. Payloads are copied and verified before publishing the
+manifest. `publish_batch` commits payloads before readiness on a Volume.
+Selection is explicit: it never silently fills a short batch with zero-variance
+groups. Unselected paid results stay in their original collection.
+
+For a four-rollout retry of a previously all-zero eight-rollout group, keep both
+original collection bundles. Collect the new group under its explicit group size
+4. The primary source still declares the training group size 8. Before launching,
+record four old sample offsets (for example 0–3); retain all four new samples.
+Pass `--regroup-plan` with ordered training groups:
+
+```json
+[
+  {"members": [
+    {"source_group_id": "old-zero-group", "sample_offsets": [0, 1, 2, 3]},
+    {"source_group_id": "new-four-group", "sample_offsets": [0, 1, 2, 3]}
+  ]}
+]
+```
+
+The selection file names the original source groups whose bytes are retained;
+the regroup plan names the samples actually used for training. Every group must
+have eight distinct attempts for the exact same environment, image and commit.
+The consumer validates source groups at their original sizes before composing
+the training group. Variance filtering is applied after composition, so a single
+new success is sufficient. Original group/sample IDs remain in acceptance evidence;
+only Miles's batch-local indices change. This intentionally reuses known failures
+and is an adaptive sampling recipe, not eight fresh independent draws. No source
+payload or original group is overwritten. Offsets refer to positions in the
+checksum-bound source payload; they are not original Miles indices, which may be
+global across the collection. Assembly inputs are original collection
+bundles, not previously assembled manifests.
+
+Use a stable `--collection-id` for detached collection. Modal retries receive
+that same ID, and a committed invocation record prevents an interrupted worker
+from starting the entire paid collection again. A fully completed retry validates
+its existing batch and returns it. An incomplete retry fails closed and requires
+explicit reconciliation; this is not automatic resume of in-flight captures.
+`TrainingDeployment.collection_nonpreemptible=true` opts the CPU collector into
+Modal's non-preemptible tier (3x CPU/memory cost). Neither that option nor the
+retry guard makes uncommitted in-flight generation durable.
+
+## Data and execution
+
 The data already saved by the platform integration is sufficient for an independent
 training step. Use **complete groups**: their v2 codec contains verifier rewards
 as well as tokens, masks, logprobs and provenance. An individual accepted capture

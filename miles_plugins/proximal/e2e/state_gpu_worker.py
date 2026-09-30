@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from miles_plugins.proximal.offline_batch import FrozenBatch
+    from miles_plugins.proximal.offline_batch import Batch
 
 
 def prepare_batch(root: Path, *, config_json: str, samples: int, resume: bool) -> dict[str, object]:
@@ -121,7 +121,7 @@ def recipe(root: Path) -> list[str]:
 
 def train_reference(root: Path, *, commit: Callable[[], None]) -> dict[str, object]:
     from miles_plugins.proximal.contracts import behavior_correction_argv
-    from miles_plugins.proximal.offline_batch import validate_batch
+    from miles_plugins.proximal.offline_batch import training_groups, validate_batch
 
     batch = validate_batch(root / "batch")
     config, research = batch.source, batch.source.research
@@ -146,7 +146,7 @@ def train_reference(root: Path, *, commit: Callable[[], None]) -> dict[str, obje
         "--n-samples-per-prompt",
         str(research.group_size),
         "--rollout-batch-size",
-        str(len(batch.groups)),
+        str(len(training_groups(batch))),
         "--global-batch-size",
         str(batch.num_samples),
         *behavior_correction_argv(research.behavior_correction),
@@ -194,7 +194,7 @@ def _run(command: list[str], log: Path) -> None:
 
 
 def _bundle_checkpoint(
-    root: Path, working: Path, batch: "FrozenBatch", args: list[str], *, commit: Callable[[], None]
+    root: Path, working: Path, batch: "Batch", args: list[str], *, commit: Callable[[], None]
 ) -> str:
     from miles_plugins.proximal.contracts import digest, training_contract
     from miles_plugins.proximal.e2e.local_postgres import local_postgres, server_binaries
