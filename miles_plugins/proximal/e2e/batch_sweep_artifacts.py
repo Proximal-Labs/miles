@@ -8,11 +8,11 @@ from typing import Annotated, Literal
 import torch
 from pydantic import Field
 
-from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf
 from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization
 from miles_plugins.proximal.contracts import Contract, SafeId
 from miles_plugins.proximal.e2e.batch_sweep_inputs import SweepPhase, SweepPlan
+from miles_plugins.proximal.lora_targets import convert_target_modules_to_hf
 from miles_plugins.proximal.snapshot import (
     Digest,
     Nonempty,

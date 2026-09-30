@@ -2716,7 +2716,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     args_partial, _ = parser.parse_known_args()
             except SystemExit:
                 return parser
-            paths = [args_partial.custom_inference_engine_provider_path, args_partial.custom_megatron_post_save_hook_path]
+            paths = [
+                args_partial.custom_inference_engine_provider_path,
+                args_partial.custom_megatron_post_save_hook_path,
+            ]
             if not use_legacy_rollout_v1():
                 paths = [
                     resolve_rollout_function_paths(args_partial)[0],
