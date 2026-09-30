@@ -1,6 +1,6 @@
 # Smoke: one real-platform step for Qwen3.8-27B. 1 task x 4 samples, one optimizer update, then
-# stop. 4 H200 at TP 4 (one data-parallel rank): MLP-only LoRA on a frozen 27B is about 14 GB of
-# weights per GPU. Everything else matches ../train_args.txt.
+# stop. 4 H200 at TP 4 (one data-parallel rank): a frozen 27B with LoRA adapters is about 14 GB
+# of weights per GPU. Everything else matches ../train_args.txt.
 --actor-num-nodes 1
 --actor-num-gpus-per-node 4
 --calculate-per-token-loss

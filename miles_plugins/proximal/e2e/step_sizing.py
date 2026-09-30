@@ -52,6 +52,8 @@ from typing import Any
 import modal
 import modal.experimental
 
+from miles_plugins.proximal.e2e.argv import set_flag
+
 from miles_plugins.proximal.modal_sources import add_fork_sources
 
 PROFILE = os.environ.get("SIZING_PROFILE", "qwen38")
@@ -87,19 +89,6 @@ _EFA = (
 )
 
 
-def _set_flag(argv: list[str], flag: str, value: str | None) -> list[str]:
-    """Drop every occurrence of ``flag`` (and its value); re-add it last when ``value`` is set."""
-    out: list[str] = []
-    i = 0
-    while i < len(argv):
-        if argv[i] == flag:
-            i += 2 if i + 1 < len(argv) and not argv[i + 1].startswith("--") else 1
-            continue
-        out.append(argv[i])
-        i += 1
-    return out + ([flag, value] if value is not None else [])
-
-
 def _batch_flags(argv: list[str], *, directory: Path, nodes: int, samples: int, steps: int) -> list[str]:
     for flag, value in (
         ("--actor-num-nodes", str(nodes)),
@@ -112,7 +101,7 @@ def _batch_flags(argv: list[str], *, directory: Path, nodes: int, samples: int, 
         ("--save", None),  # Sizing keeps no checkpoints.
         ("--save-interval", None),
     ):
-        argv = _set_flag(argv, flag, value)
+        argv = set_flag(argv, flag, value)
     return argv
 
 
@@ -155,7 +144,7 @@ if PROFILE == "qwen38":
         argv = _batch_flags(replay_command(steps), directory=directory, nodes=nodes, samples=samples, steps=steps)
         for token in extra:  # Layout overrides replace the production value rather than duplicate it.
             if token.startswith("--"):
-                argv = _set_flag(argv, token, None)
+                argv = set_flag(argv, token, None)
         return argv + extra
 
     def prepare_node() -> None:

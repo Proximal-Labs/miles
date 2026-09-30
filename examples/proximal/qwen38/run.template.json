@@ -22,8 +22,12 @@
       "rank": 32,
       "alpha": 32,
       "target_modules": [
-        "linear_fc1",
-        "linear_fc2"
+        "language_model.decoder.layers.*.self_attention.linear_qkv",
+        "language_model.decoder.layers.*.self_attention.linear_proj",
+        "language_model.decoder.layers.*.self_attention.in_proj",
+        "language_model.decoder.layers.*.self_attention.out_proj",
+        "language_model.decoder.layers.*.mlp.linear_fc1",
+        "language_model.decoder.layers.*.mlp.linear_fc2"
       ]
     },
     "sampling": {
