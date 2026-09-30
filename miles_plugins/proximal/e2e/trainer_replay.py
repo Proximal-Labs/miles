@@ -17,8 +17,8 @@ a stress step near the context cap.
       modal run --env main -m miles_plugins.proximal.e2e.trainer_replay
 
 ``--extra-args`` appends Miles arguments to the production ones; ``{profile_dir}`` in them
-becomes ``/profiles/<label>`` on the profiles Volume, which keeps memory snapshots and
-profiler traces after the container exits. Peak GPU memory (``nvidia-smi`` every 2 s) is
+becomes ``/profiles/<label>`` on the profiles Volume (``<app_name>-profiles``, created once with
+``modal volume create``), which keeps memory snapshots and profiler traces after the container exits. Peak GPU memory (``nvidia-smi`` every 2 s) is
 recorded per step in the output either way.
 
     --label skip-mem --extra-args "--record-memory-history --memory-snapshot-path snapshot.pickle
@@ -137,7 +137,7 @@ def replay_command(num_steps: int, extra_args: list[str]) -> list[str]:
 
 
 app = modal.App(f"{node.TRAINING.app_name}-replay")
-profiles_volume = modal.Volume.from_name(f"{node.TRAINING.app_name}-profiles", create_if_missing=True)
+profiles_volume = modal.Volume.from_name(f"{node.TRAINING.app_name}-profiles", create_if_missing=False)
 
 
 @app.function(
