@@ -242,9 +242,7 @@ def test_finite_source_retries_without_skipping_or_overproducing(config, tmp_pat
     assert not source.has_samples
 
 
-async def test_finite_worker_drains_stragglers_and_retries_without_backfill(
-    config, tmp_path, attempt, policy, store
-):
+async def test_finite_worker_drains_stragglers_and_retries_without_backfill(config, tmp_path, attempt, policy, store):
     from miles.rollout.fully_async_data_buffer import DataBufferInput
 
     await store.commit_policy(policy)
