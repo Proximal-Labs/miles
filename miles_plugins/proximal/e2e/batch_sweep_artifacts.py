@@ -3,6 +3,9 @@
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import Field
 
 import torch
 
@@ -10,10 +13,29 @@ from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_h
 from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization
 from miles_plugins.proximal.e2e.batch_sweep_inputs import SweepPhase, SweepPlan
-from miles_plugins.proximal.snapshot import SnapshotMetadata, prepare_snapshot, read_snapshot
-from miles_plugins.proximal.state_artifacts import StateFile, copy_verified, describe, verify
+from miles_plugins.proximal.contracts import Contract, SafeId
+from miles_plugins.proximal.snapshot import (
+    Digest,
+    Nonempty,
+    SnapshotMetadata,
+    SnapshotReference,
+    prepare_snapshot,
+    read_snapshot,
+)
+from miles_plugins.proximal.state_artifacts import RelativePath, StateFile, copy_verified, describe, verify
 from miles_plugins.proximal.state_checkpoints import NativeCompletion
 from miles_plugins.proximal.storage import write_atomic
+
+
+class SweepStep(Contract):
+    phase: SafeId
+    update: Literal[1, 2]
+    batch_sha256: Digest
+    targets: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
+    native: NativeCompletion
+    files: tuple[StateFile, ...]
+    snapshot: SnapshotReference
+    eval_path: RelativePath
 
 
 def publish_node_files(

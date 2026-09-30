@@ -229,17 +229,33 @@ manifest hash and verifies the original zero-delta policy proof before allocatio
 CPU preflight uses the pinned image's native argument parser, HF model validation,
 and sweep-contract checks. Megatron's full validator queries the CUDA architecture
 for tensor parallelism; it runs on the allocated gang before model loading.
-Each configuration starts a fresh model/optimizer and executes its two consecutive
-updates on live workers. The run retains its Modal nodes, Ray cluster and local kernel
+Each configuration explicitly declares fresh initialization or a hash-pinned prior
+sweep completion receipt. Native continuation restores the identical targets, recipe,
+parallel layout, optimizer, scheduler and RNG, and starts at the next update. A
+continuation uses a new experiment namespace and never rewrites its parent. Fresh
+configurations execute their two consecutive updates on live workers. The run retains its Modal nodes, Ray cluster and local kernel
 caches across configurations. Native saves remain a training capability; the existing
 snapshot helper separately packages each completed PEFT export for evaluation.
 Every node commits its own global-rank native/optimizer shards after the native save
 barrier. Only after all nodes' receipts and hashes validate does the owner certify the
 native checkpoint and commit an evaluation snapshot plus a per-step completion receipt.
-Publication failure aborts the experiment; the run never reports an incomplete export
-as ready. Output lives in an isolated experiment namespace, not the source run's
-online policy/checkpoint lineage. No automatic restart or resume of a partially
-completed experiment is allowed. Cluster cleanup preserves all committed artifacts.
+Batch bytes and resume shards are hash-verified onto each node's local disk before
+any trainer can read them. The publishing thread alone reloads the state Volume;
+training never reads a mount whose contents can disappear during that reload.
+Publication failure never reports an incomplete export as ready.
+
+The composition root distinguishes failed training subprocesses from the allocation
+lifetime. Bounded retries retain the Modal nodes and kernel caches, stop/restart Ray
+on every node to discard failed workers, and load only a committed native boundary.
+Each attempt has a separate output directory; committed updates are never reapplied.
+Independent fresh configurations may run after another configuration exhausts its
+retries. Completion requires the expected optimizer-step IDs AND durable receipts,
+not the number of generic metric rows. After unrecovered errors every cluster
+function stays alive for the plan's recorded hold budget (at most six hours and
+within the eight-hour function lifetime), or until explicit release through its
+recorded coordination Dict. No automatic gang relaunch is allowed. The local
+supervisor cleans up only when the remote function has ended. Successful runs release
+compute after every requested update is durable. Cleanup preserves all artifacts.
 
 
 CPU tests use real tensors, Gloo, Miles weight/update/async/TITO/codec machinery, a pinned Qwen3 tokenizer, HTTP fixtures and substituted Modal I/O. They establish control-plane and trace correctness. They do not establish GPU numerical equivalence, successful live feature-task execution, Modal routing/Volume latency, or DeepSWE learning improvement. The [runbook](../../miles_plugins/proximal/README.md) defines those subsequent gates.

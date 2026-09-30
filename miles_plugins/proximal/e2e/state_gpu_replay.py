@@ -24,11 +24,14 @@ class ReferenceReplay(BaseRolloutFn):
         self.args = input.args
         self.root = input.args.verification_batch
         self.batch = validate_batch(self.root)
-        if not self.args.debug_train_only or self.args.num_rollout != 2 or self.args.start_rollout_id != 0:
-            raise ValueError("Reference replay requires a fresh two-update train-only diagnostic")
+        start = self.args.start_rollout_id
+        if not self.args.debug_train_only or self.args.num_rollout != 2 or start not in (0, 1):
+            raise ValueError("Reference replay requires a two-update train-only diagnostic")
+        if (start == 1) != bool(self.args.lora_adapter_path):
+            raise ValueError("Reference replay continuation requires an explicit native adapter")
 
     def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
-        if input.evaluation or input.rollout_id not in (0, 1):
+        if input.evaluation or not self.args.start_rollout_id <= input.rollout_id < 2:
             raise ValueError("Reference experiment is exactly two training updates")
         groups = []
         for group_index, selection in enumerate(training_groups(self.batch)):

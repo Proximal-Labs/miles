@@ -14,7 +14,7 @@ from miles_plugins.proximal.contracts import Contract, RunConfig, SafeId, behavi
 from miles_plugins.proximal.e2e.argv import set_flag
 from miles_plugins.proximal.initial_policy import verify_base_policy
 from miles_plugins.proximal.snapshot import Digest, Nonempty
-from miles_plugins.proximal.state_artifacts import RelativePath
+from miles_plugins.proximal.state_artifacts import RelativePath, StateFile
 
 if TYPE_CHECKING:
     from miles_plugins.proximal.offline_batch import Batch
@@ -24,6 +24,7 @@ class SweepPhase(Contract):
     name: SafeId
     updates: Literal[2]
     target_modules: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
+    resume: StateFile | None
 
 
 class SweepPlan(Contract):
@@ -34,6 +35,8 @@ class SweepPlan(Contract):
     nodes: Annotated[int, Field(gt=0)]
     phases: Annotated[tuple[SweepPhase, ...], Field(min_length=1)]
     recipe: Annotated[tuple[str, ...], Field(min_length=1)]
+    phase_attempts: Annotated[int, Field(ge=1, le=3)] = 2
+    failure_hold_seconds: Annotated[int, Field(ge=0, le=21600)] = 21600
 
     @model_validator(mode="after")
     def _unique(self) -> "SweepPlan":
@@ -61,7 +64,15 @@ def validate_source(bundle: Path, plan: SweepPlan, source: RunConfig) -> "Batch"
     return batch
 
 
-def phase_command(plan: SweepPlan, phase: SweepPhase, source: RunConfig, *, bundle: Path, save: Path) -> list[str]:
+def phase_command(
+    plan: SweepPlan,
+    phase: SweepPhase,
+    source: RunConfig,
+    *,
+    bundle: Path,
+    save: Path,
+    resume_adapter: Path | None = None,
+) -> list[str]:
     """Native Miles loop, exact behavior data, fresh optimizer for each phase."""
     forbidden = {
         "--lora-adapter-path",
@@ -108,7 +119,7 @@ def phase_command(plan: SweepPlan, phase: SweepPhase, source: RunConfig, *, bund
         "--rollout-batch-size": str(plan.samples // research.group_size),
         "--global-batch-size": str(plan.samples),
         "--num-rollout": str(phase.updates),
-        "--start-rollout-id": "0",
+        "--start-rollout-id": "1" if phase.resume is not None else "0",
         "--rollout-num-gpus": "0",
         "--rollout-max-response-len": str(research.sampling.max_tokens),
         "--rollout-max-context-len": str(research.sampling.max_sequence_tokens),
@@ -121,6 +132,10 @@ def phase_command(plan: SweepPlan, phase: SweepPhase, source: RunConfig, *, bund
         raise ValueError("Sweep samples must be a whole number of source training groups")
     for flag, value in values.items():
         args = set_flag(args, flag, value)
+    if (phase.resume is None) != (resume_adapter is None):
+        raise ValueError("Native resume requires its verified, staged adapter directory")
+    if resume_adapter is not None:
+        args = set_flag(args, "--lora-adapter-path", str(resume_adapter))
     for flag in ("--use-rollout-logprobs", "--use-tis", "--tis-clip", "--tis-clip-low"):
         args = set_flag(args, flag, None)
     args += behavior_correction_argv(research.behavior_correction)
@@ -129,11 +144,11 @@ def phase_command(plan: SweepPlan, phase: SweepPhase, source: RunConfig, *, bund
     return ["python", "/fork/train.py", *args]
 
 
-def validate_phase_args(args: object, plan: SweepPlan, source: RunConfig) -> None:
+def validate_phase_args(args: object, plan: SweepPlan, source: RunConfig, phase: SweepPhase) -> None:
     """Check parsed model/shape flags before starting Ray or any GPU workers."""
     for name, expected in {
         "num_rollout": 2,
-        "start_rollout_id": 0,
+        "start_rollout_id": 1 if phase.resume is not None else 0,
         "actor_num_nodes": plan.nodes,
         "actor_num_gpus_per_node": 8,
         "global_batch_size": plan.samples,

@@ -30,8 +30,8 @@ def plan(source):
         samples=1024,
         nodes=1,
         phases=(
-            SweepPhase(name="mlp", updates=2, target_modules=("linear_fc1", "linear_fc2")),
-            SweepPhase(name="full", updates=2, target_modules=("linear_qkv", "linear_fc1", "linear_fc2")),
+            SweepPhase(name="mlp", updates=2, resume=None, target_modules=("linear_fc1", "linear_fc2")),
+            SweepPhase(name="full", updates=2, resume=None, target_modules=("linear_qkv", "linear_fc1", "linear_fc2")),
         ),
         recipe=(
             "--optimizer",
@@ -193,3 +193,223 @@ def test_failed_volume_commit_cannot_publish_completion(source, plan, tmp_path):
             commit=fail,
         )
     assert not (root / "mlp/step-1.json").exists()
+
+
+@pytest.fixture
+def resumable(source, plan, tmp_path):
+    from miles_plugins.proximal.state_artifacts import describe
+
+    authorization = authorize_run(source, yes_rollouts=True, yes_publish=True)
+    local, root = tmp_path / "local", tmp_path / "old"
+    destination = root / "mlp/checkpoints/iter_0000000/adapter"
+    write_shards(local, source, range(8))
+    files = publish_node_files(authorization, local=local, destination=destination, commit=lambda: None)
+    finalize_step(
+        authorization,
+        plan=plan,
+        phase=plan.phases[0],
+        step=0,
+        native=native(),
+        receipts=[files],
+        root=root,
+        commit=lambda: None,
+    )
+    (root / "plan.json").write_text(plan.model_dump_json())
+    phase = plan.phases[0].model_copy(
+        update={"resume": describe(root / "mlp/step-1.json", relative="old/mlp/step-1.json")}
+    )
+    return phase, destination
+
+
+def test_resume_stages_native_optimizer_and_starts_only_second_update(source, plan, resumable, tmp_path):
+    from miles_plugins.proximal.e2e.batch_sweep_recovery import stage_resume
+
+    phase, original = resumable
+    local = stage_resume(tmp_path, plan, phase, tmp_path / "staged")
+    assert len(list(local.glob("training_state_rank*.pt"))) == 8
+    # Simulate the Volume disappearing during publication. The training command
+    # and every native load continue to use verified local files.
+    original.rename(original.with_name("temporarily-unmounted"))
+    command = phase_command(
+        plan, phase, source, bundle=tmp_path / "local-batch", save=tmp_path / "new", resume_adapter=local
+    )
+    assert command[command.index("--start-rollout-id") + 1] == "1"
+    assert command[command.index("--num-rollout") + 1] == "2"
+    assert command[command.index("--lora-adapter-path") + 1] == str(local)
+    assert (local / "adapter_megatron_rank7.pt").is_file()
+    assert "--no-load-optim" not in command and "--no-load-rng" not in command
+    with pytest.raises(ValueError, match="verified"):
+        phase_command(plan, phase, source, bundle=tmp_path, save=tmp_path / "other")
+
+
+@pytest.mark.parametrize("change", ["targets", "recipe", "corrupt", "missing", "receipt"])
+def test_resume_fails_before_training_for_incompatible_or_damaged_state(plan, resumable, tmp_path, change):
+    from miles_plugins.proximal.e2e.batch_sweep_recovery import stage_resume
+
+    phase, original = resumable
+    if change == "targets":
+        phase = phase.model_copy(update={"target_modules": ("linear_qkv",)})
+    elif change == "recipe":
+        plan = plan.model_copy(update={"recipe": (*plan.recipe, "--lr", "1e-3")})
+    elif change == "corrupt":
+        (original / "training_state_rank3.pt").write_bytes(b"damaged")
+    elif change == "missing":
+        (original / "adapter_megatron_rank7.pt").unlink()
+    elif change == "receipt":
+        (tmp_path / phase.resume.path).write_text("{}")
+    with pytest.raises(ValueError):
+        stage_resume(tmp_path, plan, phase, tmp_path / "staged")
+    assert not (tmp_path / "staged/native_checkpoint.json").exists()
+
+
+def test_metric_rows_do_not_double_count_an_optimizer_update():
+    from miles_plugins.proximal.e2e.batch_sweep_recovery import completed_training_steps
+
+    rows = [{"rollout": 0, "rollout/num_training_samples": 1024}, {"rollout": 0, "perf/actor_train_time": 1201.0}]
+    assert completed_training_steps(rows) == {0}
+    rows.append({"rollout": 1, "perf/actor_train_time": 1100.0})
+    assert completed_training_steps(rows) == {0, 1}
+
+
+def coordinator(tmp_path, source, plan, outcomes):
+    """Exercise the actual coordinator with CPU-only subprocess/publication results.
+
+    Load just its function to avoid constructing the configured Modal GPU image.
+    Each fake result certifies a completed native save, independently of metrics.
+    """
+    import ast
+    import shutil
+    from functools import partial
+    from types import SimpleNamespace
+    from miles_plugins.proximal.e2e.batch_sweep_recovery import completed_training_steps
+    from miles_plugins.proximal.state_artifacts import describe
+    from miles_plugins.proximal.storage import write_atomic
+
+    path = REPO / "miles_plugins/proximal/e2e/batch_sweep.py"
+    function = next(
+        n for n in ast.parse(path.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "_run_phases"
+    )
+    module = ast.Module(
+        body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), function],
+        type_ignores=[],
+    )
+    state = {}
+    calls, ray_stops = [], []
+    root = tmp_path / "experiment"
+
+    def run(command, *, label, log, **kwargs):
+        phase, attempt = label.split("-attempt-")
+        attempt = int(attempt)
+        start = int(command[command.index("--start-rollout-id") + 1])
+        calls.append((phase, attempt, start, "--lora-adapter-path" in command))
+        code, steps = outcomes[(phase, attempt)]
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("retained diagnostic log")
+        for step in steps:
+            receipt = root / f"attempt-{attempt}" / phase / f"step-{step+1}.json"
+            write_atomic(receipt, b"{}")
+            state[f"save/{phase}/{attempt}/{step}"] = True
+            state[f"durable/{phase}/{step}"] = {"receipt_path": str(receipt.relative_to(tmp_path))}
+        state[f"scanned/{phase}/{attempt}/0"] = True
+        return {"exit_code": code, "perf": [{"rollout": s, "perf/actor_train_time": 1.0} for s in steps]}
+
+    def wait(predicate, *_):
+        assert predicate(), "Coordinator waited for missing recovery evidence"
+
+    class State(dict):
+        scope = "owned-gang"
+
+        @property
+        def store(self):
+            return self
+
+    state = State()
+    cluster = SimpleNamespace(run_command=run, _wait=wait, _State=lambda *args: state, _start_ray=lambda *args: None)
+    import threading
+
+    namespace = dict(
+        partial=partial,
+        _all_keys=lambda state, keys: all(state.get(k) for k in keys),
+        cluster=cluster,
+        require_authorization=lambda auth: None,
+        LOCAL=tmp_path / "local",
+        MOUNT=tmp_path,
+        RUN=source,
+        SweepPhase=SweepPhase,
+        describe=describe,
+        json=json,
+        shutil=shutil,
+        write_atomic=write_atomic,
+        phase_command=phase_command,
+        completed_training_steps=completed_training_steps,
+        _VOLUME_LOCK=threading.Lock(),
+        VOLUME=SimpleNamespace(reload=lambda: None, commit=lambda: None),
+        stage_resume=lambda mount, plan, phase, target: target if phase.resume else None,
+        subprocess=SimpleNamespace(run=lambda *args, **kwargs: ray_stops.append(args)),
+    )
+    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
+    return (
+        lambda: namespace["_run_phases"](object(), plan, state, root, tmp_path / "batch", 0, ["node"]),
+        calls,
+        ray_stops,
+    )
+
+
+def test_failed_phase_retries_from_committed_update_without_reapplying_it(tmp_path, source, plan):
+    run, calls, stops = coordinator(
+        tmp_path, source, plan, {("mlp", 0): (1, [0]), ("mlp", 1): (0, [1]), ("full", 0): (0, [0, 1])}
+    )
+    result = run()
+    assert calls == [("mlp", 0, 0, False), ("mlp", 1, 1, True), ("full", 0, 0, False)]
+    assert len(stops) == 1 and len(result) == 3
+
+
+def test_independent_full_phase_runs_after_mlp_exhausts_attempts(tmp_path, source, plan):
+    run, calls, stops = coordinator(
+        tmp_path, source, plan, {("mlp", 0): (1, []), ("mlp", 1): (1, []), ("full", 0): (0, [0, 1])}
+    )
+    with pytest.raises(RuntimeError, match="holding allocation"):
+        run()
+    assert [p for p, *_ in calls] == ["mlp", "mlp", "full"]
+    assert len(stops) == 2  # Ray workers only; the Modal allocation is untouched.
+
+
+def test_committed_final_update_is_not_retried_after_subprocess_cleanup_failure(tmp_path, source, plan):
+    # A failed subprocess after its last save must not cause an extra update.
+    run, calls, stops = coordinator(tmp_path, source, plan, {("mlp", 0): (1, [0, 1]), ("full", 0): (0, [0, 1])})
+    run()
+    assert [p for p, *_ in calls] == ["mlp", "full"]
+
+
+@pytest.mark.parametrize("release", [True, False])
+def test_control_plane_outage_does_not_bypass_allocation_hold(plan, release):
+    import ast
+    from types import SimpleNamespace
+
+    path = REPO / "miles_plugins/proximal/e2e/batch_sweep.py"
+    function = next(
+        n
+        for n in ast.parse(path.read_text()).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_hold_failed_cluster"
+    )
+    module = ast.Module(
+        body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), function],
+        type_ignores=[],
+    )
+    clock = [0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    class State:
+        def get(self, key):
+            if key == "release" and release and clock[0] >= 10:
+                return True
+            raise ConnectionError("control plane temporarily unavailable")
+
+    namespace = {"time": SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep)}
+    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
+    namespace["_hold_failed_cluster"](
+        State(), 0, plan.model_copy(update={"failure_hold_seconds": 20}), 0, RuntimeError("failed phase")
+    )
+    assert clock[0] == (10 if release else 20)
