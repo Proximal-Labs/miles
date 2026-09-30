@@ -24,7 +24,7 @@ from pathlib import Path
 import httpx
 
 from miles.rollout.rm_hub.math_utils import grade_answer_verl
-from miles_plugins.proximal.contracts import RunConfig, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, affinity_headers, platform_rollout_id, read_run_config
 from miles_plugins.proximal.e2e.stub_platform import RunState, StubPlatform, assemble_stream
 
 IMAGE_ID = 1
@@ -59,11 +59,12 @@ class MathPlatform(StubPlatform):
     async def _agent(self, state: RunState) -> None:
         request = state.request
         problem = self.problems[request.environment_id - 1]
-        url = f"{self.run.capture.url}/rollouts/{request.run_id}-rollout-0/v1/chat/completions"
+        rollout = platform_rollout_id(request.run_id)
+        url = f"{self.run.capture.url}/rollouts/{rollout}/v1/chat/completions"
         try:
             reply = await self.client.post(
                 url,
-                headers={"Authorization": f"Bearer {self.capture_key}"},
+                headers={"Authorization": f"Bearer {self.capture_key}"} | affinity_headers(rollout),
                 json={
                     "model": self.run.base_model.name,
                     "messages": problem.messages,
@@ -110,6 +111,7 @@ def main() -> None:
         config = json.loads(args.template.read_text())
         config["dataset"]["tasks"] = tasks
         config["inference_url"] = args.inference_url
+        config["capture"]["url"] = args.inference_url  # Capture runs in the pool's replicas.
         args.out.write_text(json.dumps(config, indent=2) + "\n")
         run = read_run_config(str(args.out))  # Validate the result against the contract.
         print(f"Wrote {args.out}: {len(run.dataset.tasks)} tasks pinned to {sha}")

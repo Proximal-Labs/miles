@@ -30,6 +30,9 @@ def init_wandb_primary(args):
     if not args.use_wandb:
         args.wandb_run_id = None
         return
+    # A requested run id resumes that run (a restarted job continues its history);
+    # otherwise W&B picks one. Either way the chosen id is handed to the other processes.
+    requested_run_id = args.wandb_run_id
 
     # Set W&B mode if specified (overrides WANDB_MODE env var)
     if args.wandb_mode:
@@ -64,6 +67,9 @@ def init_wandb_primary(args):
         "name": run_name,
         "config": _compute_config_for_logging(args),
     }
+    if requested_run_id is not None:
+        init_kwargs["id"] = requested_run_id
+        init_kwargs["resume"] = "allow"
 
     # Configure settings based on offline/online mode
     if offline:

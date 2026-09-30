@@ -1,0 +1,31 @@
+{
+  "app_name": "miles-qwen38-training",
+  "gpu": "B300:8",
+  "num_gpus": 8,
+  "cpu": 32,
+  "memory_mib": 786432,
+  "max_retries": 2,
+  "deterministic_kernels": false,
+  "cuda_allocator": "expandable_segments",
+  "model_args": "qwen3.8-27B",
+  "train_args": "examples/proximal/qwen38/overhead/train_args.txt",
+  "state_volume": {
+    "volume_name": "miles-qwen38-state",
+    "environment_name": "main"
+  },
+  "kernel_cache": {
+    "volume": {"volume_name": "miles-qwen38-kernels", "environment_name": "main"},
+    "mount": "/kernels",
+    "fla_cache_mode": "fuzzy"
+  },
+  "secrets": [
+    "miles-qwen38-gateway",
+    "miles-gsm8k-proxy",
+    "miles-gsm8k-wandb",
+    "miles-platform"
+  ],
+  "platform": {
+    "kind": "real",
+    "registration_timeout_seconds": 1200
+  }
+}

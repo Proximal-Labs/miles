@@ -40,6 +40,7 @@ Not fully verified — for experimental and development use.
 - **[multi_agent](./experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
 - **[proximal/e2e](./proximal/e2e)**: Stage A harness for Proximal platform rollouts: the real rollout, store and capture path from a Mac against Modal replicas, with training faked.
 - **[proximal/gsm8k](./proximal/gsm8k)**: Qwen3-0.6B hill-climbs gsm8k on the platform-training topology (Modal training node and replicas) with a stand-in platform.
+- **[proximal/qwen38](./proximal/qwen38)**: Qwen3.8-27B trained on real Proximal platform rollouts (DeepSWE tasks) from a Modal training node and replicas.
 - **[nemo-gym](./experimental/nemo-gym)**: SWE-agent training with NVIDIA NeMo Gym as the environment ecosystem.
 - **[openenv](./experimental/openenv)**: Rollouts against OpenEnv-hosted environments.
 - **[reproducibility](./experimental/reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.

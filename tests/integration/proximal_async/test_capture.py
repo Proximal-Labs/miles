@@ -4,26 +4,27 @@ Run in the Linux CPU image with PROXIMAL_TEST_TOKENIZER pointing to the pinned
 Qwen3 tokenizer. Missing test assets are failures, not skipped integration tests.
 """
 
+import asyncio
 import json
 import os
+import threading
 from argparse import Namespace
 
 import httpx
 import pytest
-from transformers import AutoTokenizer
 
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
-from miles_plugins.proximal.capture_server import CaptureServer
+from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
-from miles_plugins.proximal.contracts import AcceptedAttempt
+from miles_plugins.proximal.contracts import AcceptedAttempt, serving_contract
 from miles_plugins.proximal.data_source import PlatformTaskSource
-from miles_plugins.proximal.rollout import execute_attempt
+from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
 
 
 @pytest.fixture
-def tokenizer():
-    return AutoTokenizer.from_pretrained(os.environ["PROXIMAL_TEST_TOKENIZER"], local_files_only=True)
+def tokenizer(config):
+    return capture_tokenizer(os.environ["PROXIMAL_TEST_TOKENIZER"], config.tito_model)
 
 
 PLATFORM = {"Authorization": "Bearer capture-platform-secret"}  # The registry's credential.
@@ -99,7 +100,7 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
             client = CaptureClient(authorization, http)
             await store.commit_policy(policy)
@@ -131,11 +132,16 @@ async def test_real_tito_seal_is_retryable_and_survives_restart(
             wrong = await http.post(url, headers={"Authorization": "Bearer capture-secret"}, json={})
             assert wrong.status_code == 401
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
-            await client.release(handle)
-        replacement = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        # Sealed samples survive a capture restart until the trainer releases them.
+        replacement = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=replacement.app)) as http:
             client = CaptureClient(authorization, http)
             assert await client.collect(handle, attempt) == (receipt, payload)
+            await client.release(handle)
+            assert not (replacement.root / "sessions" / handle.session_id).exists()
+            with pytest.raises(httpx.HTTPStatusError) as released:
+                await client.collect(handle, attempt)
+            assert released.value.response.status_code == 404
             with pytest.raises(httpx.HTTPStatusError) as caught:
                 await client.create(attempt)
             assert caught.value.response.status_code == 410
@@ -164,7 +170,7 @@ async def test_bad_inference_never_seals(config, authorization, policy, attempt,
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=server.app, raise_app_exceptions=False)
         ) as http:
@@ -196,7 +202,7 @@ async def test_task_to_captured_and_graded_miles_sample(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=tool_turn)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as capture_http:
             capture = CaptureClient(authorization, capture_http)
             await store.commit_policy(policy)
@@ -286,7 +292,13 @@ async def test_task_to_captured_and_graded_miles_sample(
                 if not graded:
                     with pytest.raises(IneligibleAttempt):
                         await execute_attempt(attempt, sample, **kwargs)
-                    assert not directory.exists()
+                    from miles_plugins.proximal.contracts import FailedAttempt
+
+                    failure = FailedAttempt.model_validate_json((directory / "failed.json").read_bytes())
+                    assert failure.attempt == attempt and failure.grade is None
+                    assert failure.capture is not None
+                    assert (directory / "partial.safetensors").is_file()
+                    assert not (directory / "accepted.json").exists()
                     assert "StopEnvironmentRun" in methods
                 else:
                     result = await execute_attempt(attempt, sample, **kwargs)
@@ -302,7 +314,8 @@ async def test_task_to_captured_and_graded_miles_sample(
                         suffix = result.tokens[-result.response_length :]
                         context_ids = [token for token, mask in zip(suffix, result.loss_mask, strict=True) if not mask]
                         assert "UNIQUE_TOOL_RESULT_42" in tokenizer.decode(context_ids)
-                # Both paths release the session; a lost attempt is never reopened.
+                # Both paths release the session (in the background); a lost attempt is never reopened.
+                await wait_for_releases()
                 with pytest.raises(httpx.HTTPStatusError) as caught:
                     await capture.create(attempt)
                 assert caught.value.response.status_code == 410
@@ -316,7 +329,7 @@ async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
     requests = []
     engine = scripted_engine(config, policy, tokenizer, requests, tool_turn=True)
     async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
-        server = CaptureServer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
             client = CaptureClient(authorization, http)
             await store.commit_policy(policy)
@@ -367,3 +380,169 @@ async def test_agent_px_mini_swe_traffic_is_captured_without_rollback(
             assert requests[1]["input_ids"][: len(requests[0]["input_ids"])] == requests[0]["input_ids"]
             assert requests[0]["max_tokens"] == 48
             assert requests[1]["max_tokens"] == config.research.sampling.max_tokens
+            # One timing record per chat call, rejected ones included, joined to the agent by response id.
+            timing_log = config.artifact_directory / config.run_id / "capture" / "call-timing.jsonl"
+            records = [json.loads(line) for line in timing_log.read_text().splitlines()]
+            assert [record["status"] for record in records] == [422, 422, 200, 200]
+            order = [
+                "handler_start",
+                "session_locked",
+                "validated",
+                "proxy_start",
+                "engine_sent",
+                "engine_done",
+                "proxy_end",
+                "core_done",
+                "response_start",
+                "response_sent",
+            ]
+            for record in records[2:]:
+                marks = record["marks"]
+                assert [marks[name] for name in order] == sorted(marks[name] for name in order)
+                assert record["response_id"] and record["input_tokens"] > 0 and record["output_tokens"] > 0
+
+
+async def test_capture_composed_like_a_replica(config, authorization, policy, attempt, tokenizer, tmp_path):
+    """On a replica, capture reaches its gateway through an injected endpoint and checks a
+    session's policy by admission rather than the rollout store (see serve_replica)."""
+    requests: list[dict[str, object]] = []
+    engine = scripted_engine(config, policy, tokenizer, requests)
+    admitted: list[object] = []
+
+    async def admits(candidate):
+        admitted.append(candidate)
+        return candidate == policy
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as gateway:
+        server = CaptureServer(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint(client=gateway, url="http://replica-gateway", headers={"Authorization": "Bearer g"}),
+            policy_known=admits,
+            root=tmp_path / "capture",
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            other = attempt.model_copy(
+                update={
+                    "attempt_id": "attempt-2",
+                    "policy": policy.model_copy(update={"version": policy.version + 1}),
+                }
+            )
+            with pytest.raises(httpx.HTTPStatusError) as refused:
+                await client.create(other)
+            assert refused.value.response.status_code == 409
+            handle = await client.create(attempt)
+            reply = await http.post(
+                handle.base_url + "/chat/completions",
+                headers=PLATFORM,
+                json={"model": config.base_model.name, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert reply.status_code == 200, reply.text
+            receipt, _ = await client.collect(handle, attempt)
+            assert receipt.num_calls == 1 and admitted == [other.policy, policy]
+    assert (tmp_path / "capture" / "sessions" / handle.session_id / "receipt.json").exists()
+
+
+async def test_a_new_run_on_the_same_deployment_needs_no_redeploy(
+    config, authorization, policy, attempt, tokenizer, tmp_path
+):
+    """Run-level fields (run id, tasks, harness, budgets within the ceiling) travel with the
+    attempt; capture checks only what its replica was started with (ServingContract)."""
+    requests: list[dict[str, object]] = []
+    engine = scripted_engine(config, policy, tokenizer, requests)
+
+    async def admits(candidate):
+        return candidate.snapshot == policy.snapshot
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as gateway:
+        server = CaptureServer(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint(client=gateway, url="http://replica-gateway", headers={"Authorization": "Bearer g"}),
+            policy_known=admits,
+            root=tmp_path / "capture",
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            assert await client.serving_contract("any") == serving_contract(config)
+            assert (await http.get(f"{config.capture.url}/capture/contract")).status_code == 401
+
+            sampling = attempt.sampling
+            next_run = attempt.model_copy(
+                update={
+                    "attempt_id": "next-run-attempt",
+                    "run_id": "next-run",
+                    "policy": policy.model_copy(update={"run_id": "next-run"}),
+                    "dataset_sha256": "a" * 64,
+                    "task": attempt.task.model_copy(update={"environment_id": 999}),
+                    "harness": attempt.harness.model_copy(update={"max_turns": 7}),
+                    "sampling": sampling.model_copy(update={"max_tokens": sampling.max_tokens // 2}),
+                }
+            )
+            handle = await client.create(next_run)
+            reply = await http.post(
+                handle.base_url + "/chat/completions",
+                headers=PLATFORM,
+                json={"model": config.base_model.name, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert reply.status_code == 200, reply.text
+            assert requests[-1]["max_tokens"] <= sampling.max_tokens // 2
+
+            beyond = next_run.model_copy(
+                update={
+                    "attempt_id": "beyond-ceiling",
+                    "sampling": sampling.model_copy(update={"max_sequence_tokens": sampling.max_sequence_tokens + 1}),
+                }
+            )
+            with pytest.raises(httpx.HTTPStatusError) as refused:
+                await client.create(beyond)
+            assert refused.value.response.status_code == 409
+            assert "exceeds this deployment's" in str(refused.value)
+
+
+async def test_sessions_abandoned_by_their_trainer_expire(config, authorization, policy, attempt, tokenizer, store):
+    """Capture outlives the trainer that opened its sessions; one older than any rollout can
+    run is released when a new session opens, and its trainer finds it lost."""
+    requests: list[dict[str, object]] = []
+    engine = scripted_engine(config, policy, tokenizer, requests)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as backend:
+        server = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=backend, store=store)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            await store.commit_policy(policy)
+            abandoned = await client.create(attempt)
+            recent = await client.create(attempt.model_copy(update={"attempt_id": "attempt-2"}))
+            server.sessions[abandoned.session_id].opened -= server.session_lifetime(attempt) + 1
+            await client.create(attempt.model_copy(update={"attempt_id": "attempt-3"}))
+            assert abandoned.session_id not in server.sessions and recent.session_id in server.sessions
+            with pytest.raises(httpx.HTTPStatusError) as lost:
+                await client.collect(abandoned, attempt)
+            assert lost.value.response.status_code == 404
+
+
+def test_waiting_for_finished_releases_does_not_spin_the_event_loop():
+    """test_e2e_stage_a's intermittent hang: every release had finished, but their done
+    callbacks (which empty ``_releases``) had not run yet, and awaiting only finished tasks
+    never yields to the loop. The wait must return, and must not starve the loop."""
+    from miles_plugins.proximal import rollout
+
+    async def finished() -> None:
+        return None
+
+    async def scenario() -> None:
+        task = asyncio.get_running_loop().create_task(finished())
+        rollout._releases.add(task)
+        task.add_done_callback(rollout._releases.discard)
+        try:
+            await asyncio.sleep(0)  # The release finishes; its discard callback is only queued.
+            assert task.done() and task in rollout._releases
+            await wait_for_releases()
+        finally:
+            rollout._releases.discard(task)
+
+    # A spinning wait blocks its event loop for good, so run it on a thread we can abandon.
+    worker = threading.Thread(target=asyncio.run, args=(scenario(),), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "wait_for_releases spun on releases that had already finished"

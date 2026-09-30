@@ -2,14 +2,23 @@
 
 One CPU process owns live sessions. Sealed samples survive its restart on disk;
 unfinished sessions are explicitly lost. This app exposes no unrecorded proxy.
-Policy versions come from the rollout store, the single policy authority.
+
+The composing process decides where capture runs. On a serving replica (see
+``serve_replica``) it sends turns to that replica's gateway in-process and verifies a
+session's policy by admitting its adapter; next to the trainer (the local Stage A
+harness) it calls the pool over the network and checks the rollout store.
 """
 
 import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import math
+import re
+import shutil
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,16 +33,72 @@ from miles.rollout.session.core import ProxyRequest, SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
+from miles_plugins.proximal.call_timing import CallTimingMiddleware, mark, note
 from miles_plugins.proximal.contracts import (
+    ROLLOUT_SUFFIX,
+    TEMPLATE_REASONING_EFFORTS,
     Attempt,
     CaptureReceipt,
+    Policy,
     RunConfig,
+    ServingContract,
     canonical_bytes,
     digest,
-    pinned_dataset,
+    platform_rollout_id,
+    serving_contract,
 )
 from miles_plugins.proximal.storage import write_immutable
 from miles_plugins.proximal.store import RolloutStore
+
+
+logger = logging.getLogger(__name__)
+
+# SGLang's rejections of a request that does not fit the context window.
+_ENGINE_CONTEXT_LIMIT = re.compile(r"maximum context length|longer than the model's context length", re.IGNORECASE)
+
+
+class ContextLimitExceeded(Exception):
+    """A turn that cannot fit the session's token budget."""
+
+    def __init__(self, limit: int, detail: str) -> None:
+        super().__init__(detail)
+        self.limit, self.detail = limit, detail
+
+
+def openai_error(status_code: int, message: str, *, code: str | None = None) -> Response:
+    """An error in the OpenAI shape agents parse ({"error": {...}}); SGLang's flat body is not."""
+    error: dict[str, Any] = {"message": message, "type": "invalid_request_error", "param": None, "code": code}
+    return Response(orjson.dumps({"error": error}), status_code=status_code, media_type="application/json")
+
+
+def context_limit_error(limit: int, detail: str) -> Response:
+    """OpenAI's context-limit error, which agents turn into a clean end instead of a failure."""
+    return openai_error(
+        400, f"This model's maximum context length is {limit} tokens. {detail}", code="context_length_exceeded"
+    )
+
+
+def engine_error(response: Response, limit: int) -> Response:
+    """Re-shape an engine error for the agent, naming a context-window rejection as such."""
+    try:
+        data = orjson.loads(bytes(response.body))
+    except orjson.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("error"), dict):
+        message = str(data["error"].get("message", ""))
+    elif isinstance(data, dict):
+        message = str(data.get("message", ""))
+    else:
+        message = bytes(response.body).decode(errors="replace")
+    if response.status_code == 400 and _ENGINE_CONTEXT_LIMIT.search(message):
+        return context_limit_error(limit, message)
+    return openai_error(response.status_code, message or f"Engine returned {response.status_code}")
+
+
+# How long past the platform's rollout timeout and one last model request a session
+# may wait for the trainer to seal, fetch and release it (the trainer polls every few
+# seconds). Past that its trainer is gone: see CaptureServer._expire_stale.
+SESSION_GRACE_SECONDS = 600
 
 
 @dataclass
@@ -41,6 +106,7 @@ class LiveSession:
     attempt: Attempt
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sealed: bool = False
+    opened: float = field(default_factory=time.monotonic)
 
 
 # agent-px rebuilds replayed assistant messages and re-serializes tool arguments
@@ -50,14 +116,68 @@ class LiveSession:
 MESSAGE_MATCHER = "loose_tool_call"
 
 
+def check_tito_protocol(config: RunConfig) -> None:
+    """The replicas parse served text with ``model_protocol``'s parsers; they must be the
+    ones the chat-template family binds, or the tool calls the agent sees and the tokens
+    capture renders for them disagree."""
+    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+
+    family = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(config.tito_model))
+    for name in ("reasoning_parser", "tool_call_parser"):
+        bound = getattr(family, name)
+        configured = getattr(config.model_protocol, name)
+        if bound is not None and configured != bound:
+            raise ValueError(
+                f"model_protocol.{name} is {configured!r}, but the {config.tito_model} template family binds {bound!r}"
+            )
+
+
+def fixed_chat_template(tito_model: str) -> tuple[str | None, dict[str, Any]]:
+    """The family's fixed chat template and the kwargs it requires, as Miles's own
+    argument resolution applies them for a named ``--tito-model``.
+
+    Capture renders every turn incrementally (the new messages after a stand-in
+    prefix). Native templates are not built for that: Qwen3.8's refuses to render a
+    conversation without a user message, so every turn after the first fails.
+    """
+    from miles.utils.chat_template_utils import resolve_fixed_chat_template
+
+    return resolve_fixed_chat_template(tito_model)
+
+
+def capture_tokenizer(tokenizer_path: str | Path, tito_model: str) -> Any:
+    """The one way to load capture's tokenizer: the base model's, with its family's fixed template."""
+    from miles.utils.processing_utils import load_tokenizer
+
+    template_path, _ = fixed_chat_template(tito_model)
+    return load_tokenizer(
+        str(tokenizer_path), chat_template_path=template_path, local_files_only=True, trust_remote_code=False
+    )
+
+
+def _template_kwargs(config: RunConfig) -> dict[str, Any]:
+    _, fixed_kwargs = fixed_chat_template(config.tito_model)
+    effort = (
+        {"reasoning_effort": config.model_protocol.reasoning_effort}
+        if config.tito_model in TEMPLATE_REASONING_EFFORTS
+        else {}
+    )
+    return {"enable_thinking": config.enable_thinking, **effort, **fixed_kwargs}
+
+
 def capture_registry(config: RunConfig, tokenizer: Any) -> SessionRegistry:
     """The one way to build the capture session registry: TITO renderer + matcher."""
     from miles.utils.chat_template_utils import get_tito_tokenizer
     from miles.utils.chat_template_utils.message_matcher_hub import resolve_session_message_matcher
 
-    tito = get_tito_tokenizer(
-        tokenizer, config.tito_model, chat_template_kwargs={"enable_thinking": config.enable_thinking}
-    )
+    check_tito_protocol(config)
+    template_path, _ = fixed_chat_template(config.tito_model)
+    if template_path is not None and tokenizer.chat_template != Path(template_path).read_text():
+        raise ValueError(
+            f"Capture needs the {config.tito_model} family's fixed chat template; load the tokenizer "
+            "with capture_tokenizer"
+        )
+    tito = get_tito_tokenizer(tokenizer, config.tito_model, chat_template_kwargs=_template_kwargs(config))
     return SessionRegistry(
         tokenizer, tito_tokenizer=tito, message_matcher=resolve_session_message_matcher(MESSAGE_MATCHER)
     )
@@ -71,9 +191,9 @@ def session_config(config: RunConfig) -> SessionServerConfig:
         backend_url=config.inference_url,
         timeout=config.request_timeout_seconds,
         hf_checkpoint=str(config.tokenizer_path),
-        chat_template_path=None,
+        chat_template_path=fixed_chat_template(config.tito_model)[0],
         tito_model=config.tito_model,
-        apply_chat_template_kwargs={"enable_thinking": config.enable_thinking},
+        apply_chat_template_kwargs=_template_kwargs(config),
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         sglang_speculative_algorithm=None,
@@ -95,11 +215,42 @@ def session_config(config: RunConfig) -> SessionServerConfig:
 
 ENGINE_ATTEMPTS = 3
 
+# Whether a session's policy is one the trainer published; checked when the session opens.
+PolicyCheck = Callable[[Policy], Awaitable[bool]]
+
+
+def committed_in(store: RolloutStore) -> PolicyCheck:
+    """Next to the trainer: the rollout store is the policy authority."""
+
+    async def check(policy: Policy) -> bool:
+        return await store.policy(policy.version) == policy
+
+    return check
+
+
+def capture_root(config: RunConfig) -> Path:
+    """Where capture keeps its state next to the trainer (the run's artifact directory)."""
+    return config.artifact_directory / config.run_id / "capture"
+
+
+@dataclass(frozen=True)
+class EngineEndpoint:
+    """Where capture sends rendered turns: a pool gateway's chat route and its credentials."""
+
+    client: httpx.AsyncClient  # Borrowed: the composing process owns it.
+    url: str
+    headers: dict[str, str]
+
+    @classmethod
+    def pool(cls, config: RunConfig, client: httpx.AsyncClient) -> "EngineEndpoint":
+        """The serving pool over the network, with the run config's inference credentials."""
+        headers = {name: secret_env(env) for name, env in config.inference_header_env.items()}
+        return cls(client=client, url=config.inference_url, headers=headers)
+
 
 class BoundTransport:
-    def __init__(self, config: RunConfig, client: httpx.AsyncClient, sessions: dict[str, LiveSession]):
-        self.config, self.client, self.sessions = config, client, sessions
-        self.headers = {name: secret_env(env) for name, env in config.inference_header_env.items()}
+    def __init__(self, config: RunConfig, engine: EngineEndpoint, sessions: dict[str, LiveSession]):
+        self.config, self.engine, self.sessions = config, engine, sessions
 
     async def _post_engine(self, outbound: bytes, policy_sha256: str) -> httpx.Response:
         """One engine call, retried when the connection fails.
@@ -110,17 +261,18 @@ class BoundTransport:
         """
         for attempt in range(ENGINE_ATTEMPTS):
             try:
-                return await self.client.post(
-                    f"{self.config.inference_url}/v1/chat/completions",
+                return await self.engine.client.post(
+                    f"{self.engine.url}/v1/chat/completions",
                     content=outbound,
                     headers={
-                        **self.headers,
+                        **self.engine.headers,
                         "Content-Type": "application/json",
                         "X-Proximal-Policy-Sha256": policy_sha256,
                     },
                     follow_redirects=False,
                 )
             except httpx.TransportError:
+                note(engine_retries=attempt + 1)
                 if attempt == ENGINE_ATTEMPTS - 1:
                     raise
                 await asyncio.sleep(0.2 * 2**attempt)
@@ -131,18 +283,34 @@ class BoundTransport:
     ) -> dict[str, object]:
         if request.session_id is None or path != "v1/chat/completions" or request.method != "POST" or request.query:
             raise ValueError("Only bound recorded chat requests may reach inference")
+        mark("proxy_start")  # SessionCore has rendered the turn's token IDs.
         attempt = self.sessions[request.session_id].attempt
         payload = orjson.loads(body)  # SDK boundary; SessionCore already rendered and validated input_ids.
         remaining = attempt.sampling.max_sequence_tokens - len(payload["input_ids"])
         if remaining <= 0:
-            raise HTTPException(422, "Sequence token budget exhausted")
+            raise ContextLimitExceeded(
+                attempt.sampling.max_sequence_tokens,
+                f"The rollout's {len(payload['input_ids'])} tokens leave no room for a reply.",
+            )
         payload["max_tokens"] = min(payload["max_tokens"], remaining)
         payload["model"] = f"{self.config.base_model.name}:miles-{attempt.policy.snapshot.sha256}"
         # The engine call is always complete, never streamed; the gateway requires it explicitly.
         payload["stream"] = False
         payload.pop("stream_options", None)
         outbound = orjson.dumps(payload)
+        note(
+            input_tokens=len(payload["input_ids"]),
+            max_tokens=payload["max_tokens"],
+            engine_request_bytes=len(outbound),
+        )
+        mark("engine_sent")
         response = await self._post_engine(outbound, attempt.policy.snapshot.sha256)
+        mark("engine_done")
+        note(
+            engine_status=response.status_code,
+            engine_response_bytes=len(response.content),
+            gateway_timing=response.headers.get("server-timing"),
+        )
         if response.status_code == 200:
             if response.headers.get("x-proximal-policy-sha256") != attempt.policy.snapshot.sha256:
                 raise ValueError("Inference response lacks verified immutable adapter identity")
@@ -152,6 +320,15 @@ class BoundTransport:
             if result.get("model") != payload["model"] or len(result.get("choices", [])) != 1:
                 raise ValueError("Inference response model/choice count differs")
             meta = result["choices"][0]["meta_info"]
+            note(
+                response_id=result.get("id"),
+                output_tokens=len(meta.get("output_token_logprobs") or []),
+                engine_meta={
+                    k: meta[k]
+                    for k in ("prompt_tokens", "cached_tokens", "e2e_latency", "completion_tokens")
+                    if k in meta
+                },
+            )
             # Convert verified immutable identity into Miles's publication ordinal.
             # Never trust the engine's global base-weight counter for a named LoRA.
             token_logprobs = meta.get("output_token_logprobs")
@@ -175,6 +352,7 @@ class BoundTransport:
             content = orjson.dumps(result)
         else:
             content = response.content
+        mark("proxy_end")
         return {
             "request_body": outbound,
             "response_body": content,
@@ -183,21 +361,12 @@ class BoundTransport:
         }
 
 
-# The platform names a run's rollouts ``<run id>-rollout-<index>``; Miles runs have one.
-ROLLOUT_SUFFIX = "-rollout-0"
-
-
-def rollout_id(attempt_id: str) -> str:
-    """The platform rollout ID of an attempt's single-instance run."""
-    return f"{attempt_id}{ROLLOUT_SUFFIX}"
-
-
 def normalize_agent_request(body: dict[str, Any], *, reasoning_effort: str) -> None:
     """Map agent-px's Chat Completions request onto the training sampling contract.
 
     - Cache hints do not affect sampling: dropped.
-    - ``reasoning_effort`` must be the contract's value; the TITO renderer owns how
-      thinking is rendered, so it is not forwarded.
+    - ``reasoning_effort`` must be the contract's value; the TITO renderer already
+      renders the contract's effort, so it is not forwarded.
     - ``max_completion_tokens`` is the per-turn budget, like ``max_tokens``.
     - ``strict`` tools make SGLang constrain decoding to the schema, so behavior
       logprobs would come from a different distribution than training computes.
@@ -225,40 +394,108 @@ class CaptureServer:
         authorization: AuthorizedRun,
         *,
         tokenizer: Any,
-        client: httpx.AsyncClient,
-        store: RolloutStore,
+        engine: EngineEndpoint,
+        policy_known: PolicyCheck,
+        root: Path,
     ):
         self.config = require_authorization(authorization)
-        self.client = client  # Borrowed: the process composition root owns it.
-        self.store = store  # Borrowed, likewise.
+        self.policy_known = policy_known
         self.admin_key = secret_env(self.config.capture.api_key_env)
         self.platform_key = secret_env(self.config.capture.platform_key_env)
-        self.root = self.config.artifact_directory / self.config.run_id / "capture"
+        self.root = root
         write_immutable(self.root / "run.json", canonical_bytes(self.config))
         self.sessions: dict[str, LiveSession] = {}
         self.attempts: dict[str, str] = {}
         self._create_lock = asyncio.Lock()
-        self.transport = BoundTransport(self.config, client, self.sessions)
+        # What every session must fit; the rest of a run travels with its attempts.
+        self.serving = serving_contract(self.config)
+        self.transport = BoundTransport(self.config, engine, self.sessions)
         # Built here, never passed in: the registry's matcher is part of capture correctness.
         registry = capture_registry(self.config, tokenizer)
         self.core = SessionCore(self.transport, registry, session_config(self.config), self.config.run_id)
         self.app = FastAPI()
+        # One JSON line per chat call: where each call's time goes (see call_timing).
+        self.app.add_middleware(CallTimingMiddleware, log_path=self.root / "call-timing.jsonl")
         self._routes()
+
+    @classmethod
+    def beside_trainer(
+        cls, authorization: AuthorizedRun, *, tokenizer: Any, client: httpx.AsyncClient, store: RolloutStore
+    ) -> "CaptureServer":
+        """Capture next to the trainer (the local Stage A harness): the pool over the
+        network, the rollout store as policy authority, state in the run's artifacts."""
+        config = require_authorization(authorization)
+        return cls(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint.pool(config, client),
+            policy_known=committed_in(store),
+            root=capture_root(config),
+        )
 
     def _admin(self, request: Request) -> None:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.admin_key}"):
             raise HTTPException(401, "Invalid capture control credential")
 
-    def _rollout_session(self, request: Request, platform_rollout_id: str) -> str:
+    def _rollout_session(self, request: Request, rollout: str) -> str:
         """The platform's rollout route. One run per attempt, so the run ID is the attempt ID
         and its only rollout is ``<attempt id>-rollout-0``."""
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self.platform_key}"):
             raise HTTPException(401, "Invalid platform credential")
-        attempt_id = platform_rollout_id.removesuffix(ROLLOUT_SUFFIX)
-        session_id = self.attempts.get(attempt_id) if platform_rollout_id.endswith(ROLLOUT_SUFFIX) else None
+        attempt_id = rollout.removesuffix(ROLLOUT_SUFFIX)
+        session_id = self.attempts.get(attempt_id) if rollout.endswith(ROLLOUT_SUFFIX) else None
         if session_id is None or session_id not in self.sessions:
+            # Also what a call routed to a different replica than its session gets: the
+            # rollout fails loudly rather than continuing without its token history.
             raise HTTPException(404, "No live capture session for this rollout; regenerate the attempt")
         return session_id
+
+    async def _release(self, session_id: str) -> None:
+        entry = self.sessions.get(session_id)
+        if entry is not None:
+            async with entry.lock:
+                await self.core.delete_session(session_id)
+                self.sessions.pop(session_id)
+                self.attempts.pop(entry.attempt.attempt_id, None)
+        # Released means the trainer has what it needs; the attempt index stays, so the
+        # attempt is never reopened, but its sealed samples need not.
+        shutil.rmtree(self._directory(session_id), ignore_errors=True)
+
+    async def _expire_stale(self) -> None:
+        """Release sessions older than any rollout can run.
+
+        Capture lives in the serving replicas and outlives the trainer that opened its
+        sessions: a trainer that crashed or restarted never releases them. Checked when
+        a session opens, so abandoned sessions never hold capacity new ones need. The
+        trainer then finds an expired session lost and regenerates the attempt.
+        """
+        now = time.monotonic()
+        stale = [
+            sid
+            for sid, entry in self.sessions.items()
+            if now - entry.opened > self.session_lifetime(entry.attempt) and not entry.lock.locked()
+        ]
+        for session_id in stale:
+            await self._release(session_id)
+        if stale:
+            logger.warning("Released %d capture sessions older than their rollouts can run", len(stale))
+
+    def session_lifetime(self, attempt: Attempt) -> float:
+        """No rollout outlives this; a session that does was abandoned by its trainer."""
+        return attempt.harness.timeout_seconds + self.config.request_timeout_seconds + SESSION_GRACE_SECONDS
+
+    def _refusal(self, attempt: Attempt) -> str | None:
+        """Why this deployment cannot serve the attempt. Run-level fields (run id, tasks,
+        harness, budgets) come from the authenticated trainer; only what the replica was
+        started with is checked here (ServingContract)."""
+        if attempt.policy.base_model != self.serving.base_model:
+            return f"The attempt's base model {attempt.policy.base_model!r} is not this deployment's"
+        if attempt.sampling.max_sequence_tokens > self.serving.max_sequence_tokens:
+            return (
+                f"The attempt's max_sequence_tokens {attempt.sampling.max_sequence_tokens} exceeds this "
+                f"deployment's {self.serving.max_sequence_tokens}"
+            )
+        return None
 
     def _directory(self, session_id: str) -> Path:
         # Session IDs are generated here, never caller-controlled filesystem paths.
@@ -300,16 +537,12 @@ class CaptureServer:
 
     async def _create_session(self, attempt: Attempt, request: Request) -> dict[str, str]:
         self._admin(request)
-        if (
-            attempt.run_id != self.config.run_id
-            or attempt.harness != self.config.harness
-            or attempt.sampling != self.config.research.sampling
-            or attempt.dataset_sha256 != pinned_dataset(self.config.dataset).sha256
-            or attempt.task not in pinned_dataset(self.config.dataset).tasks
-            or await self.store.policy(attempt.policy.version) != attempt.policy
-        ):
-            raise HTTPException(409, "Attempt is outside this run's dataset/harness/policy contract")
+        if (refusal := self._refusal(attempt)) is not None:
+            raise HTTPException(409, refusal)
+        if not await self.policy_known(attempt.policy):
+            raise HTTPException(409, f"Policy version {attempt.policy.version} is not published for this deployment")
         async with self._create_lock:
+            await self._expire_stale()
             index = self.root / "attempts" / f"{attempt.attempt_id}.json"
             session_id = self.attempts.get(attempt.attempt_id)
             if session_id is None:
@@ -331,18 +564,23 @@ class CaptureServer:
             return {
                 "session_id": session_id,
                 # What the platform's registry derives for this run; informational here.
-                "base_url": f"{self.config.capture.url}/rollouts/{rollout_id(attempt.attempt_id)}/v1",
+                "rollout_id": platform_rollout_id(attempt.attempt_id),
+                "base_url": f"{self.config.capture.url}/rollouts/{platform_rollout_id(attempt.attempt_id)}/v1",
                 "request_sha256": digest(attempt),
             }
 
     async def _chat_completion(self, session_id: str, request: Request) -> Response:
+        mark("handler_start")
         entry = self.sessions[session_id]
         if request.url.query:
             raise HTTPException(422, "Query parameters are not supported")
         async with entry.lock:
+            mark("session_locked")
             if entry.sealed:
                 raise HTTPException(409, "Session is sealed")
-            body = orjson.loads(await request.body())  # OpenAI SDK boundary, not a domain contract.
+            raw = await request.body()
+            note(agent_request_bytes=len(raw), session_id=session_id)
+            body = orjson.loads(raw)  # OpenAI SDK boundary, not a domain contract.
             if not isinstance(body, dict) or body.get("model") != self.config.base_model.name:
                 raise HTTPException(422, "Wrong model for this session")
             allowed = {
@@ -392,9 +630,15 @@ class CaptureServer:
             if type(budget) is not int or budget <= 0:
                 raise HTTPException(422, "Invalid per-turn token budget")
             body["max_tokens"] = min(budget, sampling.max_tokens)
-            return await self.core.chat_completions(
+            note(messages=len(body.get("messages", [])))
+            mark("validated")
+            response = await self.core.chat_completions(
                 session_id, method="POST", query="", headers={}, body=orjson.dumps(body)
             )
+            mark("core_done")  # SessionCore has recorded the turn and built the reply.
+            if response.status_code >= 400:
+                return engine_error(response, entry.attempt.sampling.max_sequence_tokens)
+            return response
 
     def _routes(self) -> None:
         app = self.app
@@ -403,17 +647,26 @@ class CaptureServer:
         async def session_error(request: Request, exc: SessionError) -> Response:
             return Response(status_code=exc.status_code, content=str(exc))
 
+        @app.exception_handler(ContextLimitExceeded)
+        async def context_limit(request: Request, exc: ContextLimitExceeded) -> Response:
+            return context_limit_error(exc.limit, exc.detail)
+
         @app.get("/health")
         async def health() -> dict[str, str]:
-            return {"status": "ok", "run_id": self.config.run_id}
+            return {"status": "ok"}
+
+        @app.get("/capture/contract")
+        async def contract(request: Request) -> ServingContract:
+            self._admin(request)
+            return self.serving
 
         @app.post("/sessions")
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:
             return await self._create_session(attempt, request)
 
-        @app.post("/rollouts/{platform_rollout_id}/v1/chat/completions")
-        async def chat(platform_rollout_id: str, request: Request) -> Response:
-            return await self._chat_completion(self._rollout_session(request, platform_rollout_id), request)
+        @app.post("/rollouts/{rollout}/v1/chat/completions")
+        async def chat(rollout: str, request: Request) -> Response:
+            return await self._chat_completion(self._rollout_session(request, rollout), request)
 
         @app.post("/sessions/{session_id}/seal")
         async def seal(session_id: str, request: Request) -> CaptureReceipt:
@@ -432,10 +685,5 @@ class CaptureServer:
         async def release(session_id: str, request: Request) -> Response:
             self._admin(request)
             self._directory(session_id)
-            entry = self.sessions.get(session_id)
-            if entry is not None:
-                async with entry.lock:
-                    await self.core.delete_session(session_id)
-                    self.sessions.pop(session_id)
-                    self.attempts.pop(entry.attempt.attempt_id, None)
+            await self._release(session_id)
             return Response(status_code=204)

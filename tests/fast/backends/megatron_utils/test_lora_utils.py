@@ -421,7 +421,7 @@ def test_load_lora_adapter_rejects_shards_saved_under_another_layout(tmp_path, m
 
 
 class TestSaveLoraCheckpointTrainingState:
-    def _save(self, tmp_path, monkeypatch, *, no_save_optim, scheduler=None):
+    def _save(self, tmp_path, monkeypatch, *, no_save_optim, scheduler=None, optimizer=None):
         rank0 = SimpleNamespace(rank=0)
         monkeypatch.setattr(
             lora_utils, "get_parallel_state", lambda: SimpleNamespace(effective_dp=rank0, cp=rank0, tp=rank0, pp=rank0)
@@ -445,7 +445,7 @@ class TestSaveLoraCheckpointTrainingState:
             lora_dropout=0.0,
             no_save_optim=no_save_optim,
         )
-        optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
+        optimizer = optimizer or SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
             model, args, str(tmp_path), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
         )
@@ -459,7 +459,7 @@ class TestSaveLoraCheckpointTrainingState:
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
         files = self._save(tmp_path, monkeypatch, no_save_optim=False, scheduler=scheduler)
 
-        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        assert files == ["adapter_megatron_rank0.pt", "native_checkpoint.json", "training_state_rank0.pt"]
         state = self._state(tmp_path)
         assert state["optimizer"] == {"step": 7}
         assert state["opt_param_scheduler"] == {"lr": 0.5}
@@ -471,11 +471,25 @@ class TestSaveLoraCheckpointTrainingState:
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
         files = self._save(tmp_path, monkeypatch, no_save_optim=True, scheduler=scheduler)
 
-        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        assert files == ["adapter_megatron_rank0.pt", "native_checkpoint.json", "training_state_rank0.pt"]
         state = self._state(tmp_path)
         assert state["optimizer"] is None
         assert state["opt_param_scheduler"] == {"lr": 0.5}
         assert state["iteration"] == 3
+
+    def test_a_distributed_optimizer_saves_its_parameter_state(self, tmp_path, monkeypatch):
+        """DistributedOptimizer.state_dict() leaves out the fp32 main params and the Adam moments."""
+        shard = {"param": torch.ones(3), "exp_avg": torch.full((3,), 0.1), "exp_avg_sq": torch.full((3,), 0.01)}
+        part = _DistributedPart({"per_bucket_numel": [3], 0: {torch.float32: [[shard]]}})
+        optimizer = SimpleNamespace(chained_optimizers=[part], state_dict=lambda: {"step": 7})
+
+        self._save(tmp_path, monkeypatch, no_save_optim=False, optimizer=optimizer)
+
+        (saved,) = self._state(tmp_path)["optimizer_parameter_state"]
+        assert saved["per_bucket_numel"] == [3]
+        for key, tensor in shard.items():
+            assert torch.equal(saved[0][torch.float32][0][0][key], tensor)
+        assert saved[0][torch.float32][0][0]["padding"] is False  # the shape Megatron's loader reads
 
 
 class TestLoadTrainingState:
@@ -507,6 +521,95 @@ class TestLoadTrainingState:
         assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == 3
         assert optimizer_loads == [{"step": 7}]
         assert scheduler_loads == [{"lr": 0.5}]
+
+
+class _DistributedPart:
+    """A Megatron DistributedOptimizer as the LoRA checkpoint sees it."""
+
+    def __init__(self, state=None, events=None):
+        self.state = state
+        self.events = [] if events is None else events
+
+    def get_parameter_state_dp_reshardable(self):
+        return self.state
+
+    def load_parameter_state_from_dp_reshardable(self, state):
+        self.events.append(("parameter_state", state))
+
+
+class TestLoadDistributedOptimizerState:
+    """Without its parameter state, a DistributedOptimizer resumes from torch.empty moments."""
+
+    @staticmethod
+    def _write(tmp_path, **extra):
+        torch.save(
+            {"iteration": 3, "optimizer": {"step": 7}, "opt_param_scheduler": None, **extra},
+            tmp_path / "training_state_rank0.pt",
+        )
+
+    @staticmethod
+    def _optimizer(events):
+        return SimpleNamespace(
+            chained_optimizers=[_DistributedPart(events=events)],
+            load_state_dict=lambda state: events.append(("optimizer", state)),
+        )
+
+    def test_the_parameter_state_is_restored_after_the_optimizer_state(self, tmp_path):
+        self._write(tmp_path, optimizer_parameter_state=[{"exp_avg_sq": torch.ones(2)}])
+        events = []
+
+        assert lora_utils._load_training_state(tmp_path, self._optimizer(events), None) == 3
+
+        assert [event[0] for event in events] == ["optimizer", "parameter_state"]
+        assert torch.equal(events[1][1]["exp_avg_sq"], torch.ones(2))
+
+    def test_saved_elements_are_marked_real_parameters_for_the_loader(self, tmp_path):
+        """radixark/Megatron-LM (Sep 2026) indexes element['padding'] on load; the getter omits it."""
+        shard = {"param": torch.ones(2), "exp_avg": torch.zeros(2), "exp_avg_sq": torch.zeros(2)}
+        state = {"per_bucket_numel": [2], "per_bucket_numel_unpadded": [2], 0: {torch.float32: [[shard]]}}
+        self._write(tmp_path, optimizer_parameter_state=[state])
+        events = []
+
+        lora_utils._load_training_state(tmp_path, self._optimizer(events), None)
+
+        (element,) = events[1][1][0][torch.float32][0]
+        assert element["padding"] is False
+        assert torch.equal(element["param"], torch.ones(2))
+
+    def test_a_checkpoint_without_parameter_state_is_refused(self, tmp_path):
+        self._write(tmp_path)
+        events = []
+
+        with pytest.raises(RuntimeError, match="--no-load-optim"):
+            lora_utils._load_training_state(tmp_path, self._optimizer(events), None)
+        assert events == []
+
+    def test_no_load_optim_resumes_from_a_checkpoint_without_parameter_state(self, tmp_path):
+        self._write(tmp_path)
+        events = []
+
+        assert lora_utils._load_training_state(tmp_path, self._optimizer(events), None, load_optimizer=False) == 3
+        assert events == []
+
+
+def test_loading_an_adapter_refreshes_the_optimizer_main_params(tmp_path, monkeypatch):
+    """The fp32 main params were copied before the load; the first step() would write them back."""
+    rank0 = SimpleNamespace(rank=0)
+    monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: SimpleNamespace(tp=rank0, pp=rank0))
+    name = "layers.0.self_attention.lora_A.weight"
+    torch.save({name: torch.ones(2)}, tmp_path / "adapter_megatron_rank0.pt")
+    torch.save({"iteration": 3, "optimizer": {"step": 7}}, tmp_path / "training_state_rank0.pt")
+    param = torch.nn.Parameter(torch.zeros(2))
+    events = []
+    optimizer = SimpleNamespace(
+        reload_model_params=lambda: events.append(("reload", param.detach().clone())),
+        load_state_dict=lambda state: events.append(("optimizer", state)),
+    )
+
+    load_lora_adapter([SimpleNamespace(named_parameters=lambda: [(name, param)])], str(tmp_path), optimizer=optimizer)
+
+    assert [event[0] for event in events] == ["reload", "optimizer"]
+    assert torch.equal(events[0][1], torch.ones(2))
 
 
 class TestLoadTrainingStateOptimizerGate:
@@ -541,6 +644,7 @@ class TestLoadTrainingStateOptimizerGate:
         self._write_training_state(tmp_path)
         model = [SimpleNamespace(named_parameters=lambda: [(name, torch.nn.Parameter(torch.zeros(2)))])]
         optimizer_loads, optimizer = self._recorder()
+        optimizer.reload_model_params = lambda: None
         scheduler_loads, scheduler = self._recorder()
 
         loaded, iteration = load_lora_adapter(
@@ -554,3 +658,75 @@ class TestLoadTrainingStateOptimizerGate:
         assert (loaded, iteration) == (True, 11)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
+
+
+def test_native_checkpoint_rng_round_trip_restores_next_draw():
+    import random
+
+    import numpy as np
+
+    from miles.backends.megatron_utils.lora.checkpoint_state import restore_rng, rng_state
+
+    saved = rng_state()
+    expected = (random.random(), np.random.rand(), torch.rand(8))
+    random.random()
+    np.random.rand()
+    torch.rand(8)
+    restore_rng(saved)
+    actual = (random.random(), np.random.rand(), torch.rand(8))
+    assert expected[:2] == actual[:2]
+    assert torch.equal(expected[2], actual[2])
+
+
+def test_native_resume_matches_next_adam_update_on_cpu(tmp_path, monkeypatch):
+    """A real optimizer, tensors, scheduler and random gradient; no GPU equivalence claim."""
+    rank0 = SimpleNamespace(rank=0)
+    monkeypatch.setattr(
+        lora_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(
+            effective_dp=rank0,
+            cp=rank0,
+            tp=rank0,
+            pp=rank0,
+        ),
+    )
+    args = Namespace(
+        megatron_to_hf_mode="raw",
+        lora_rank=2,
+        lora_alpha=2,
+        target_modules=["linear_qkv"],
+        lora_dropout=0.0,
+        experts_shared_outer_loras=False,
+    )
+
+    def training_objects():
+        model = _AdapterModel()
+        with torch.no_grad():
+            model.lora_A.fill_(1.0)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+        optimizer.reload_model_params = lambda: None  # CPU Adam has no separate master parameter copy.
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+        return model, optimizer, scheduler
+
+    def update(model, optimizer, scheduler):
+        optimizer.zero_grad()
+        (model.lora_A * torch.rand_like(model.lora_A)).square().sum().backward()
+        optimizer.step()
+        scheduler.step()
+
+    torch.manual_seed(19)
+    model, optimizer, scheduler = training_objects()
+    update(model, optimizer, scheduler)
+    save_lora_checkpoint([model], args, str(tmp_path), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=1)
+    update(model, optimizer, scheduler)
+    expected = model.lora_A.detach().clone()
+    resumed, resumed_optim, resumed_scheduler = training_objects()
+    assert load_lora_adapter(
+        [resumed], str(tmp_path), optimizer=resumed_optim, opt_param_scheduler=resumed_scheduler
+    ) == (True, 1)
+    update(resumed, resumed_optim, resumed_scheduler)
+    assert torch.equal(resumed.lora_A, expected)
+    assert resumed_scheduler.state_dict() == scheduler.state_dict()
+    for key, value in optimizer.state[model.lora_A].items():
+        assert torch.equal(resumed_optim.state[resumed.lora_A][key], value)

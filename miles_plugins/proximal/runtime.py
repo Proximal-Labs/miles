@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from miles_plugins.proximal.authorization import AuthorizedRun, authorize_run
-from miles_plugins.proximal.contracts import RunConfig, read_run_config
+from miles_plugins.proximal.contracts import RunConfig, behavior_correction_argv, read_run_config
 from miles_plugins.proximal.options import BUFFER, ROLLOUT, SOURCE, TRANSFER
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ def training_argv(path: str) -> list[str]:
         "max-weight-staleness": config.research.max_policy_lag,
         "async-unused-samples-handler": config.research.unused_groups,
         "async-max-concurrent-samples": config.max_in_flight_samples,
-        "rollout-submission-granularity": "group",
+        "rollout-submission-granularity": "sample",
         "rollout-temperature": config.research.sampling.temperature,
         "rollout-top-p": config.research.sampling.top_p,
         "rollout-top-k": config.research.sampling.top_k,
@@ -48,7 +48,8 @@ def training_argv(path: str) -> list[str]:
         "train-backend": "megatron",
         "megatron-to-hf-mode": "bridge",
     }
-    return ["--fully-async", "--rollout-external", "--use-rollout-logprobs"] + [
+    correction = behavior_correction_argv(config.research.behavior_correction)
+    return ["--fully-async", "--rollout-external", *correction] + [
         item for name, value in values.items() for item in (f"--{name}", str(value))
     ]
 
@@ -57,18 +58,14 @@ async def serve_capture(config: RunConfig, authorization: AuthorizedRun, host: s
     # Runtime-only dependencies: local snapshot/publication CLI stays lightweight.
     import httpx
     import uvicorn
-    from transformers import AutoTokenizer
-
-    from miles_plugins.proximal.capture_server import CaptureServer
+    from miles_plugins.proximal.capture_server import CaptureServer, capture_tokenizer
     from miles_plugins.proximal.store import open_store
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(config.tokenizer_path), local_files_only=True, trust_remote_code=False
-    )
+    tokenizer = capture_tokenizer(config.tokenizer_path, config.tito_model)
     store = await open_store(config)
     try:
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as client:
-            service = CaptureServer(authorization, tokenizer=tokenizer, client=client, store=store)
+            service = CaptureServer.beside_trainer(authorization, tokenizer=tokenizer, client=client, store=store)
             await uvicorn.Server(
                 uvicorn.Config(service.app, host=host, port=port, workers=1, access_log=False)
             ).serve()
@@ -134,6 +131,7 @@ async def _run_control(
         capture=capture,
         platform=PlatformClient(authorization, http),
         artifact_root=config.artifact_directory / config.run_id / "accepted",
+        store=store,
     )
     print(
         json.dumps(
@@ -161,6 +159,9 @@ def main() -> None:
     args, remaining = parser.parse_known_args()
     config = read_run_config(args.config)
     if args.command == "validate":
+        from miles_plugins.proximal.capture_server import check_tito_protocol
+
+        check_tito_protocol(config)
         print(f"Valid run {config.run_id}: {len(config.dataset.tasks)} pinned tasks; no remote work performed")
         return
     if args.command == "train-args":

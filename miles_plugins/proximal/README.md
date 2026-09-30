@@ -2,6 +2,11 @@
 
 Miles trains a LoRA while Proximal continuously executes feature tasks against independently served immutable policy versions on Modal. Miles uses one fleet URL; replica count, placement and sandbox/container teardown belong to the platform.
 
+For detached collection, use `modal_training --collect-rollouts 1024 --rollouts-persist-to-volume --fresh`
+with the usual configs and rollout/publication consent flags. The CPU job saves
+rollouts incrementally to the configured state Volume, then returns a batch for a
+later fresh or native-resume step. See [the two-command runbook](../../docs/proximal/offline-batches.md#p0-one-flag-enables-durable-rollout-storage).
+
 Read the [architecture](../../docs/proximal/architecture.md), [investigation](../../docs/proximal/investigation.md), and exact [remaining platform changes](../../docs/proximal/platform-contract.md). The first pass supports DeepSWE/Qwen3, one Megatron actor cell, text-only linear TITO, complete prompt groups, and rollout-logprob importance ratios. It includes code and CPU tests; live numerical/Modal validation is still required.
 
 ## 1. Prepare the environment and explicit run contract
@@ -25,7 +30,7 @@ python -m miles_plugins.proximal.runtime train-args --config /config/run.json
 
 ## 2. Deploy the Miles-owned serving pool
 
-Miles owns the inference replicas so serving cannot drift from training. The pool runs the **same Miles image** as the trainer. Its SGLang arguments are derived from the run config's `research.lora` (rank and target modules), `model_protocol` (reasoning and tool-call parsers), base model and tokenizer. They are rendered, parsed by SGLang, and checked setting by setting at deploy time, so a bad flag fails the deploy rather than a GPU replica. Extra engine flags may change only an explicit allowlist of operational settings (memory, scheduling, CUDA graphs, logging); anything that could change the served model or its numerics, such as `--load-format dummy`, is rejected. Deploy from the Miles environment, where SGLang is importable. Operational shape (GPU type, tensor parallelism, replica bounds, adapter slots, performance-only flags) lives in a separate serving config: see [serving.example.json](../../examples/proximal/serving.example.json).
+Miles owns the inference replicas so serving cannot drift from training. The pool runs the **same Miles image** as the trainer. Its SGLang arguments are derived from the run config's `research.lora` (rank and target modules), `model_protocol` (reasoning and tool-call parsers), base model and tokenizer. They are rendered, parsed by SGLang, and checked setting by setting at deploy time, so a bad flag fails the deploy rather than a GPU replica. Extra engine flags may change only an explicit allowlist of operational settings (memory, scheduling, CUDA graphs, logging); anything that could change the served model or its numerics, such as `--load-format dummy`, is rejected. Deploy from the Miles environment, where SGLang is importable. Operational shape (GPU type, tensor parallelism, replica bounds, adapter slots, the attention kernel, speculative decoding, performance-only flags) lives in a separate serving config. Attention and speculation are typed fields every config states (null leaves them to SGLang); speculation uses SGLang's default verification, which a sampling check showed keeps the served model's distribution (its rejection-sampling path did not). They are not extras: an extra that changes either is rejected. Example: [serving.example.json](../../examples/proximal/serving.example.json).
 
 Prerequisites, created once outside this integration:
 
@@ -40,9 +45,15 @@ PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \
   modal deploy --env main -m miles_plugins.proximal.serving_app
 ```
 
-Each replica starts SGLang on loopback, then the gateway in front of it. If either exits, the replica exits and Modal replaces it. The deployed `*.modal.direct` URL is the run config's `inference_url`, and it is what the platform endpoint registry records. Every replica mounts the same adapter Volume and independently loads and verifies the immutable version each request names. The gateway serves `/policies/prepare` and `/v1/chat/completions`; authentication is mandatory.
+Each replica starts SGLang on loopback, then its front process (`serve_replica`): the gateway and capture, on one port. If either exits, the replica exits and Modal replaces it. The deployed `*.modal.direct` URL is the run config's `inference_url` and `capture.url`, and it is what the platform endpoint registry records as a `rollout_capture` endpoint. Every replica mounts the same adapter Volume and independently loads and verifies the immutable version each request names. The gateway serves `/policies/prepare` and `/v1/chat/completions`; capture serves `/sessions` and `/rollouts/<rollout>/v1/chat/completions` and calls the gateway in-process. Authentication is mandatory on every route.
 
-## 3. Start the CPU capture service
+Capture keeps each rollout's session in the replica that serves it, so every call about a rollout carries `Modal-Session-Id: sha256(<platform rollout id>)` (`contracts.AFFINITY_HEADER`): the trainer's session calls and the platform's chat calls. Modal routes equal session IDs to one container. The deployment's `capture_secret` provides capture's credentials, `cpu` sizes the replica for SGLang plus the front process (which runs at lower scheduling priority than SGLang), and `modal_proxy_auth` is false when the platform's agents call the pool directly.
+
+## 3. Capture
+
+On the Modal topology capture runs in the serving replicas (above); nothing else to start.
+
+The local Stage A harness runs it as its own process next to the trainer instead, calling the pool over the network and checking the rollout store for each session's policy:
 
 ```bash
 python -m miles_plugins.proximal.runtime capture \
@@ -50,7 +61,7 @@ python -m miles_plugins.proximal.runtime capture \
   --yes-rollouts --yes-publish
 ```
 
-Expose it behind HTTPS at `capture.url`, reachable by the platform's solver and Miles. Use **one process/worker** per run; active sessions are process-owned. The service stores sealed safetensors and receipts atomically and supports collection retries after restart. A lost unsealed session must be regenerated. Do not put a non-sticky autoscaling fleet in front of this CPU service.
+Either way, active sessions are process-owned: a call must reach the process that holds its session, so capture never sits behind a non-sticky balancer. It stores sealed safetensors and receipts atomically and supports collection retries after a restart. A lost unsealed session must be regenerated.
 
 ## 4. First live gate: a frozen-policy rollout without a training GPU
 
@@ -112,6 +123,13 @@ Custom hooks use Miles's synchronous `(args, samples)` interface, returning `Fil
 
 For resume, restore the latest matching native checkpoint; the task source restores its cursor and consumption ledger from the same checkpoint. Completed groups persist in the rollout store and are selectable after restart if still fresh; only in-flight work is regenerated. The first publication after resume abandons versions newer than the checkpoint, and their groups are never trained on. Artifact retention is explicit operator maintenance; this integration never deletes shared policy history.
 
+For **collection now and one independent training step later**, see the
+[offline batch runbook](../../docs/proximal/offline-batches.md). A finite CPU collector
+uses the existing platform producer, while a frozen batch enters the ordinary Miles
+training driver through `FrozenBatchRolloutFn`. Preserve a compatible native training
+checkpoint alongside the data; serving PEFT exports alone cannot initialize this
+fork's Megatron resume path.
+
 ## CPU verification
 
 The dedicated [CPU workflow](../../.github/workflows/proximal-publication.yml) builds the Linux environment in `tests/integration/proximal_async/Dockerfile`, fetches only the pinned Qwen3 tokenizer, and runs tests with networking disabled. Its exact test selection currently passes **475 tests**, including 61 publication/integration tests and the affected upstream argument, async-driver, session/codec and weight-update regressions. Strict mypy covers all 19 adapter modules; Ruff, Black, isort and workflow syntax checks also pass locally.
@@ -126,3 +144,108 @@ Remote boundaries use scripted HTTP/Modal fixtures. TITO (including a tool-call/
 4. GPU numerical gate: compare trainer and SGLang logprobs on identical IDs/weights, then one actual LoRA optimizer update and publication. Only then scale task concurrency and assess learning.
 
 No live Modal deployment, sandbox execution, GPU inference, or optimizer update was performed to prepare this PR.
+
+
+## Modal run-state recovery
+
+`TrainingDeployment.state_volume` names an **already provisioned** state Volume.
+The Modal launcher mounts it at `/snapshot` and gives each `RunConfig.run_id` its
+own root. Keep this Volume separate from the serving adapter Volume. The launcher
+selects the `run_state` artifact-storage variant in its generated container config;
+standalone/shared-disk execution retains its existing behavior.
+
+```text
+<run_id>/
+  run.json                         # immutable run identity / initial context
+  launches/<launch_id>/config.json # configured image, source digest, exact args/config
+  artifacts/<run_id>/
+    accepted/<attempt_id>/samples.safetensors
+    accepted/<attempt_id>/accepted.json
+    groups/<group_id>.bin
+    groups/<group_id>.json
+  checkpoints/<step>-<digest>/
+    checkpoint/adapter/            # native rank shards, optimizer/scheduler/RNG
+    cursor.json
+    launch.json                    # checksummed launch configuration
+    store.dump
+    manifest.json
+  pins/<checkpoint-id>             # optional operator-created empty file
+  LATEST                          # convenience pointer to a verified manifest
+```
+
+The nested artifact run ID preserves the existing artifact layout. No S3 copy is
+involved, and publication staging/serving history is not copied into new state
+snapshots. Live Postgres remains local; only `pg_dump` output goes on the Volume.
+
+A validated capture stages locally and waits for two publication commits: bytes
+first, typed completion record last. Only then is the replica session released.
+A complete group's immutable index similarly precedes its database row. One
+writer batches up to 64 records / 256 MiB (one larger record is streamed alone).
+The existing in-flight sample/token limits bound waiting rollout work. A Volume
+outage backpressures completion and retries publication, without rerunning paid
+inference. This adds latency at rollout completion, not at each model turn.
+Measure commit latency under the actual load before scaling the number of runs.
+
+The writer snapshots completed native optimizer boundaries and drains explicitly
+on shutdown. Restore verifies each file before loading it, restores the cursor's
+consumption ledger, reconciles group indexes newer than the database dump, and
+copies only eligible group payloads back to local disk. Reconciliation never makes
+an abandoned policy live; the existing publisher owns that decision. Even before
+the first checkpoint, durable groups can be recovered, but training restarts from
+the initial weights. In-flight or partially assembled groups may be regenerated.
+
+Configure resume in the training deployment, for example:
+
+```json
+"resume": {
+  "kind": "latest",
+  "allow_changes": []
+}
+```
+
+`latest` fails if there is no committed checkpoint. `fresh` requires an unused run
+namespace. `checkpoint` requires its exact `<step>-<digest>` in `checkpoint` and
+supports rewinding to a retained/pinned bundle. `auto` preserves the old launcher
+behavior for existing configs: latest if present, otherwise an initial run.
+It is the backward-compatible default; use an explicit mode for experiments.
+
+Base/tokenizer/training-contract, world size, staleness window and model-argument
+mismatches are rejected. The staleness window stays fixed because the saved
+consumption ledger has already pruned older entries. Changed training flags require explicit `allow_changes`, e.g. `["--lr"]`;
+changed fork source or configured base image require `code_sha256` / `image` there.
+This is acknowledgement, not an override of Miles's optimizer/scheduler loading
+semantics: changing the resumed learning-rate schedule may also require Miles's
+scheduler override flags. Parallel-layout and optimizer changes remain unsupported.
+No optimizer/RNG save/load opt-outs are accepted on this full-recovery launcher.
+The manifest records configured image identity; it is not an attestation of a
+running container's installed libraries or numerical behavior.
+
+Legacy integer `LATEST` / `steps/<step>` snapshots still load, with a warning that
+they lack the new manifest and RNG evidence. The first subsequent save uses the
+new format. Old snapshots and artifact history are not migrated or deleted.
+New recovery retention keeps the last two published bundles plus explicit pins,
+including across a rewind. It never deletes a Volume or serving policy history.
+There is deliberately no implicit capture/group expiration deadline.
+
+**One active trainer per run is required.** The function has one container per
+app, but that does not fence a second independently launched app with the same
+run ID. Stop the previous app before a manual restart. Cross-app duplicate-owner
+fencing/automatic takeover is not implemented; a Volume lock file would not solve
+it. Different runs use separate namespaces and can share a Volume.
+
+Start with v1 for durable run state. Modal recommends keeping v1 below 50,000
+files/directories, with a hard 500,000 limit and no more than about five concurrent
+writers. Budget growth within each run: an accepted attempt adds a directory and
+two files, and a group adds two files. Monitor around 30,000 inodes and place new
+runs on another Volume before 40,000, allowing for active-run growth. These two
+thresholds are our operating recommendation, not provider limits. v2 has different
+limits and is currently Beta; do not switch the recovery authority without testing
+and deciding on a second durable copy. See [Modal Volumes](https://modal.com/docs/guide/volumes).
+
+CPU tests cover commit failures, missing/corrupt shards, immutable rewinds, pins,
+post-checkpoint reconciliation, separate run namespaces, capture release ordering,
+and final flush. A CPU Adam replay also checks the next parameters, moments and
+scheduler after restart. Before production use, run the separate live v1 Volume
+visibility/latency test and fixed-batch Megatron GPU resume comparison. Async order
+and nondeterministic kernels mean this is not a bit-identical whole-run promise.
+Platform catalog registration and artifact download access remain a separate PR.

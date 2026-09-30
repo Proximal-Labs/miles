@@ -20,6 +20,12 @@ from miles_plugins.proximal.options import TRANSFER
 from miles_plugins.proximal.store import open_store
 
 
+LAYER = "base_model.model.model.layers.0"
+MODULES = tuple(f"self_attn.{m}" for m in ("q_proj", "k_proj", "v_proj", "o_proj")) + tuple(
+    f"mlp.{m}" for m in ("gate_proj", "up_proj", "down_proj")
+)
+
+
 class CpuAdapterIterator:
     weight_update_selector = "all"
 
@@ -30,15 +36,11 @@ class CpuAdapterIterator:
         assert include_base is False
         assert adapters == [(LORA_ADAPTER_NAME, None)]
         if materialize:
+            # One decoder layer, every module the run config targets, as Megatron-Bridge exports it.
             yield [
-                (
-                    f"{LORA_ADAPTER_NAME}:base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight",
-                    torch.ones(2, 3),
-                ),
-                (
-                    f"{LORA_ADAPTER_NAME}:base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight",
-                    torch.zeros(3, 2),
-                ),
+                (f"{LORA_ADAPTER_NAME}:{LAYER}.{module}.lora_{side}.weight", tensor)
+                for module in MODULES
+                for side, tensor in (("A", torch.ones(2, 3)), ("B", torch.zeros(3, 2)))
             ]
 
 
@@ -54,10 +56,23 @@ def current_version(config):
     return asyncio.run(read())
 
 
-def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
+class MtpAdapterIterator(CpuAdapterIterator):
+    def iter_hf_weights(self, weights, **kwargs):
+        yield from super().iter_hf_weights(weights, **kwargs)
+        # An MTP layer's adapter: SGLang would file it under decoder layer 0.
+        yield [(f"{LORA_ADAPTER_NAME}:base_model.model.mtp.layers.0.mlp.gate_proj.lora_A.weight", torch.ones(2, 3))]
+
+
+class NonFiniteAdapterIterator(CpuAdapterIterator):
+    def iter_hf_weights(self, weights, **kwargs):
+        for bucket in super().iter_hf_weights(weights, **kwargs):
+            yield [(name, tensor.fill_(float("nan")) if ".lora_B." in name else tensor) for name, tensor in bucket]
+
+
+def transfer_args(config, tmp_path):
     path = tmp_path / "config.json"
     path.write_text(config.model_dump_json())
-    args = Namespace(
+    return Namespace(
         proximal_config=str(path),
         proximal_yes_rollouts=True,
         proximal_yes_publish=True,
@@ -68,16 +83,37 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         update_weight_transfer_mode="broadcast",
         check_lora_weight_equal=False,
     )
+
+
+def single_rank():
     group = GroupInfo(rank=0, size=1, group=None)
-    parallel = ParallelState(
+    return ParallelState(
         **{key: group for key in ("intra_dp", "intra_dp_cp", "cp", "tp", "pp", "ep", "etp", "indep_dp")}
     )
+
+
+def make_updater(args, iterator_factory):
+    return WeightUpdater(
+        args,
+        [],
+        weights_getter=lambda: {},
+        model_name="qwen3",
+        quantization_config=None,
+        iterator_factory=iterator_factory,
+        parallel_state=single_rank(),
+        is_lora=True,
+        lora_sync_config={"peft_type": "LORA", "r": 2, "lora_alpha": 4, "target_modules": ["q_proj"]},
+    )
+
+
+def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
+    args = transfer_args(config, tmp_path)
     events = []
     fail = [False]
 
     def publish(authorization, snapshot):
         tensors = load_file(str(snapshot.directory / "adapter_model.safetensors"))
-        assert len(tensors) == 2
+        assert len(tensors) == 2 * len(MODULES)
         assert next(tensor for name, tensor in tensors.items() if ".lora_A." in name).shape == (2, 3)
         events.append(("upload", snapshot.reference.sha256))
 
@@ -107,21 +143,8 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
     dist.init_process_group("gloo", init_method=f"file://{tmp_path}/rendezvous", rank=0, world_size=1)
     monkeypatch.setattr(distributed_utils, "GLOO_GROUP", dist.group.WORLD)
 
-    def make_updater():
-        return WeightUpdater(
-            args,
-            [],
-            weights_getter=lambda: {},
-            model_name="qwen3",
-            quantization_config=None,
-            iterator_factory=CpuAdapterIterator,
-            parallel_state=parallel,
-            is_lora=True,
-            lora_sync_config={"peft_type": "LORA", "r": 2, "lora_alpha": 4, "target_modules": ["q_proj"]},
-        )
-
     try:
-        updater = make_updater()
+        updater = make_updater(args, CpuAdapterIterator)
         updater.connect_rollout_engines([])
         updater.update_weights()
         assert updater.weight_version == 1
@@ -135,10 +158,46 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         assert len([e for e in events if e[0] == "prepare"]) == 2
         assert current_version(config) == 2
         # A restart from step 0 republishes version 1 and abandons version 2.
-        restarted = make_updater()
+        restarted = make_updater(args, CpuAdapterIterator)
         restarted.connect_rollout_engines([])
         restarted.update_weights()
         assert restarted.weight_version == 1
         assert current_version(config) == 1
+    finally:
+        dist.destroy_process_group()
+
+
+def test_weight_update_refuses_a_non_finite_adapter(config, tmp_path, monkeypatch):
+    """A policy with NaN weights never reaches the Volume, serving or the store."""
+    uploads = []
+    monkeypatch.setattr(weight_update, "modal_publish_snapshot", lambda authorization, snapshot: uploads.append(1))
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path}/rendezvous", rank=0, world_size=1)
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", dist.group.WORLD)
+
+    try:
+        updater = make_updater(transfer_args(config, tmp_path), NonFiniteAdapterIterator)
+        updater.connect_rollout_engines([])
+        with pytest.raises(RuntimeError, match="lora_B.weight is not finite"):
+            updater.update_weights()
+        assert uploads == []
+        assert current_version(config) is None
+    finally:
+        dist.destroy_process_group()
+
+
+def test_weight_update_refuses_an_adapter_sglang_would_mis_serve(config, tmp_path, monkeypatch):
+    """An adapter tensor outside the decoder layers never reaches the Volume, serving or the store."""
+    uploads = []
+    monkeypatch.setattr(weight_update, "modal_publish_snapshot", lambda authorization, snapshot: uploads.append(1))
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path}/rendezvous", rank=0, world_size=1)
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", dist.group.WORLD)
+
+    try:
+        updater = make_updater(transfer_args(config, tmp_path), MtpAdapterIterator)
+        updater.connect_rollout_engines([])
+        with pytest.raises(RuntimeError, match="outside the text decoder layers"):
+            updater.update_weights()
+        assert uploads == []
+        assert current_version(config) is None
     finally:
         dist.destroy_process_group()

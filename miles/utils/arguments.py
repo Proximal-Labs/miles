@@ -22,6 +22,7 @@ from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.resume import resumes_lora_adapter
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
@@ -2163,6 +2164,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
             )
             parser.add_argument(
+                "--profile-light",
+                action="store_true",
+                default=False,
+                help=(
+                    "Run the PyTorch profiler without Python stacks or memory tracking, which add most of "
+                    "its CPU overhead and so widen gaps between kernels; kernel times and shapes are kept."
+                ),
+            )
+            parser.add_argument(
                 "--memory-recorder",
                 type=str,
                 choices=["torch", "memray"],
@@ -3096,7 +3106,12 @@ def miles_validate_args(args):
             or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
         ):
             args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+            # A LoRA resume loads the base from HF and the adapter, with the iteration it
+            # was saved at, from --lora-adapter-path. That iteration is the only record of
+            # how far the run got, so the start is left to the actor, which derives it from
+            # the adapter (placement_group); a fresh run starts at 0.
+            if not resumes_lora_adapter(args):
+                args.start_rollout_id = 0
     else:
         if (
             args.load is None

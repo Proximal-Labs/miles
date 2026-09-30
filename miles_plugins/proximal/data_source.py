@@ -16,6 +16,7 @@ from collections import deque
 from pathlib import Path
 
 from miles.rollout.data_source import DataSource
+from miles.utils.resume import resume_checkpoint_dir
 from miles.utils.types import Sample
 from miles_plugins.proximal.contracts import Contract, pinned_dataset, read_run_config
 from miles_plugins.proximal.storage import write_atomic
@@ -59,18 +60,42 @@ class ConsumptionLedger:
 
 
 class PlatformTaskSource(DataSource):
-    def __init__(self, args: Namespace) -> None:
+    def __init__(self, args: Namespace, *, num_groups: int | None = None) -> None:
+        if num_groups is not None and num_groups <= 0:
+            raise ValueError("Finite collection requires a positive group count")
         self.args = args
         self.config = read_run_config(args.proximal_config)
+        if num_groups is not None:
+            if self.config.research.unused_groups != "retry":
+                raise ValueError("Finite collection requires retrying failed groups")
+            if args.rollout_submission_granularity != "sample":
+                raise ValueError("Finite collection requires the sample submission scheduler")
         self.dataset = self.config.dataset.tasks
         self.next_group = 0
         self._retry: deque[int] = deque()
         self.consumed = ConsumptionLedger()
+        # Collection alone bounds new tasks. Retries do not consume this budget
+        # or skip a task; next_group remains the unique execution-group counter.
+        self._collection_groups = num_groups
+        self._remaining_groups = num_groups
+
+    @property
+    def has_samples(self) -> bool:
+        return bool(self._retry) or self._remaining_groups is None or self._remaining_groups > 0
 
     def get_samples(self, num_samples: int) -> list[list[Sample]]:
         result = []
         for _ in range(num_samples):
-            task_index = self._retry.popleft() if self._retry else self.next_group % len(self.dataset)
+            if not self.has_samples:
+                raise ValueError("Finite task source is exhausted; stop submitting new groups")
+            if self._retry:
+                task_index = self._retry.popleft()
+            elif self._remaining_groups is not None:
+                assert self._collection_groups is not None
+                task_index = (self._collection_groups - self._remaining_groups) % len(self.dataset)
+                self._remaining_groups -= 1
+            else:
+                task_index = self.next_group % len(self.dataset)
             group_index = self.next_group
             self.next_group += 1
             task = self.dataset[task_index]
@@ -109,8 +134,11 @@ class PlatformTaskSource(DataSource):
             )
 
     def load(self, rollout_id: int | None = None) -> None:
-        restored = rollout_id if self.args.load is not None and rollout_id is not None and rollout_id >= 0 else None
-        state = None if restored is None else self._read_valid_state(restored)
+        checkpoint_dir = resume_checkpoint_dir(self.args)
+        restored = rollout_id if checkpoint_dir is not None and rollout_id is not None and rollout_id >= 0 else None
+        state = (
+            None if restored is None or checkpoint_dir is None else self._read_valid_state(checkpoint_dir, restored)
+        )
         # Only after the requested checkpoint is known good: drop state saved for later
         # steps of the abandoned timeline, before training writes any new weights.
         # Otherwise a crash after re-saving step N's weights but before re-saving its
@@ -123,9 +151,8 @@ class PlatformTaskSource(DataSource):
         self._retry = deque(state.pending_tasks)
         self.consumed.restore(state.consumed)
 
-    def _read_valid_state(self, step: int) -> Cursor:
-        assert self.args.load is not None
-        path = Path(self.args.load) / "rollout" / f"proximal_{step}.json"
+    def _read_valid_state(self, checkpoint_dir: str, step: int) -> Cursor:
+        path = Path(checkpoint_dir) / "rollout" / f"proximal_{step}.json"
         if not path.exists():
             # Miles saves weights before this state. Weights without it means the save
             # was interrupted; resuming would pair those weights with a stale ledger.

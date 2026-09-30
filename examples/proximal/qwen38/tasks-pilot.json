@@ -1,0 +1,211 @@
+{
+ "project_id": 519,
+ "source": "project 519 / DeepSWE: 2643 '3.8 good passrate' (13) + 2690 '3.5 flash medium' (8) + first 20 of 2760 '3.5 flash hard' (348); newest imaged commit per env, 2026-09-23",
+ "tasks": [
+  {
+   "environment_id": 105955,
+   "image_id": 751451,
+   "source_commit_sha": "7a3b98923a25add9e7903e6689321e93eadbf340"
+  },
+  {
+   "environment_id": 106386,
+   "image_id": 753008,
+   "source_commit_sha": "b7bf75b27a252138abf50627ffbf09b2781e2fd7"
+  },
+  {
+   "environment_id": 106496,
+   "image_id": 782878,
+   "source_commit_sha": "636045aead99da87f0c883039394dcd31e170015"
+  },
+  {
+   "environment_id": 106662,
+   "image_id": 745657,
+   "source_commit_sha": "c5083f2857438ddec0362e58a081bab676732957"
+  },
+  {
+   "environment_id": 107554,
+   "image_id": 745935,
+   "source_commit_sha": "8fb54b5934fe0f31e66b239e2bab920d19bd044f"
+  },
+  {
+   "environment_id": 119553,
+   "image_id": 806655,
+   "source_commit_sha": "1fa3df1d3610694621d2ef53e257c723f9fc9645"
+  },
+  {
+   "environment_id": 119929,
+   "image_id": 796485,
+   "source_commit_sha": "689e2df000e57259d6e9f3ce797887e674e3aa04"
+  },
+  {
+   "environment_id": 120004,
+   "image_id": 800339,
+   "source_commit_sha": "3b7649f53134e139f49cb8c8489e345c94de79eb"
+  },
+  {
+   "environment_id": 120014,
+   "image_id": 805632,
+   "source_commit_sha": "17122d1d5793c7fd9eacaf02bbf8b970b8f40674"
+  },
+  {
+   "environment_id": 121196,
+   "image_id": 809484,
+   "source_commit_sha": "0627d3e8ff0e3a7bc519f0c26c4a5a2501f5eb71"
+  },
+  {
+   "environment_id": 121949,
+   "image_id": 808994,
+   "source_commit_sha": "5b7945efb15182e54dd25058dbc548958574570d"
+  },
+  {
+   "environment_id": 122566,
+   "image_id": 809633,
+   "source_commit_sha": "6711e7be929bc453e5bb6fab48ff8882ed3f9e90"
+  },
+  {
+   "environment_id": 122779,
+   "image_id": 809104,
+   "source_commit_sha": "e535348090ee81b54d3d6143a09fd4977a3fe8ec"
+  },
+  {
+   "environment_id": 30251,
+   "image_id": 480892,
+   "source_commit_sha": "7cda3601604504e44551e49454b167ba2e046518"
+  },
+  {
+   "environment_id": 33665,
+   "image_id": 494876,
+   "source_commit_sha": "de3d39c4da7f90b7c99e51382f815cb06db6021d"
+  },
+  {
+   "environment_id": 38705,
+   "image_id": 481664,
+   "source_commit_sha": "2044c0e0c6e47f0b7a78ab1f7477b279ec73cae4"
+  },
+  {
+   "environment_id": 41600,
+   "image_id": 483685,
+   "source_commit_sha": "7cd44e65068ea8672a4a29037e41d80db2da838b"
+  },
+  {
+   "environment_id": 44360,
+   "image_id": 482110,
+   "source_commit_sha": "836d0c7cf3c4079c56d42fb688be420c742ae640"
+  },
+  {
+   "environment_id": 45707,
+   "image_id": 487146,
+   "source_commit_sha": "c7059285a589963b799e2edaa00d959fb786b86f"
+  },
+  {
+   "environment_id": 50634,
+   "image_id": 484796,
+   "source_commit_sha": "45b03357ff5aac4bf394a6d734f077941ed39cb6"
+  },
+  {
+   "environment_id": 51168,
+   "image_id": 485765,
+   "source_commit_sha": "ddc5b627cc5a9fac7c23b877f92e655ae8d52c4e"
+  },
+  {
+   "environment_id": 12188,
+   "image_id": 883119,
+   "source_commit_sha": "4f4852ccae90c1f361b6b4eaee8c6acaccde6497"
+  },
+  {
+   "environment_id": 12201,
+   "image_id": 883135,
+   "source_commit_sha": "746f99db152c79dfaf44f6141c7bc651d186fac0"
+  },
+  {
+   "environment_id": 12204,
+   "image_id": 883136,
+   "source_commit_sha": "5e267df77c33e6c95ae78f1b86787016ac2ca8c8"
+  },
+  {
+   "environment_id": 29081,
+   "image_id": 569993,
+   "source_commit_sha": "75c6ca497c5f1d73e0767ac8e5ed60ec2940bac6"
+  },
+  {
+   "environment_id": 29137,
+   "image_id": 569939,
+   "source_commit_sha": "781bb4692a12161ba177ffbf24173c972ed2decc"
+  },
+  {
+   "environment_id": 29267,
+   "image_id": 569844,
+   "source_commit_sha": "af167bfc6efc3548979e73e5285a1d35bfc8fcb8"
+  },
+  {
+   "environment_id": 30336,
+   "image_id": 480805,
+   "source_commit_sha": "6328f8f9f832ecd0418b452a10b472f276acbe8e"
+  },
+  {
+   "environment_id": 30356,
+   "image_id": 569808,
+   "source_commit_sha": "5ee3f4aeb5469b7752a2b9125555bd84f3be9f31"
+  },
+  {
+   "environment_id": 30373,
+   "image_id": 475507,
+   "source_commit_sha": "c66b44bc311241b8d2b48e4b0d68d1c7791c1da3"
+  },
+  {
+   "environment_id": 30397,
+   "image_id": 496769,
+   "source_commit_sha": "6d65ea1e999fe4f8a81779c5f548141d70de5373"
+  },
+  {
+   "environment_id": 30398,
+   "image_id": 570088,
+   "source_commit_sha": "0762e1fb8bd1f8152eb4c1a8b6f3b577df108830"
+  },
+  {
+   "environment_id": 30500,
+   "image_id": 473453,
+   "source_commit_sha": "2573fce212b7c691ef0985789657045301cea105"
+  },
+  {
+   "environment_id": 30558,
+   "image_id": 485112,
+   "source_commit_sha": "41be9817755db57756c6fcc5d3f6eeb770f96284"
+  },
+  {
+   "environment_id": 30682,
+   "image_id": 472533,
+   "source_commit_sha": "a1be8dddad4ccd323f90c0abff8e699d93091b9b"
+  },
+  {
+   "environment_id": 30693,
+   "image_id": 482866,
+   "source_commit_sha": "8a02319d89292ef7c9c05efa2dd13e40d04afaae"
+  },
+  {
+   "environment_id": 30705,
+   "image_id": 496051,
+   "source_commit_sha": "0a0a5a08ddc1c75f23bcb57bfbf20fb4f8c8cb82"
+  },
+  {
+   "environment_id": 30750,
+   "image_id": 474705,
+   "source_commit_sha": "7e66f4a2c1e58f4003b9440b4f0692f9e124174c"
+  },
+  {
+   "environment_id": 30838,
+   "image_id": 436674,
+   "source_commit_sha": "905a14c80fd433c453719263c99a7000eace67ef"
+  },
+  {
+   "environment_id": 30847,
+   "image_id": 480168,
+   "source_commit_sha": "54add99a53566ab4a76fea652dc6d9be25458397"
+  },
+  {
+   "environment_id": 30906,
+   "image_id": 496931,
+   "source_commit_sha": "5d384ec01ef1f4a73f94f85d459205fbaa9f7cd5"
+  }
+ ]
+}

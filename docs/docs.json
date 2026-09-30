@@ -259,7 +259,8 @@
        "examples/retool-v2",
        "examples/swe-agent-harbor-docker",
        "examples/proximal/e2e",
-       "examples/proximal/gsm8k"
+       "examples/proximal/gsm8k",
+       "examples/proximal/qwen38"
       ]
      },
      {

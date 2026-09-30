@@ -14,6 +14,9 @@ and publication stays local.
 ``--platform real`` starts none and talks to the platform at that URL (a local
 proximal-mono backend on loopback, or a remote one).
 
+Capture runs here when ``capture.url`` is loopback. When it is the pool's URL (equal to
+``inference_url``), capture runs in the pool's replicas and nothing starts here for it.
+
 Against the Modal serving pool: an HTTPS ``inference_url`` and ``--publish modal``
 upload each version to the adapter Volume. Nothing here deploys, creates or deletes a
 Modal resource.
@@ -67,28 +70,30 @@ def _services(config_path: Path, run: RunConfig, logs: Path, *, stub_platform: b
     platform_port = _loopback_port(run.platform.url)
     if stub_platform and platform_port is None:
         raise ValueError("The stub platform runs locally; its URL must be loopback")
-    if capture_port is None:
+    if capture_port is None and run.capture.url != run.inference_url:
         raise ValueError(
-            "The launcher runs capture locally; its URL must be loopback (expose it to a platform separately)"
+            "Capture runs here (a loopback capture.url) or in the serving pool's replicas "
+            "(capture.url equal to inference_url)"
         )
     python = [sys.executable, "-m"]
-    commands.append(
-        (
-            "capture",
-            [
-                *python,
-                "miles_plugins.proximal.runtime",
+    if capture_port is not None:
+        commands.append(
+            (
                 "capture",
-                "--config",
-                str(config_path),
-                "--yes-rollouts",
-                "--yes-publish",
-                "--port",
-                str(capture_port),
-            ],
-            f"{run.capture.url}/health",
+                [
+                    *python,
+                    "miles_plugins.proximal.runtime",
+                    "capture",
+                    "--config",
+                    str(config_path),
+                    "--yes-rollouts",
+                    "--yes-publish",
+                    "--port",
+                    str(capture_port),
+                ],
+                f"{run.capture.url}/health",
+            )
         )
-    )
     if stub_platform:
         commands.append(
             (

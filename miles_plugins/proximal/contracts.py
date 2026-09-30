@@ -88,8 +88,50 @@ class LoRA(Contract):
     target_modules: Annotated[tuple[Nonempty, ...], Field(min_length=1)]
 
 
+class TruncatedImportanceSampling(Contract):
+    """The decoupled off-policy correction (Miles's ``--use-tis``). The trainer recomputes
+    each token's log-prob before the step and centers the PPO ratio on it; every token's
+    gradient is then weighted by the rollout-to-trainer importance ratio, truncated to
+    ``[clip_low, clip]``. It holds up with groups several policy versions old, where
+    ``rollout_logprobs`` clips around a stale policy."""
+
+    kind: Literal["truncated_importance_sampling"]
+    clip: Annotated[FiniteFloat, Field(gt=1)]
+    clip_low: Annotated[FiniteFloat, Field(ge=0, lt=1)]
+
+
+# ``rollout_logprobs``: the PPO ratio's denominator is the rollout engine's log-prob
+# (Miles's ``--use-rollout-logprobs``), with no recomputation.
+BehaviorCorrection = Literal["rollout_logprobs"] | TruncatedImportanceSampling
+
+
+def behavior_correction_args(correction: BehaviorCorrection) -> dict[str, object]:
+    """The Miles arguments that select a behavior correction; exactly one is enabled."""
+    if correction == "rollout_logprobs":
+        return {"use_rollout_logprobs": True, "use_tis": False}
+    assert isinstance(correction, TruncatedImportanceSampling)
+    return {
+        "use_rollout_logprobs": False,
+        "use_tis": True,
+        "tis_clip": correction.clip,
+        "tis_clip_low": correction.clip_low,
+    }
+
+
+def behavior_correction_argv(correction: BehaviorCorrection) -> list[str]:
+    """``behavior_correction_args`` as Miles's argv: a true boolean is a bare flag, a false one is omitted."""
+    argv: list[str] = []
+    for name, value in behavior_correction_args(correction).items():
+        flag = "--" + name.replace("_", "-")
+        if value is True:
+            argv.append(flag)
+        elif value is not False:
+            argv += [flag, str(value)]
+    return argv
+
+
 class Research(Contract):
-    behavior_correction: Literal["rollout_logprobs"]
+    behavior_correction: BehaviorCorrection
     lora: LoRA
     sampling: Sampling
     group_size: Annotated[int, Field(ge=2)]
@@ -99,6 +141,16 @@ class Research(Contract):
 
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+# Chat-template families capture can render with (Miles's --tito-model). Each binds the
+# SGLang reasoning and tool-call parsers the replicas must use (check_tito_protocol).
+# Inkling is not listed: its template takes a numeric reasoning_effort, which has no
+# platform equivalent.
+TitoModel = Literal["qwen3", "qwen35", "qwen36", "qwen38small", "qwennext"]
+# The efforts a family's fixed template renders. Capture passes the run's effort to
+# these templates; a family not listed renders none.
+TEMPLATE_REASONING_EFFORTS: dict[str, frozenset[str]] = {
+    "qwen38small": frozenset({"xhigh", "medium", "low"}),
+}
 
 
 class ModelProtocol(Contract):
@@ -108,7 +160,8 @@ class ModelProtocol(Contract):
 
     reasoning_parser: Nonempty
     tool_call_parser: Nonempty
-    # Sent to the platform for every run; capture rejects a model call asking otherwise.
+    # Sent to the platform for every run; capture rejects a model call asking otherwise
+    # and renders it through the template (TEMPLATE_REASONING_EFFORTS).
     reasoning_effort: ReasoningEffort
 
 
@@ -127,10 +180,14 @@ class CaptureService(Service):
 class PlatformRoute(Contract):
     """How the platform sends a run's model calls to capture: the registry entry
     (``endpoint_name``) under the platform model id (``model``). The registry derives
-    ``<capture url>/rollouts/<platform rollout id>/v1`` as each rollout's base URL."""
+    ``<capture url>/rollouts/<platform rollout id>/v1`` as each rollout's base URL.
+
+    ``endpoint_name`` unset routes by the model's default endpoint: a training node that
+    registers a new capture endpoint on each start (``training.RealPlatform``). The
+    platform pins the resolved endpoint for each run's lifetime."""
 
     model: Nonempty
-    endpoint_name: Nonempty
+    endpoint_name: Nonempty | None
 
 
 class SharedDiskArtifacts(Contract):
@@ -148,7 +205,47 @@ class ModalVolumeArtifacts(Contract):
     volume: VolumeDestination
 
 
-ArtifactStorage = Annotated[SharedDiskArtifacts | ModalVolumeArtifacts, Field(discriminator="kind")]
+class RunStateArtifacts(Contract):
+    """Local files, acknowledged by the run composition root's Volume publisher.
+
+    The launcher supplies this variant only while its publication worker is running.
+    """
+
+    kind: Literal["run_state"]
+
+
+ArtifactStorage = Annotated[
+    SharedDiskArtifacts | ModalVolumeArtifacts | RunStateArtifacts, Field(discriminator="kind")
+]
+
+
+# Where the platform runs each rollout's sandbox, in the platform's own vocabulary
+# (proximal-mono EnvForgeRolloutSandbox): ECS on Fargate, or a Kubernetes (Nexus-exact)
+# sandbox under gVisor, Kata + Cloud Hypervisor, or Kata + QEMU.
+RolloutSandbox = Literal["ecs-fargate", "gvisor", "kata-clh", "kata-qemu"]
+
+
+class LaunchRetry(Contract):
+    """How a rollout the platform failed to launch is retried, and how launches are spread.
+
+    A launch failure (the platform could not get a container, e.g. its container-lease
+    admission queue timed out) happens before the agent runs, so retrying cannot bias
+    what is trained; without a retry one such failure drops the whole group. Retries
+    wait ``backoff_seconds * 2**n`` (capped at ``max_backoff_seconds``) with full jitter,
+    and each rollout's first launch waits up to ``stagger_seconds`` so a group's launches
+    do not arrive at once.
+    """
+
+    attempts: Positive
+    backoff_seconds: Annotated[FiniteFloat, Field(gt=0)]
+    max_backoff_seconds: Annotated[FiniteFloat, Field(gt=0)]
+    stagger_seconds: Annotated[FiniteFloat, Field(ge=0)]
+
+    @model_validator(mode="after")
+    def _bounded(self) -> "LaunchRetry":
+        if self.max_backoff_seconds < self.backoff_seconds:
+            raise ValueError("max_backoff_seconds must be at least backoff_seconds")
+        return self
 
 
 class RunConfig(Contract):
@@ -170,11 +267,13 @@ class RunConfig(Contract):
     # Environment variable holding the Postgres DSN for the rollout store index.
     store_dsn_env: Nonempty
     tokenizer_path: Path
-    tito_model: Literal["qwen3"]
+    tito_model: TitoModel
     enable_thinking: bool
     model_protocol: ModelProtocol
     max_in_flight_samples: Positive
     completed_group_capacity: Positive
+    launch_retry: LaunchRetry
+    rollout_sandbox: RolloutSandbox
     request_timeout_seconds: Positive = 1800
     poll_interval_seconds: Annotated[FiniteFloat, Field(gt=0)] = 2.0
 
@@ -185,6 +284,12 @@ class RunConfig(Contract):
         forbidden = {"host", "content-length", "transfer-encoding", "x-proximal-policy-sha256"}
         if any(name.lower() in forbidden for name in self.inference_header_env):
             raise ValueError("Invalid inference authentication header")
+        rendered = TEMPLATE_REASONING_EFFORTS.get(self.tito_model)
+        if rendered is not None and self.model_protocol.reasoning_effort not in rendered:
+            raise ValueError(
+                f"The {self.tito_model} template renders reasoning effort {', '.join(sorted(rendered))}, "
+                f"not {self.model_protocol.reasoning_effort!r}"
+            )
         return self
 
 
@@ -199,12 +304,12 @@ class TrainingContract(Contract):
     base_model: BaseModelIdentity
     dataset: TaskDataset
     harness: Harness
-    behavior_correction: Literal["rollout_logprobs"]
+    behavior_correction: BehaviorCorrection
     lora: LoRA
     sampling: Sampling
     group_size: int
     tokenizer: Nonempty
-    tito_model: Literal["qwen3"]
+    tito_model: TitoModel
     enable_thinking: bool
     model_protocol: ModelProtocol
 
@@ -224,6 +329,57 @@ def training_contract(config: RunConfig) -> TrainingContract:
         enable_thinking=config.enable_thinking,
         model_protocol=config.model_protocol,
     )
+
+
+class ServingContract(Contract):
+    """What a serving deployment binds for every run it serves: the base model, how its
+    capture renders and parses turns, the adapter shape its engines load, and its
+    sequence ceiling.
+
+    Everything else about a run (run id, tasks, harness, token budgets within the
+    ceiling) travels with each session's attempt, so a new run on the same deployment
+    needs no redeploy. Changing any field here does: the replicas were started with it.
+    """
+
+    base_model: BaseModelIdentity
+    tokenizer: Nonempty
+    tito_model: TitoModel
+    enable_thinking: bool
+    model_protocol: ModelProtocol
+    lora_rank: Positive
+    lora_target_modules: tuple[Nonempty, ...]
+    max_sequence_tokens: Positive
+
+
+def serving_contract(config: RunConfig) -> ServingContract:
+    return ServingContract(
+        base_model=config.base_model,
+        tokenizer=config.tokenizer_path.name,
+        tito_model=config.tito_model,
+        enable_thinking=config.enable_thinking,
+        model_protocol=config.model_protocol,
+        lora_rank=config.research.lora.rank,
+        lora_target_modules=config.research.lora.target_modules,
+        max_sequence_tokens=config.research.sampling.max_sequence_tokens,
+    )
+
+
+def serving_mismatches(config: RunConfig, deployed: ServingContract) -> list[str]:
+    """Why a deployment cannot serve this run; empty when it can."""
+    run = serving_contract(config)
+    same = ("base_model", "tokenizer", "tito_model", "enable_thinking", "model_protocol", "lora_target_modules")
+    reasons = [
+        f"{name}: the run has {getattr(run, name)!r}, the deployment {getattr(deployed, name)!r}"
+        for name in same
+        if getattr(run, name) != getattr(deployed, name)
+    ]
+    if run.lora_rank > deployed.lora_rank:
+        reasons.append(f"lora rank {run.lora_rank} exceeds the deployment's maximum {deployed.lora_rank}")
+    if run.max_sequence_tokens > deployed.max_sequence_tokens:
+        reasons.append(
+            f"max_sequence_tokens {run.max_sequence_tokens} exceeds the deployment's {deployed.max_sequence_tokens}"
+        )
+    return reasons
 
 
 class Policy(Contract):
@@ -251,11 +407,34 @@ class Attempt(Contract):
         return self
 
 
+# The platform names a run's rollouts ``<run id>-rollout-<index>``; Miles runs have one.
+ROLLOUT_SUFFIX = "-rollout-0"
+
+# Modal routes requests that carry the same ``Modal-Session-Id`` to the same container.
+# Capture keeps each rollout's token history in the replica that serves it, so every
+# caller of a rollout's routes sends this header: the trainer (create, seal, fetch,
+# release) and the platform's agent (chat calls, from the registry's rollout_capture
+# client). The value is the SHA-256 of the platform rollout ID, on both sides.
+AFFINITY_HEADER = "Modal-Session-Id"
+
+
+def platform_rollout_id(attempt_id: str) -> str:
+    """The platform rollout ID of an attempt's single-instance run."""
+    return f"{attempt_id}{ROLLOUT_SUFFIX}"
+
+
+def affinity_headers(rollout_id: str) -> dict[str, str]:
+    """Pin every call for one rollout to the replica that holds its session."""
+    return {AFFINITY_HEADER: hashlib.sha256(rollout_id.encode()).hexdigest()}
+
+
 class SessionHandle(Contract):
     """A registered attempt's capture session. ``base_url`` is the rollout route the
-    platform derives for this run; no per-session credential leaves Miles."""
+    platform derives for this run; no per-session credential leaves Miles. Calls about
+    the session carry ``affinity_headers(rollout_id)``."""
 
     session_id: SafeId
+    rollout_id: Nonempty
     base_url: Endpoint
     request_sha256: Digest
 
@@ -282,6 +461,16 @@ class AcceptedAttempt(Contract):
     attempt: Attempt
     capture: CaptureReceipt
     grade: Grade
+
+
+class FailedAttempt(Contract):
+    """An archived attempt outcome, never a zero-reward training example."""
+
+    attempt: Attempt
+    status: Literal["failed", "cancelled"]
+    error_type: Nonempty
+    capture: CaptureReceipt | None
+    grade: Grade | None
 
 
 class PolicyEvidence(Contract):

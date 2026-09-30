@@ -27,12 +27,36 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
+from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.clients import ServingPoolClient
 from miles_plugins.proximal.contracts import Policy, read_run_config
 from miles_plugins.proximal.modal_volume import authorize_volume_publication, modal_publish_snapshot
+from miles_plugins.proximal.serving import lora_serving_targets
 from miles_plugins.proximal.snapshot import SnapshotMetadata, prepare_snapshot
 from miles_plugins.proximal.store import open_store
+
+
+def peft_config_json(config: dict[str, JsonValue], *, rank: int, base_model_name: str) -> str:
+    """The published adapter_config.json, from the trainer's PEFT configuration."""
+    # JSON SDK boundary, authored once by the Megatron LoRA adapter.
+    if config.get("peft_type") != "LORA" or config.get("r") != rank:
+        raise ValueError("Trainer supplied an incompatible PEFT configuration")
+    return json.dumps(config | {"base_model_name_or_path": base_model_name}, sort_keys=True)
+
+
+def staged_adapter_tensor(name: str, tensor: torch.Tensor) -> tuple[str, torch.Tensor]:
+    """One gathered ``miles_lora:<hf name>`` tensor as its HF name and a host copy."""
+    prefix, separator, hf_name = name.partition(":")
+    if prefix != LORA_ADAPTER_NAME or not separator or not is_lora_weight_name(hf_name):
+        raise ValueError(f"Expected a single HF adapter tensor, got {name!r}")
+    return hf_name, tensor.detach().to("cpu").contiguous().clone()
+
+
+def write_adapter(directory: Path, *, tensors: dict[str, torch.Tensor], config_json: str) -> None:
+    """A complete PEFT adapter: adapter_config.json and one safetensors file."""
+    (directory / "adapter_config.json").write_text(config_json)
+    save_file(dict(sorted(tensors.items())), str(directory / "adapter_model.safetensors"))
 
 
 class ModalVolumeTransfer(WeightTransferProtocol):
@@ -59,11 +83,8 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         self._peft_config_json: str | None = None
 
     def configure_lora(self, config: dict[str, JsonValue]) -> None:
-        # JSON SDK boundary, authored once by the Megatron LoRA adapter.
-        if config.get("peft_type") != "LORA" or config.get("r") != self.args.lora_rank:
-            raise ValueError("Trainer supplied an incompatible PEFT configuration")
-        self._peft_config_json = json.dumps(
-            config | {"base_model_name_or_path": self.config.base_model.name}, sort_keys=True
+        self._peft_config_json = peft_config_json(
+            config, rank=self.args.lora_rank, base_model_name=self.config.base_model.name
         )
 
     def connect(
@@ -96,17 +117,26 @@ class ModalVolumeTransfer(WeightTransferProtocol):
             return
         try:
             for name, tensor in bucket:
-                prefix, separator, hf_name = name.partition(":")
-                if prefix != LORA_ADAPTER_NAME or not separator or not is_lora_weight_name(hf_name):
-                    raise ValueError(f"Expected a single HF adapter tensor, got {name!r}")
+                hf_name, staged = staged_adapter_tensor(name, tensor)
                 if hf_name in self._tensors:
                     raise ValueError(f"Duplicate gathered adapter tensor: {hf_name}")
-                self._tensors[hf_name] = tensor.detach().to("cpu").contiguous().clone()
+                if not torch.isfinite(staged).all():
+                    # A policy with NaN/inf weights must never become selectable.
+                    self._error = f"Adapter tensor {hf_name} is not finite; refusing to publish it"
+                    return
+                self._tensors[hf_name] = staged
         except Exception as exc:
             self._error = f"{type(exc).__name__}: adapter staging failed"
 
     def finalize(self, weight_version: int) -> None:
         verdict: list[str | None] = [self._error]
+        if self.is_sender and verdict[0] is None:
+            # A layout SGLang would serve differently from the trained adapter never publishes.
+            verdict[0] = adapter_layout_problem(
+                {name: tuple(tensor.shape) for name, tensor in self._tensors.items()},
+                serving_targets=lora_serving_targets(self.config),
+                rank=self.args.lora_rank,
+            )
         if self.is_sender and verdict[0] is None:
             try:
                 asyncio.run(self._publish(weight_version))
@@ -127,8 +157,7 @@ class ModalVolumeTransfer(WeightTransferProtocol):
             adapter = Path(directory)
             if self._peft_config_json is None:
                 raise ValueError("WeightUpdater must supply the training backend's adapter configuration")
-            (adapter / "adapter_config.json").write_text(self._peft_config_json)
-            save_file(dict(sorted(self._tensors.items())), str(adapter / "adapter_model.safetensors"))
+            write_adapter(adapter, tensors=self._tensors, config_json=self._peft_config_json)
             snapshot = prepare_snapshot(
                 adapter,
                 metadata=SnapshotMetadata(

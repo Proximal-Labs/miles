@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 from miles.utils.function_registry import load_function
 from miles_plugins.proximal.authorization import authorize_run
-from miles_plugins.proximal.contracts import read_run_config
+from miles_plugins.proximal.contracts import behavior_correction_args, read_run_config
 
 if TYPE_CHECKING:
     from miles.utils.types import Sample
@@ -40,7 +40,7 @@ def validate_args(args: Namespace) -> None:
     authorize_run(config, yes_rollouts=args.proximal_yes_rollouts, yes_publish=args.proximal_yes_publish)
     required = {
         "train_backend": "megatron",
-        "use_rollout_logprobs": True,
+        **behavior_correction_args(config.research.behavior_correction),
         "fully_async": True,
         "rollout_external": True,
         "rollout_num_gpus": 0,
@@ -50,7 +50,8 @@ def validate_args(args: Namespace) -> None:
         "data_source_path": SOURCE,
         "custom_async_data_buffer_path": BUFFER,
         "rollout_global_dataset": True,
-        "rollout_submission_granularity": "group",
+        # Miles's fully-async default: a finished rollout frees its slot at once.
+        "rollout_submission_granularity": "sample",
         "n_samples_per_prompt": config.research.group_size,
         "max_weight_staleness": config.research.max_policy_lag,
         "async_unused_samples_handler": config.research.unused_groups,
@@ -81,7 +82,8 @@ def validate_args(args: Namespace) -> None:
         "indep_dp",
         "use_fault_tolerance",
         "rollout_shuffle",
-        "use_tis",
+        # The behavior correction is the run config's (required above); only Miles's built-in TIS.
+        "custom_tis_function_path",
         "group_rm",
         "multi_lora",
         "debug_train_only",

@@ -7,9 +7,10 @@ No container, replica or Volume lifecycle operations exist in this client.
 import asyncio
 import hashlib
 import time
+from typing import TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, FiniteFloat
+from pydantic import BaseModel, ConfigDict, FiniteFloat, ValidationError
 from pydantic.alias_generators import to_camel
 
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
@@ -19,9 +20,12 @@ from miles_plugins.proximal.contracts import (
     Grade,
     Policy,
     PolicyEvidence,
+    ServingContract,
     SessionHandle,
+    affinity_headers,
     digest,
     pinned_dataset,
+    platform_rollout_id,
 )
 
 
@@ -44,8 +48,9 @@ class CreatedRun(Wire):
 
 class Container(Wire):
     id: str
-    status: str
-    agent_type: str
+    # Proto JSON omits empty fields: a container still launching has no agent yet.
+    status: str = "ROLLOUT_CONTAINER_STATUS_UNSPECIFIED"
+    agent_type: str = ""
     reward_scored: bool = False
     reward: FiniteFloat | None = None
     error: str | None = None
@@ -62,24 +67,79 @@ class Summary(Wire):
     source_commit_sha: str
 
 
+# CreateEnvironmentRun's deployment_config per rollout sandbox (the platform CLI's
+# `--deployment nexus-exact --sandbox-runtime ...`). ECS on Fargate is the platform's
+# default placement, so it sends none.
+SANDBOX_DEPLOYMENT: dict[str, dict[str, object] | None] = {
+    "ecs-fargate": None,
+    "gvisor": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_GVISOR"}},
+    "kata-clh": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}},
+    "kata-qemu": {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_QEMU"}},
+}
+
+
+WireT = TypeVar("WireT", bound=Wire)
+
+
+def _platform_reply(model: type[WireT], response: httpx.Response) -> WireT:
+    """A run reply outside the wire contract makes that attempt ineligible, not the training run."""
+    try:
+        return model.model_validate_json(response.content)
+    except ValidationError as exc:
+        where = ", ".join(".".join(str(part) for part in error["loc"]) for error in exc.errors())
+        raise IneligibleAttempt(f"Platform {model.__name__} reply broke the wire contract at {where}") from exc
+
+
 class IneligibleAttempt(RuntimeError):
     """An execution failure, never a fabricated zero-reward training example."""
+
+
+class LaunchFailed(IneligibleAttempt):
+    """The platform never started the rollout (no container). Nothing ran, so a retry
+    under a new attempt identity cannot bias training (see contracts.LaunchRetry)."""
+
+
+# How the platform reports a rollout it could not start (its container's ``error``).
+LAUNCH_FAILED_PREFIX = "Launch failed:"
+
+
+# Statuses that describe the path to the service, not the request: gateways, rate limits,
+# Cloudflare's origin errors (52x), and 500s such as an exhausted database pool.
+TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
+REQUEST_ATTEMPTS = 4
+# How long a status read may keep failing before the rollout is given up. A failed read
+# says nothing about the rollout, which keeps running on the platform.
+STATUS_OUTAGE_SECONDS = 300.0
+
+
+def transient(exc: Exception) -> bool:
+    return isinstance(exc, httpx.TransportError) or (
+        isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in TRANSIENT_STATUSES
+    )
 
 
 async def request(
     client: httpx.AsyncClient, method: str, url: str, *, headers: dict[str, str], body: object = None
 ) -> httpx.Response:
     """Bounded retries for idempotent calls; identities are stable across retries."""
-    for attempt in range(3):
+    last = REQUEST_ATTEMPTS - 1
+    for attempt in range(REQUEST_ATTEMPTS):
         try:
             response = await client.request(method, url, headers=headers, json=body, follow_redirects=False)
-            if response.status_code not in (429, 502, 503, 504) or attempt == 2:
-                response.raise_for_status()
+            if response.status_code not in TRANSIENT_STATUSES or attempt == last:
+                if response.is_error:
+                    # Keep the service's stated reason (our capture's or the platform's
+                    # error text); never headers.
+                    raise httpx.HTTPStatusError(
+                        f"{response.status_code} for {method} {url}: {response.text[:300]}",
+                        request=response.request,
+                        response=response,
+                    )
                 return response
         except httpx.TransportError:
-            if attempt == 2:
+            if attempt == last:
                 raise
-        await asyncio.sleep(0.2 * (2**attempt))
+        await asyncio.sleep(0.5 * (2**attempt))
     raise AssertionError("unreachable")
 
 
@@ -91,20 +151,36 @@ class CaptureClient:
         self.url = self.config.capture.url
 
     async def create(self, attempt: Attempt) -> SessionHandle:
+        rollout = platform_rollout_id(attempt.attempt_id)
         response = await request(
-            self.client, "POST", f"{self.url}/sessions", headers=self.headers, body=attempt.model_dump(mode="json")
+            self.client,
+            "POST",
+            f"{self.url}/sessions",
+            headers=self.headers | affinity_headers(rollout),
+            body=attempt.model_dump(mode="json"),
         )
         handle = SessionHandle.model_validate_json(response.content)
-        expected = f"{self.url}/rollouts/{attempt.attempt_id}-rollout-0/v1"
-        if handle.request_sha256 != digest(attempt) or handle.base_url != expected:
+        expected = f"{self.url}/rollouts/{rollout}/v1"
+        if handle.request_sha256 != digest(attempt) or handle.rollout_id != rollout or handle.base_url != expected:
             raise ValueError("Session service returned a mismatched binding")
         return handle
+
+    async def serving_contract(self, affinity: str) -> ServingContract:
+        """What the replica this affinity key routes to was deployed with."""
+        response = await request(
+            self.client, "GET", f"{self.url}/capture/contract", headers=self.headers | affinity_headers(affinity)
+        )
+        return ServingContract.model_validate_json(response.content)
 
     def _session(self, handle: SessionHandle) -> str:
         return f"{self.url}/sessions/{handle.session_id}"
 
+    def _headers(self, handle: SessionHandle) -> dict[str, str]:
+        # The replica that holds the session; see contracts.AFFINITY_HEADER.
+        return self.headers | affinity_headers(handle.rollout_id)
+
     async def collect(self, handle: SessionHandle, attempt: Attempt) -> tuple[CaptureReceipt, bytes]:
-        response = await request(self.client, "POST", f"{self._session(handle)}/seal", headers=self.headers)
+        response = await request(self.client, "POST", f"{self._session(handle)}/seal", headers=self._headers(handle))
         receipt = CaptureReceipt.model_validate_json(response.content)
         if (
             receipt.session_id != handle.session_id
@@ -112,13 +188,15 @@ class CaptureClient:
             or receipt.policy != attempt.policy
         ):
             raise ValueError("Sealed capture provenance differs from the attempt")
-        payload = (await request(self.client, "GET", f"{self._session(handle)}/samples", headers=self.headers)).content
+        payload = (
+            await request(self.client, "GET", f"{self._session(handle)}/samples", headers=self._headers(handle))
+        ).content
         if hashlib.sha256(payload).hexdigest() != receipt.payload_sha256:
             raise ValueError("Sealed capture payload checksum mismatch")
         return receipt, payload
 
     async def release(self, handle: SessionHandle) -> None:
-        await request(self.client, "DELETE", self._session(handle), headers=self.headers)
+        await request(self.client, "DELETE", self._session(handle), headers=self._headers(handle))
 
 
 class ServingPoolClient:
@@ -162,6 +240,21 @@ class PlatformClient:
     async def _rpc(self, name: str, body: object) -> httpx.Response:
         return await request(self.client, "POST", f"{self.url}/{name}", headers=self.headers, body=body)
 
+    async def _read_through_outage(self, name: str, body: object) -> httpx.Response:
+        """A status read that rides out a platform outage of up to STATUS_OUTAGE_SECONDS.
+
+        Giving up on the first failed read would drop the rollout's whole group while the
+        rollout itself kept running.
+        """
+        deadline = time.monotonic() + STATUS_OUTAGE_SECONDS
+        while True:
+            try:
+                return await self._rpc(name, body)
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if not transient(exc) or time.monotonic() >= deadline:
+                    raise
+            await asyncio.sleep(self.config.poll_interval_seconds)
+
     async def preflight(self) -> None:
         """Free check before the first paid run: the pinned tasks are still project members."""
         if self._membership_checked:
@@ -184,10 +277,13 @@ class PlatformClient:
 
         The run ID is the attempt ID: retries are idempotent, and it is the key the
         registry puts in the capture rollout route. Routing to capture is the
-        platform route's endpoint name; no credential or session URL is sent.
+        platform route's endpoint name; no credential or session URL is sent. The
+        sandbox the rollout runs in is the run config's ``rollout_sandbox``.
         """
         route = self.config.platform_route
+        deployment = SANDBOX_DEPLOYMENT[self.config.rollout_sandbox]
         return {
+            **({} if deployment is None else {"deploymentConfig": deployment}),
             "runId": attempt.attempt_id,
             "environmentId": attempt.task.environment_id,
             "imageId": attempt.task.image_id,
@@ -201,7 +297,8 @@ class PlatformClient:
                     {
                         "agentType": attempt.harness.agent_type,
                         "agentModel": route.model,
-                        "endpointName": route.endpoint_name,
+                        # Unset: the platform routes by the model's default endpoint.
+                        **({"endpointName": route.endpoint_name} if route.endpoint_name is not None else {}),
                         "agentTimeoutSec": attempt.harness.timeout_seconds,
                         "reasoningEffort": f"AGENT_REASONING_EFFORT_{self.config.model_protocol.reasoning_effort.upper()}",
                     }
@@ -227,13 +324,13 @@ class PlatformClient:
             raise ValueError("Attempt is outside the authorized run")
         await self.preflight()
         response = await self._rpc("CreateEnvironmentRun", self.run_request(attempt))
-        created = CreatedRun.model_validate_json(response.content)
+        created = _platform_reply(CreatedRun, response)
         if created.run_id != attempt.attempt_id or created.instances_started not in (0, 1):
             raise IneligibleAttempt("Platform did not acknowledge the exact single-rollout request")
         deadline = time.monotonic() + attempt.harness.timeout_seconds + self.config.request_timeout_seconds
         while time.monotonic() < deadline:
-            reply = Containers.model_validate_json(
-                (await self._rpc("GetEnvironmentRunContainers", {"runId": created.run_id})).content
+            reply = _platform_reply(
+                Containers, await self._read_through_outage("GetEnvironmentRunContainers", {"runId": created.run_id})
             )
             if reply.run_id != created.run_id or len(reply.containers) > 1:
                 raise IneligibleAttempt("Platform returned a different run or multiple rollouts")
@@ -246,13 +343,17 @@ class PlatformClient:
                     "ROLLOUT_CONTAINER_STATUS_RUNNING",
                     "ROLLOUT_CONTAINER_STATUS_LAUNCHING",
                 }:
+                    if container.status == "ROLLOUT_CONTAINER_STATUS_ERROR" and (container.error or "").startswith(
+                        LAUNCH_FAILED_PREFIX
+                    ):
+                        raise LaunchFailed(f"Platform could not launch the rollout: {container.error}")
                     raise IneligibleAttempt(f"Platform rollout is ineligible: {container.status}")
             await asyncio.sleep(self.config.poll_interval_seconds)
         raise IneligibleAttempt("Platform rollout exceeded its declared deadline")
 
     async def _grade(self, attempt: Attempt, container: Container) -> Grade:
-        summary = Summary.model_validate_json(
-            (await self._rpc("GetRunSummary", {"runId": attempt.attempt_id})).content
+        summary = _platform_reply(
+            Summary, await self._read_through_outage("GetRunSummary", {"runId": attempt.attempt_id})
         )
         if (summary.run_id, summary.image_id, summary.source_commit_sha) != (
             attempt.attempt_id,

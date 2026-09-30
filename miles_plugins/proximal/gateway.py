@@ -6,6 +6,7 @@ requests pin their slot, and an idle LRU entry can be evicted and reloaded later
 
 import asyncio
 import hmac
+import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -54,6 +55,17 @@ class ReplicaGateway:
         reply.raise_for_status()
         if reply.json().get("model_path") != self.config.engine_model_path:
             raise ValueError("SGLang loaded a different base model path")
+
+    async def prepare(self, body: PreparePolicy) -> PolicyEvidence:
+        """Load and verify a version on this replica; capture uses it in-process too."""
+        if body.base_model != self.config.replica.base_model:
+            raise HTTPException(409, "Requested base differs from replica")
+        async with self._admit(body.snapshot) as adapter:
+            return PolicyEvidence(
+                snapshot=adapter.snapshot,
+                base_model=self.config.replica.base_model,
+                request_model=adapter.request_model,
+            )
 
     def _authorize(self, request: Request) -> None:
         if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {self._key}"):
@@ -131,14 +143,7 @@ class ReplicaGateway:
         @self.app.post("/policies/prepare")
         async def prepare(body: PreparePolicy, request: Request) -> PolicyEvidence:
             self._authorize(request)
-            if body.base_model != self.config.replica.base_model:
-                raise HTTPException(409, "Requested base differs from replica")
-            async with self._admit(body.snapshot) as adapter:
-                return PolicyEvidence(
-                    snapshot=adapter.snapshot,
-                    base_model=self.config.replica.base_model,
-                    request_model=adapter.request_model,
-                )
+            return await self.prepare(body)
 
         @self.app.post("/v1/chat/completions")
         async def chat(request: Request) -> Response:
@@ -149,12 +154,15 @@ class ReplicaGateway:
             body = await request.json()
             if not isinstance(body, dict) or body.get("stream") is not False or "lora_path" in body:
                 raise HTTPException(422, "Gateway accepts captured non-streaming chat only")
+            started = time.perf_counter()
             async with self._admit(reference) as adapter:
+                admitted = time.perf_counter()
                 if body.get("model") != adapter.request_model:
                     raise HTTPException(409, "Request model does not name the verified adapter")
                 response = await self.client.post(
                     f"{self.config.replica.backend_url}/v1/chat/completions", json=body, follow_redirects=False
                 )
+                done = time.perf_counter()
                 return Response(
                     response.content,
                     status_code=response.status_code,
@@ -162,5 +170,9 @@ class ReplicaGateway:
                     headers={
                         "X-Proximal-Policy-Sha256": reference.sha256,
                         "X-Proximal-Base-Revision": self.config.replica.base_model.revision,
+                        # Where the gateway's time went: adapter admission, then SGLang.
+                        "Server-Timing": (
+                            f"admit;dur={(admitted - started) * 1000:.1f}, upstream;dur={(done - admitted) * 1000:.1f}"
+                        ),
                     },
                 )

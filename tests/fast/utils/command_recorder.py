@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import miles.utils.external_utils.command_utils as command_utils
 
 
@@ -18,5 +20,8 @@ def record_commands(monkeypatch) -> list[str]:
     monkeypatch.setattr(command_utils, "exec_command_cpu", fake_exec_command)
     monkeypatch.setattr(command_utils, "exec_command_gpu", fake_exec_command)
     monkeypatch.setattr(command_utils, "exec_command_multi_node", fake_exec_command_multi_node)
+    # Conversion takes a filesystem lock before reaching the command helpers.
+    # Recording a launcher must not create checkpoint directories on the host.
+    monkeypatch.setattr(command_utils, "_exclusive_path_lock", lambda _: nullcontext())
 
     return commands
