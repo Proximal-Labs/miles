@@ -2164,6 +2164,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
             )
             parser.add_argument(
+                "--profile-light",
+                action="store_true",
+                default=False,
+                help=(
+                    "Run the PyTorch profiler without Python stacks or memory tracking, which add most of "
+                    "its CPU overhead and so widen gaps between kernels; kernel times and shapes are kept."
+                ),
+            )
+            parser.add_argument(
                 "--memory-recorder",
                 type=str,
                 choices=["torch", "memray"],
