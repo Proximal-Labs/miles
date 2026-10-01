@@ -30,7 +30,9 @@ from miles_plugins.proximal.e2e.batch_sweep_artifacts import finalize_step, publ
 from miles_plugins.proximal.e2e.batch_sweep_inputs import (
     SweepPhase,
     SweepPlan,
+    check_sweep_deployment,
     phase_command,
+    resolve_sweep_plan,
     validate_phase_args,
     validate_source,
 )
@@ -44,6 +46,8 @@ from miles_plugins.proximal.serving_app import RUN
 from miles_plugins.proximal.state_artifacts import StateFile, describe
 from miles_plugins.proximal.state_checkpoints import NativeCompletion
 from miles_plugins.proximal.storage import write_atomic
+
+check_sweep_deployment(node.TRAINING)
 
 VOLUME = node.state_volume
 MOUNT = Path("/snapshot")
@@ -108,13 +112,19 @@ def _check_commands(plan: SweepPlan, bundle: Path, *, hardware: bool) -> None:
 )
 def preflight(plan_json: str) -> dict[str, object]:
     """Pinned-image argument and artifact validation before allocating any GPUs."""
-    plan = SweepPlan.model_validate_json(plan_json)
+    plan = resolve_sweep_plan(SweepPlan.model_validate_json(plan_json), node.TRAINING)
     bundle, root = _paths(plan)
     if root.exists():
         raise FileExistsError("Choose a new experiment ID; implicit sweep resume is forbidden")
     batch = validate_source(bundle, plan, RUN)
     _check_commands(plan, bundle, hardware=False)
-    return {"samples": batch.num_samples, "batch_sha256": plan.batch_sha256, "phases": len(plan.phases)}
+    return {
+        "samples": batch.num_samples,
+        "batch_sha256": plan.batch_sha256,
+        "phases": len(plan.phases),
+        "gpu": node.TRAINING.gpu,
+        "recipe": plan.recipe,
+    }
 
 
 def _publish_steps(
@@ -322,7 +332,7 @@ def _hold_failed_cluster(
 @app.function(
     image=cluster.image,
     volumes={**cluster.VOLUMES, str(MOUNT): VOLUME},
-    gpu="B300:8",
+    gpu=node.TRAINING.gpu,
     cpu=32,
     memory=1024 * 1024,
     timeout=8 * 3600,
@@ -333,7 +343,7 @@ def sweep(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
     source = require_authorization(authorization)
     if source != RUN:
         raise ValueError("Sweep authorization differs from the configured source")
-    plan = SweepPlan.model_validate_json(plan_json)
+    plan = resolve_sweep_plan(SweepPlan.model_validate_json(plan_json), node.TRAINING)
     info = modal.experimental.get_cluster_info()
     rank, ips = info.rank, list(info.container_ipv4_ips)
     if plan.nodes != len(ips):
@@ -355,7 +365,14 @@ def sweep(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
             write_atomic(root / "plan.json", plan.model_dump_json().encode())
             write_atomic(
                 root / "cluster.json",
-                json.dumps({"cluster_id": info.cluster_id, "ips": ips, "coordination_dict": store.object_id}).encode(),
+                json.dumps(
+                    {
+                        "cluster_id": info.cluster_id,
+                        "ips": ips,
+                        "coordination_dict": store.object_id,
+                        "gpu": node.TRAINING.gpu,
+                    }
+                ).encode(),
             )
             for attempt in range(plan.phase_attempts):
                 write_atomic(root / f"attempt-{attempt}" / "plan.json", plan.model_dump_json().encode())
@@ -393,6 +410,7 @@ def sweep(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
         )
         report = {
             "cluster_id": info.cluster_id,
+            "gpu": node.TRAINING.gpu,
             "batch_sha256": plan.batch_sha256,
             "phases": results,
             "peak_memory_mib": {"0": sampler.peaks, **{str(r): state[f"memory-{r}"] for r in range(1, plan.nodes)}},
@@ -422,9 +440,13 @@ def main(
 ) -> None:
     if sys.version_info[:2] != (3, 12):
         raise RuntimeError("Use Python 3.12, matching the pinned image and Path serialization")
-    specification = SweepPlan.model_validate_json(Path(plan).read_bytes())
+    specification = resolve_sweep_plan(SweepPlan.model_validate_json(Path(plan).read_bytes()), node.TRAINING)
     if cluster.PROFILE != "qwen38" or specification.nodes != cluster.NODES:
         raise ValueError("Set SIZING_PROFILE=qwen38 and SIZING_NODES to the plan's node count")
+    print(
+        json.dumps({"gpu": node.TRAINING.gpu, "resolved_plan": specification.model_dump(mode="json")}, indent=2),
+        flush=True,
+    )
     validate_source(Path(local_bundle), specification, RUN)
     for phase in specification.phases:
         # Resume bytes and topology are validated in the exact CPU image before GPUs.

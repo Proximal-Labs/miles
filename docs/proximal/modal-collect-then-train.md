@@ -304,8 +304,11 @@ worker retries and allocation retention. Its
 [`SweepPlan`](../../miles_plugins/proximal/e2e/batch_sweep_inputs.py) declares the
 batch hash, recipe, targets and initialization for each phase. It is specifically
 a two-update-per-configuration comparison, with an optional committed first-update
-resume; it is not a generic one-step allocator. The
-[architecture](architecture.md) defines its recovery and lifetime rules.
+resume; it is not a generic one-step allocator. Select `B300:8` or `B200:8` in
+`training.json.gpu`. The B200 Qwen3.8 sweep resolves and records its tested
+TP4/CP2 memory recipe before validation; see the
+[hardware settings and 1024-sample accumulation example](modal-training-clusters.md#build-and-review-the-sweep-plan).
+The [architecture](architecture.md) defines its recovery and lifetime rules.
 
 The workflow is complete when another process can validate the retained input
 batch, identify the exact training recipe and policy, and load the output needed
