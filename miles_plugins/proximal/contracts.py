@@ -458,6 +458,9 @@ ROLLOUT_SUFFIX = "-rollout-0"
 # client). The value is the SHA-256 of the platform rollout ID, on both sides.
 AFFINITY_HEADER = "Modal-Session-Id"
 
+# Set on capture's refusal of a new session by a replica at its session cap.
+REPLICA_FULL_HEADER = "X-Miles-Replica-Full"
+
 
 def platform_rollout_id(attempt_id: str) -> str:
     """The platform rollout ID of an attempt's single-instance run."""

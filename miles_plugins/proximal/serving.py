@@ -80,7 +80,10 @@ class ServingDeployment(Contract):
     routing_region: Nonempty
     min_replicas: Annotated[int, Field(ge=0)]
     max_replicas: Positive
+    # Modal's target for concurrent requests per replica; it does not bound rollouts per replica.
     target_concurrency: Positive
+    # Hard cap on live rollouts per replica; null leaves the run's max_in_flight_samples.
+    max_sessions_per_replica: Positive | None = None
     scaledown_window_seconds: Positive
     startup_timeout_seconds: Positive
     # Base weights staged on an existing Volume at the tokenizer path's basename.
@@ -149,6 +152,15 @@ def sglang_patch_command(patch: str, root: str) -> str:
         "then echo 'SGLang image already carries the patch'; "
         f"else patch --forward --fuzz=0 -p1 -d {root} < {patch}; fi"
     )
+
+
+def check_session_capacity(run: RunConfig, deployment: ServingDeployment) -> None:
+    cap = deployment.max_sessions_per_replica
+    if cap is not None and deployment.min_replicas * cap < run.max_in_flight_samples:
+        raise ValueError(
+            f"{deployment.min_replicas} replicas x max_sessions_per_replica {cap} "
+            f"< max_in_flight_samples {run.max_in_flight_samples}"
+        )
 
 
 def engine_model_path(run: RunConfig, deployment: ServingDeployment) -> str:

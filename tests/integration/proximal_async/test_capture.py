@@ -16,7 +16,7 @@ import pytest
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.utils.types import Sample
 from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
-from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
+from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient, ReplicaFull
 from miles_plugins.proximal.contracts import AcceptedAttempt, serving_contract
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
@@ -519,6 +519,39 @@ async def test_sessions_abandoned_by_their_trainer_expire(config, authorization,
             with pytest.raises(httpx.HTTPStatusError) as lost:
                 await client.collect(abandoned, attempt)
             assert lost.value.response.status_code == 404
+
+
+async def test_a_full_replica_refuses_a_new_session_once(config, authorization, policy, attempt, tokenizer, tmp_path):
+    engine = scripted_engine(config, policy, tokenizer, [])
+
+    async def admits(candidate):
+        return True
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as gateway:
+        server = CaptureServer(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint(client=gateway, url="http://replica-gateway", headers={}),
+            policy_known=admits,
+            root=tmp_path / "capture",
+            max_sessions=1,
+        )
+        posts = []
+
+        async def app(scope, receive, send):
+            posts.append(scope["path"])
+            await server.app(scope, receive, send)
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as http:
+            client = CaptureClient(authorization, http)
+            first = await client.create(attempt)
+            second = attempt.model_copy(update={"attempt_id": "attempt-2"})
+            posts.clear()
+            with pytest.raises(ReplicaFull):
+                await client.create(second)
+            assert posts == ["/sessions"]  # Not retried: the same session ID routes to the same replica.
+            await client.release(first)
+            await client.create(second)
 
 
 def test_waiting_for_finished_releases_does_not_spin_the_event_loop():

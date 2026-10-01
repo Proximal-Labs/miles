@@ -15,6 +15,7 @@ from pydantic.alias_generators import to_camel
 
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization, secret_env
 from miles_plugins.proximal.contracts import (
+    REPLICA_FULL_HEADER,
     Attempt,
     CaptureReceipt,
     Grade,
@@ -99,6 +100,11 @@ class LaunchFailed(IneligibleAttempt):
     under a new attempt identity cannot bias training (see contracts.LaunchRetry)."""
 
 
+class ReplicaFull(IneligibleAttempt):
+    """The replica this attempt's session ID routes to is at its session cap. Nothing ran:
+    the session precedes the platform run, so a new attempt identity may be placed again."""
+
+
 # How the platform reports a rollout it could not start (its container's ``error``).
 LAUNCH_FAILED_PREFIX = "Launch failed:"
 
@@ -126,7 +132,9 @@ async def request(
     for attempt in range(REQUEST_ATTEMPTS):
         try:
             response = await client.request(method, url, headers=headers, json=body, follow_redirects=False)
-            if response.status_code not in TRANSIENT_STATUSES or attempt == last:
+            # Retrying a full replica's refusal would route to the same replica.
+            final = response.status_code not in TRANSIENT_STATUSES or REPLICA_FULL_HEADER in response.headers
+            if final or attempt == last:
                 if response.is_error:
                     # Keep the service's stated reason (our capture's or the platform's
                     # error text); never headers.
@@ -152,13 +160,18 @@ class CaptureClient:
 
     async def create(self, attempt: Attempt) -> SessionHandle:
         rollout = platform_rollout_id(attempt.attempt_id)
-        response = await request(
-            self.client,
-            "POST",
-            f"{self.url}/sessions",
-            headers=self.headers | affinity_headers(rollout),
-            body=attempt.model_dump(mode="json"),
-        )
+        try:
+            response = await request(
+                self.client,
+                "POST",
+                f"{self.url}/sessions",
+                headers=self.headers | affinity_headers(rollout),
+                body=attempt.model_dump(mode="json"),
+            )
+        except httpx.HTTPStatusError as exc:
+            if REPLICA_FULL_HEADER in exc.response.headers:
+                raise ReplicaFull(str(exc)) from exc
+            raise
         handle = SessionHandle.model_validate_json(response.content)
         expected = f"{self.url}/rollouts/{rollout}/v1"
         if handle.request_sha256 != digest(attempt) or handle.rollout_id != rollout or handle.base_url != expected:

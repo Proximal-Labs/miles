@@ -18,7 +18,7 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS, decode_samples_
 from miles.utils.types import Sample
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.buffer import PlatformDataBuffer, validate_sample
-from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, LaunchFailed, PlatformClient
+from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, LaunchFailed, PlatformClient, ReplicaFull
 from miles_plugins.proximal.contracts import (
     AcceptedAttempt,
     Attempt,
@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 # Releasing a capture session only frees the replica's memory: it runs in the
 # background, so a rollout's sample reaches training without waiting for it.
 RELEASE_TIMEOUT_SECONDS = 60
+# A rollout a full replica refused is placed again under a new identity. Near a full
+# pool most tries land on full replicas, so the budget spans rollouts elsewhere finishing.
+REPLICA_FULL_ATTEMPTS = 64
+REPLICA_FULL_BACKOFF_SECONDS = 1.0
+REPLICA_FULL_MAX_BACKOFF_SECONDS = 30.0
 _releases: set["asyncio.Task[None]"] = set()
 _HandoffResult = TypeVar("_HandoffResult")
 
@@ -96,12 +101,14 @@ async def _archive_failure(
     store: RolloutStore | None,
 ) -> CaptureReceipt | None:
     # These are logical API lifetimes. Platform alone owns physical resources.
-    try:
-        await asyncio.wait_for(platform.cancel(attempt), timeout=30)
-    except Exception as cancel_error:
-        logger.error(
-            "Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(cancel_error).__name__
-        )
+    # A refused session precedes the platform run, so there is no run to cancel.
+    if not isinstance(error, ReplicaFull):
+        try:
+            await asyncio.wait_for(platform.cancel(attempt), timeout=30)
+        except Exception as cancel_error:
+            logger.error(
+                "Logical cancellation failed for attempt %s (%s)", attempt.attempt_id, type(cancel_error).__name__
+            )
     receipt = None
     payload_path = directory / "request.json"
     if handle is not None:
@@ -201,8 +208,8 @@ async def execute_attempt(
             )
             cancelled = await _finish_handoff(archive)
             # A durable failure record alone does not preserve unread capture data.
-            # LaunchFailed is the platform's explicit proof that no rollout ran.
-            complete = archive.result() is not None or isinstance(exc, LaunchFailed)
+            # LaunchFailed and ReplicaFull are proof that no rollout ran.
+            complete = archive.result() is not None or isinstance(exc, (LaunchFailed, ReplicaFull))
             if cancelled is not None:
                 raise cancelled from exc
         raise
@@ -226,26 +233,35 @@ async def execute_with_launch_retry(
     rng: random.Random | None = None,
     store: RolloutStore | None = None,
 ) -> Sample:
-    """``execute_attempt``, relaunching under a new attempt identity when the platform could
-    not start the rollout (LaunchFailed). Each launch is its own platform run and capture
+    """``execute_attempt``, relaunching under a new attempt identity when nothing ran: the
+    platform could not start the rollout (LaunchFailed) or its replica was full
+    (ReplicaFull, with its own budget). Each launch is its own platform run and capture
     session; the group, sample, task and policy stay the same."""
     rng = rng or random.Random()
     await asyncio.sleep(rng.uniform(0, retry.stagger_seconds))
-    for launch in range(retry.attempts):
+    launches = refusals = 0
+    while True:
         try:
             return await execute_attempt(
                 attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root, store=store
             )
-        except LaunchFailed as exc:
-            if launch == retry.attempts - 1:
+        except ReplicaFull:
+            refusals += 1
+            if refusals == REPLICA_FULL_ATTEMPTS:
                 raise
-            delay = rng.uniform(0, min(retry.max_backoff_seconds, retry.backoff_seconds * 2**launch))
-            logger.warning(
-                "Launch %d of attempt %s failed (%s); relaunching in %.0fs", launch + 1, attempt.attempt_id, exc, delay
+            delay = rng.uniform(
+                0, min(REPLICA_FULL_MAX_BACKOFF_SECONDS, REPLICA_FULL_BACKOFF_SECONDS * 2 ** min(refusals - 1, 16))
             )
-            await asyncio.sleep(delay)
-            attempt = Attempt.model_validate({**attempt.model_dump(), "attempt_id": uuid.uuid4().hex})
-    raise AssertionError("unreachable")
+        except LaunchFailed as exc:
+            launches += 1
+            if launches == retry.attempts:
+                raise
+            delay = rng.uniform(0, min(retry.max_backoff_seconds, retry.backoff_seconds * 2 ** (launches - 1)))
+            logger.warning(
+                "Launch %d of attempt %s failed (%s); relaunching in %.0fs", launches, attempt.attempt_id, exc, delay
+            )
+        await asyncio.sleep(delay)
+        attempt = Attempt.model_validate({**attempt.model_dump(), "attempt_id": uuid.uuid4().hex})
 
 
 def _sample_index(sample: Sample) -> int:

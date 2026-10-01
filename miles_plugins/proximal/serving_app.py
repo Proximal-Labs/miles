@@ -40,6 +40,7 @@ from miles_plugins.proximal.serving import (
     SGLANG_PATCH,
     SGLANG_ROOT,
     ServingDeployment,
+    check_session_capacity,
     engine_argv,
     gateway_config,
     sglang_patch_command,
@@ -67,6 +68,7 @@ RUN_JSON = _read(_RUN_PATH)
 SERVING_JSON = _read(_SERVING_PATH)
 RUN = RunConfig.model_validate_json(RUN_JSON)
 DEPLOYMENT = ServingDeployment.model_validate_json(SERVING_JSON)
+check_session_capacity(RUN, DEPLOYMENT)
 # Resolved at deploy time, so the container need not import SGLang to read it.
 _engine_argv_path = os.environ.get(_ENGINE_ARGV_PATH)
 ENGINE_ARGV_JSON = (
@@ -208,6 +210,11 @@ class Replica:
                 str(GATEWAY_PORT),
                 "--yes-load",
                 "--yes-capture",
+                *(
+                    []
+                    if DEPLOYMENT.max_sessions_per_replica is None
+                    else ["--max-sessions", str(DEPLOYMENT.max_sessions_per_replica)]
+                ),
             ],
             start_new_session=True,
             preexec_fn=lambda: os.nice(FRONT_NICENESS),

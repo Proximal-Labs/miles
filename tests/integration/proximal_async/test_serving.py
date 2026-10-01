@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles_plugins.proximal.serving import ServingDeployment, engine_argv, gateway_config
+from miles_plugins.proximal.serving import ServingDeployment, check_session_capacity, engine_argv, gateway_config
 
 
 def deployment(**overrides):
@@ -129,6 +129,15 @@ def test_modal_app_builds_offline_from_both_configs(config, tmp_path, monkeypatc
     sys.modules.pop("miles_plugins.proximal.serving_app", None)
     with pytest.raises(ValueError, match="non-operational"):
         importlib.import_module("miles_plugins.proximal.serving_app")
+
+
+def test_session_caps_must_hold_the_runs_in_flight_rollouts(config):
+    # 4 replicas; config.max_in_flight_samples is 4.
+    check_session_capacity(config, deployment(max_sessions_per_replica=1))
+    with pytest.raises(ValueError, match="4 replicas x max_sessions_per_replica 1 < max_in_flight_samples 5"):
+        check_session_capacity(
+            config.model_copy(update={"max_in_flight_samples": 5}), deployment(max_sessions_per_replica=1)
+        )
 
 
 def test_stage_a_example_configs_are_valid():
