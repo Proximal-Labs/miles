@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from safetensors.torch import load_file, save_file
 
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.contracts import RunConfig, sampling_args
@@ -85,27 +86,28 @@ def test_incompatible_recipe_is_refused_before_resources(source, plan, flag):
         phase_command(invalid, plan.phases[0], source, bundle=Path("/batch"), save=Path("/output"))
 
 
-def write_shards(local, source, ranks):
+def write_shards(local, source, ranks, export="adapter_model.safetensors"):
+    """A node's checkpoint directory as the trainer leaves it: native shards, and on rank 0 the PEFT export."""
     local.mkdir(parents=True)
     for rank in ranks:
         torch.save({"weight": torch.ones(2)}, local / f"adapter_megatron_rank{rank}.pt")
         torch.save({"optimizer": {"step": 1}}, local / f"training_state_rank{rank}.pt")
     if 0 in ranks:
         r = source.research.lora.rank
+        modules = [f"model.language_model.layers.0.mlp.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")]
         weights = {
-            f"model.layers.0.mlp.{leaf}.lora_{side}.weight": torch.ones((r, 4) if side == "A" else (4, r))
-            for leaf in ("gate_proj", "up_proj", "down_proj")
+            f"base_model.model.{module}.lora_{side}.weight": torch.ones((r, 4) if side == "A" else (4, r))
+            for module in modules
             for side in ("A", "B")
         }
-        torch.save(weights, local / "adapter_model.bin")
+        if export.endswith(".safetensors"):
+            save_file(weights, str(local / export))
+        else:
+            torch.save(weights, local / export)
+        # SnapshotPublisher.write_adapter lists the adapted module paths, not serving leaf names.
         (local / "adapter_config.json").write_text(
             json.dumps(
-                {
-                    "peft_type": "LORA",
-                    "r": r,
-                    "lora_alpha": source.research.lora.alpha,
-                    "target_modules": ["gate_proj", "up_proj", "down_proj"],
-                }
+                {"peft_type": "LORA", "r": r, "lora_alpha": source.research.lora.alpha, "target_modules": modules}
             )
         )
 
@@ -122,11 +124,12 @@ def native():
     )
 
 
-def test_every_native_shard_and_eval_export_commit_before_completion(source, plan, tmp_path):
+@pytest.mark.parametrize("export", ["adapter_model.safetensors", "adapter_model.bin"])
+def test_every_native_shard_and_eval_export_commit_before_completion(source, plan, tmp_path, export):
     authorization = authorize_run(source, yes_rollouts=True, yes_publish=True)
     local, root = tmp_path / "local", tmp_path / "volume"
     destination = root / "mlp/checkpoints/iter_0000000/adapter"
-    write_shards(local, source, range(8))
+    write_shards(local, source, range(8), export)
     events = []
 
     def commit():
@@ -149,8 +152,35 @@ def test_every_native_shard_and_eval_export_commit_before_completion(source, pla
     assert events == [(False, False), (True, False), (True, True)]
     snapshot = read_snapshot(root / result["eval_path"], SnapshotReference.model_validate(result["snapshot"]))
     assert snapshot.manifest.metadata.checkpoint_iteration == 0
-    assert len(snapshot.manifest.files) == 2
     assert len(list(destination.glob("training_state_rank*.pt"))) == 8
+    # The evaluation snapshot is the form replicas serve, whatever the trainer's export looked like.
+    assert {file.name for file in snapshot.manifest.files} == {"adapter_config.json", "adapter_model.safetensors"}
+    served = json.loads((snapshot.directory / "adapter_config.json").read_text())
+    assert served["target_modules"] == ["gate_proj", "up_proj", "down_proj"]
+    assert served["base_model_name_or_path"] == source.base_model.name
+    assert len(load_file(str(snapshot.directory / "adapter_model.safetensors"))) == 6
+    assert export in {file["path"] for file in result["files"]}
+
+
+def test_update_without_a_serving_export_cannot_claim_durability(source, plan, tmp_path):
+    authorization = authorize_run(source, yes_rollouts=True, yes_publish=True)
+    local, root = tmp_path / "local", tmp_path / "volume"
+    destination = root / "mlp/checkpoints/iter_0000000/adapter"
+    write_shards(local, source, range(8))
+    (local / "adapter_model.safetensors").unlink()
+    files = publish_node_files(authorization, local=local, destination=destination, commit=lambda: None)
+    with pytest.raises(ValueError, match="adapter_model export"):
+        finalize_step(
+            authorization,
+            plan=plan,
+            phase=plan.phases[0],
+            step=0,
+            native=native(),
+            receipts=[files],
+            root=root,
+            commit=lambda: None,
+        )
+    assert not (root / "mlp/step-1.json").exists()
 
 
 def test_incomplete_or_corrupted_shards_cannot_claim_durability(source, plan, tmp_path):
