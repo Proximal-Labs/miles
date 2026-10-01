@@ -2,8 +2,6 @@
 # Parallelism from the Miles Qwen3.8 recipe (1 node x 8 H200, TP 4). LoRA, sampling and group
 # size come from the run config; LoRA targets every linear layer of the text decoder (README).
 # 8 tasks x 4 samples = 32 rollouts per step, one optimizer update per step.
-# --skip-actor-forward-only drops the separate old-policy log-prob pass (#37): with one optimizer
-# update per step, no KL and no dropout, the training forward computes the same log-probs.
 --actor-num-nodes 1
 --actor-num-gpus-per-node 8
 --calculate-per-token-loss
