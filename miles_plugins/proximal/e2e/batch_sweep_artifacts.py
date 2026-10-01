@@ -1,12 +1,14 @@
 """Commit native shards and evaluation adapters at each completed sweep update."""
 
 import json
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Annotated, Literal
 
 import torch
 from pydantic import Field
+from safetensors.torch import load_file
 
 from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import AuthorizedRun, require_authorization
@@ -24,6 +26,10 @@ from miles_plugins.proximal.snapshot import (
 from miles_plugins.proximal.state_artifacts import RelativePath, StateFile, copy_verified, describe, verify
 from miles_plugins.proximal.state_checkpoints import NativeCompletion
 from miles_plugins.proximal.storage import write_atomic
+from miles_plugins.proximal.weight_update import peft_config_json, write_adapter
+
+# The trainer exports safetensors; sweeps before the upstream merge kept adapter_model.bin.
+EXPORTS = ("adapter_model.safetensors", "adapter_model.bin")
 
 
 class SweepStep(Contract):
@@ -35,6 +41,15 @@ class SweepStep(Contract):
     files: tuple[StateFile, ...]
     snapshot: SnapshotReference
     eval_path: RelativePath
+
+
+def export_file(names: Iterable[str]) -> str:
+    """The one PEFT weight file among a checkpoint's file names."""
+    available = set(names)
+    found = [name for name in EXPORTS if name in available]
+    if len(found) != 1:
+        raise ValueError("Missing native/evaluation checkpoint files: need exactly one adapter_model export")
+    return found[0]
 
 
 def publish_node_files(
@@ -78,7 +93,7 @@ def finalize_step(
             if file.path in files and files[file.path] != file:
                 raise ValueError(f"Conflicting checkpoint writers for {file.path}")
             files[file.path] = file
-    required = {"adapter_config.json", "adapter_model.bin"}
+    required = {"adapter_config.json", export_file(files)}
     required.update(
         f"{prefix}{rank}.pt"
         for rank in range(native.world_size)
@@ -92,13 +107,15 @@ def finalize_step(
     config = json.loads((adapter / "adapter_config.json").read_text())
     targets = list(convert_target_modules_to_hf(list(phase.target_modules)))
     lora = source.research.lora
-    if (config.get("r"), config.get("lora_alpha"), sorted(config.get("target_modules", []))) != (
-        lora.rank,
-        lora.alpha,
-        sorted(targets),
-    ):
+    # The trainer lists every adapted module path; the tensor layout check below ties them to the phase's targets.
+    if (config.get("r"), config.get("lora_alpha")) != (lora.rank, lora.alpha):
         raise ValueError("Serving export differs from the phase's LoRA configuration")
-    tensors = torch.load(adapter / "adapter_model.bin", map_location="cpu", weights_only=True)
+    export = adapter / export_file(files)
+    tensors = (
+        load_file(str(export), device="cpu")
+        if export.suffix == ".safetensors"
+        else torch.load(export, map_location="cpu", weights_only=True)
+    )
     if (
         not isinstance(tensors, dict)
         or not tensors
@@ -114,13 +131,22 @@ def finalize_step(
     if problem:
         raise ValueError(problem)
     write_atomic(adapter / "native_checkpoint.json", native.model_dump_json().encode())
-    snapshot = prepare_snapshot(
-        adapter,
-        metadata=SnapshotMetadata(
-            run_id=f"{plan.experiment_id}-{phase.name}", checkpoint_iteration=step, base_model=source.base_model
-        ),
-        output_root=root / phase.name / "eval",
-    )
+    # Replicas serve the published form: the phase's serving targets and the pinned base model's name.
+    with tempfile.TemporaryDirectory(prefix="sweep-eval-") as staged:
+        write_adapter(
+            Path(staged),
+            tensors=tensors,
+            config_json=peft_config_json(
+                config | {"target_modules": targets}, rank=lora.rank, base_model_name=source.base_model.name
+            ),
+        )
+        snapshot = prepare_snapshot(
+            Path(staged),
+            metadata=SnapshotMetadata(
+                run_id=f"{plan.experiment_id}-{phase.name}", checkpoint_iteration=step, base_model=source.base_model
+            ),
+            output_root=root / phase.name / "eval",
+        )
     result: dict[str, object] = {
         "phase": phase.name,
         "update": step + 1,

@@ -47,6 +47,9 @@ def write_checkpoint_dir(
 
     write_error = None
     try:
+        # Rank 0 prepared only its own filesystem: a rank whose node keeps the checkpoint on
+        # local disk needs the directory too. On shared storage it already exists.
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
         write_shards(checkpoint_dir)
     except Exception as exc:
         write_error = exc
