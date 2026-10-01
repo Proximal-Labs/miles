@@ -137,6 +137,13 @@ Review the resulting array against the intended experiment. In particular, a
 template's smaller token budget is not a historical production recipe. No LR or
 optimizer choice is implied by allocating 64 GPUs.
 
+The sweep runs `plan.recipe` as written, so a per-step optimization is active only if
+its flag is in the array. In particular, `--skip-actor-forward-only` drops the separate
+old-policy log-prob pass, which is redundant when each update is one optimizer step with
+no KL and no dropout ([#37](https://github.com/Proximal-Labs/miles/pull/37) measured
+20–23% of step time on 8 B300s). A recipe built from an argument file without the flag
+pays for that pass on every update.
+
 The following JSON is a **plan skeleton**, not a runnable recipe. Replace the
 hash/path/recipe and choose the target list deliberately. This example uses the
 full Qwen text-decoder targets; it excludes the MTP head.

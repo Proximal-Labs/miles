@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.contracts import RunConfig, sampling_args
@@ -92,20 +93,17 @@ def write_shards(local, source, ranks):
         torch.save({"optimizer": {"step": 1}}, local / f"training_state_rank{rank}.pt")
     if 0 in ranks:
         r = source.research.lora.rank
+        modules = [f"model.language_model.layers.0.mlp.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")]
         weights = {
-            f"model.layers.0.mlp.{leaf}.lora_{side}.weight": torch.ones((r, 4) if side == "A" else (4, r))
-            for leaf in ("gate_proj", "up_proj", "down_proj")
+            f"base_model.model.{module}.lora_{side}.weight": torch.ones((r, 4) if side == "A" else (4, r))
+            for module in modules
             for side in ("A", "B")
         }
-        torch.save(weights, local / "adapter_model.bin")
+        save_file(weights, str(local / "adapter_model.safetensors"))
+        # SnapshotPublisher.write_adapter lists the adapted module paths, not serving leaf names.
         (local / "adapter_config.json").write_text(
             json.dumps(
-                {
-                    "peft_type": "LORA",
-                    "r": r,
-                    "lora_alpha": source.research.lora.alpha,
-                    "target_modules": ["gate_proj", "up_proj", "down_proj"],
-                }
+                {"peft_type": "LORA", "r": r, "lora_alpha": source.research.lora.alpha, "target_modules": modules}
             )
         )
 
@@ -149,8 +147,11 @@ def test_every_native_shard_and_eval_export_commit_before_completion(source, pla
     assert events == [(False, False), (True, False), (True, True)]
     snapshot = read_snapshot(root / result["eval_path"], SnapshotReference.model_validate(result["snapshot"]))
     assert snapshot.manifest.metadata.checkpoint_iteration == 0
-    assert len(snapshot.manifest.files) == 2
     assert len(list(destination.glob("training_state_rank*.pt"))) == 8
+    assert {file.name for file in snapshot.manifest.files} == {"adapter_config.json", "adapter_model.safetensors"}
+    served = json.loads((snapshot.directory / "adapter_config.json").read_text())
+    assert served["target_modules"] == ["gate_proj", "up_proj", "down_proj"]
+    assert served["base_model_name_or_path"] == source.base_model.name
 
 
 def test_incomplete_or_corrupted_shards_cannot_claim_durability(source, plan, tmp_path):

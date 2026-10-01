@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from miles.backends.training_utils import checkpoint_io
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 
 
@@ -18,6 +19,25 @@ def test_directory_errors_propagate(error, tmp_path, monkeypatch):
     with pytest.raises(type(error), match=str(error)) as caught:
         write_checkpoint_dir(tmp_path / "checkpoint", lambda _: None)
     assert caught.value is error
+
+
+def test_rank_without_shared_storage_writes_its_shard(tmp_path, monkeypatch):
+    """A non-zero rank on another node's local disk never sees rank 0's mkdir."""
+    monkeypatch.setattr(checkpoint_io.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(checkpoint_io.dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(checkpoint_io.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(checkpoint_io.dist, "broadcast_object_list", lambda objects, src, group: None)
+    monkeypatch.setattr(checkpoint_io, "get_gloo_group", lambda: None)
+
+    def all_gather_object(errors, own_error, group):
+        errors[:] = [None, own_error]
+
+    monkeypatch.setattr(checkpoint_io.dist, "all_gather_object", all_gather_object)
+    checkpoint = tmp_path / "node-local" / "iter_0000000" / "adapter"
+
+    write_checkpoint_dir(checkpoint, lambda directory: (directory / "shard_rank1.pt").write_text("shard"))
+
+    assert (checkpoint / "shard_rank1.pt").read_text() == "shard"
 
 
 @pytest.mark.parametrize("crash_after_write", [True, False])

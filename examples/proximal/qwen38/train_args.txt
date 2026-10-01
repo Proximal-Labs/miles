@@ -19,6 +19,7 @@
 --recompute-granularity full
 --recompute-method uniform
 --recompute-num-layers 1
+--skip-actor-forward-only
 --advantage-estimator grpo
 --kl-loss-coef 0.00
 --kl-loss-type low_var_kl
