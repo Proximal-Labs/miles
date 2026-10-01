@@ -1,7 +1,9 @@
-"""CPU export of native Inkling-Small adapters for the TP8/PP2/EP8 recipe.
+"""CPU export of native Inkling-Small adapters using the saved launch topology.
 
 No frozen model weights or optimizer tensors are needed. Before using this on a
 run, compare an export with a serving snapshot produced by its training actors.
+Supports balanced pipeline stages, CP=ETP=1 and Megatron's tp-cp-ep-dp-pp
+rank order. TP and EP groups are selected independently from DP replica zero.
 """
 
 import json
@@ -13,6 +15,26 @@ import torch
 from safetensors import safe_open
 
 from miles_plugins.inkling_eval.export import _write_adapter
+from tools.inkling_checkpoint_recovery import checkpoint_complete
+
+
+def _topology(config, num_layers):
+    world = config['num_nodes'] * config['num_gpus_per_node']
+    tp = config['tensor_model_parallel_size']
+    pp = config['pipeline_model_parallel_size']
+    ep = config['expert_model_parallel_size']
+    if any(type(size) is not int or size <= 0 for size in (world, tp, pp, ep, num_layers)):
+        raise ValueError('Topology sizes and layer count must be positive integers')
+    if world % (tp * pp) or world % (ep * pp) or num_layers % pp:
+        raise ValueError('World size must divide into TP/EP groups and layers into balanced PP stages')
+    if (any(config.get(k) is not None for k in (
+            'decoder_first_pipeline_num_layers', 'decoder_last_pipeline_num_layers',
+            'virtual_pipeline_model_parallel_size'))
+            or config.get('context_parallel_size', 1) != 1
+            or config.get('expert_tensor_parallel_size', 1) != 1
+            or config.get('use_tp_pp_dp_mapping', False)):
+        raise ValueError('Offline export requires balanced PP, CP=ETP=1 and tp-cp-ep-dp-pp rank order')
+    return world, tp, pp, ep
 
 
 def _merge_parameter(name, shards, layer_offset, unpadded_vocab):
@@ -62,28 +84,28 @@ def _merge_parameter(name, shards, layer_offset, unpadded_vocab):
 def export_native_adapter(root, iteration, destination, *, reference=None):
     root = Path(root)
     config = json.loads((root / 'launch.json').read_text())
-    topology = tuple(config[k] for k in ('num_nodes', 'num_gpus_per_node', 'tensor_model_parallel_size',
-                                        'pipeline_model_parallel_size', 'expert_model_parallel_size'))
-    if topology != (2, 8, 8, 2, 8) or any(config.get(k) is not None for k in
-            ('decoder_first_pipeline_num_layers', 'decoder_last_pipeline_num_layers')):
-        raise ValueError('Offline export currently supports only balanced TP8/PP2/EP8')
-    from tools.inkling_checkpoint_recovery import checkpoint_complete
-
-    if not checkpoint_complete(root, iteration, 16):
-        raise ValueError(f'Checkpoint {iteration} is incomplete')
     base = Path(config['model_dir']) / 'Inkling-Small'
     hf = json.loads((base / 'config.json').read_text())
     hf = hf.get('text_config') or hf
+    world, tp, pp, ep = _topology(config, hf['num_hidden_layers'])
+    if not checkpoint_complete(root, iteration, world):
+        raise ValueError(f'Checkpoint {iteration} is incomplete')
     vocab = hf.get('unpadded_vocab_size') or hf['vocab_size']
+    layers_per_stage = hf['num_hidden_layers'] // pp
+    ranks_per_stage = world // pp
     tensors = {}
-    for stage in range(2):
+    for stage in range(pp):
+        # PP is the slowest-changing rank dimension. Skip DP replicas rather
+        # than concatenating them into duplicate tensor/expert partitions.
+        first_rank = stage * ranks_per_stage
         shards = [torch.load(root / f'iter_{iteration:07d}/adapter/adapter_megatron_rank{rank}.pt',
                              map_location='cpu', weights_only=True, mmap=True)
-                  for rank in range(stage * 8, (stage + 1) * 8)]
+                  for rank in range(first_rank, first_rank + max(tp, ep))]
         if any(shard.keys() != shards[0].keys() for shard in shards):
             raise ValueError('Native shard parameter names disagree')
         for name in shards[0]:
-            target, value = _merge_parameter(name, shards, stage * 21, vocab)
+            group_size = ep if '.mlp.experts.lora_adapter.' in name else tp
+            target, value = _merge_parameter(name, shards[:group_size], stage * layers_per_stage, vocab)
             if target in tensors:
                 raise ValueError(f'Duplicate exported tensor: {target}')
             tensors[target] = value.to(torch.bfloat16).contiguous()

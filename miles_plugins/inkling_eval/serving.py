@@ -151,7 +151,7 @@ def deploy(settings, *, name, image, environment, gpu):
     return {"app_id": app.app_id, "url": url.rstrip("/")}
 
 
-def wait_ready(url, timeout=2100, *, model_id="snapshot"):
+def wait_ready(url, timeout=7200, *, model_id="snapshot"):
     key = os.environ["MODAL_INFERENCE_API_KEY"]
     deadline = time.monotonic() + timeout
     next_log = time.monotonic()
