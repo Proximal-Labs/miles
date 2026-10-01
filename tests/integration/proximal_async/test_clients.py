@@ -53,8 +53,8 @@ def handler(config, attempt, mutation="", calls=None):
                 "reasoningEffort": "AGENT_REASONING_EFFORT_HIGH",
             }
             assert submitted["autoTriggerAnalysis"] is False
-            # The run config's rollout sandbox: Kata + Cloud Hypervisor on Kubernetes.
-            assert submitted["deploymentConfig"] == {"nexusExact": {"runtime": "SANDBOX_RUNTIME_KATA_CLH"}}
+            # The run config's rollout sandbox: gVisor on Kubernetes.
+            assert submitted["deploymentConfig"] == {"nexusExact": {"runtime": "SANDBOX_RUNTIME_GVISOR"}}
             assert submitted["config"]["harborOptions"] == {
                 "maxTurns": config.harness.max_turns,
                 "maxSessionTokens": attempt.sampling.max_sequence_tokens,
