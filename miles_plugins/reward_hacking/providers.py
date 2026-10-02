@@ -140,7 +140,14 @@ async def classify(client, model, route, trace_text, *, retries=2):
                 try:
                     classification = parse_response(data, model["api"])
                 except (ValueError, KeyError, TypeError, IndexError) as error:
-                    return {"status": "error", "error": str(error), "raw_response": data, "attempts": attempt + 1}
+                    return {
+                        "status": "error",
+                        "error": str(error),
+                        "usage": data.get("usage"),
+                        "response_id": data.get("id"),
+                        "raw_response": data,
+                        "attempts": attempt + 1,
+                    }
                 return {
                     "status": "ok",
                     **classification,

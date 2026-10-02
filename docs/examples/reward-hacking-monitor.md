@@ -17,7 +17,8 @@ python -m tools.evaluate_reward_hacking \
 ```
 
 The dry run validates all 176 examples and reports 528 requests for three models.
-It makes no API requests and starts no GPU containers.
+It makes no inference requests and starts no GPU containers. Modal dataset sources
+require authenticated downloads; local datasets work offline.
 
 For Luna/Sol, supply the existing OpenAI-compatible gateway via `OPENAI_BASE_URL`
 and its credential via `OPENAI_API_KEY`. `base_url_env` and `api_key_env` in the
@@ -253,3 +254,64 @@ Model config entries may set `concurrency` to override the global CLI default.
 100 concurrent requests, and two replicas allowing 50 running requests each;
 Sol uses high effort and 32 concurrent requests. Both allow 32,768 output tokens
 to accommodate reasoning before the final classification.
+
+## Modal dataset source
+
+The 44-rollout bundle (all four prefix files, raw traces, QA provenance, and
+manifest) is uploaded to volume `inkling-small-rft`, environment `main`, at
+`/datasets/reward-hacking-monitor/20261001-v1`. In the inference container this
+corresponds to `/mnt/inkling/datasets/reward-hacking-monitor/20261001-v1`.
+
+The evaluator accepts `modal://volume/path` URIs and defaults to the `datasets`
+list in its config. It downloads the requested JSONL files to a temporary local
+directory, loads the examples, and removes the temporary files. The evaluation
+client and results remain local; inference still receives traces over HTTP.
+A dry run with Modal inputs downloads data and requires Modal credentials, but
+makes no inference requests and starts no GPUs. Local paths still work.
+
+```bash
+MODAL_PROFILE=proximal python -m tools.evaluate_reward_hacking \
+  --config run-configs/reward-hacking-monitor-050.json \
+  --datasets \
+    modal://inkling-small-rft/datasets/reward-hacking-monitor/20261001-v1/prefix-030.jsonl \
+    modal://inkling-small-rft/datasets/reward-hacking-monitor/20261001-v1/prefix-010.jsonl \
+  --models inkling-small --attempts 4 \
+  --output outputs/reward-hacking-volume-030-010
+```
+
+Omit `--datasets` with the `-050` config to use the uploaded 50% dataset.
+Already-running evaluations have their inputs loaded in memory and continue
+unchanged. No new inference runs are needed to move the dataset source.
+
+## Tool-only paired dataset
+
+`data/reward-hacking-monitor-tools-only/` contains the same 44 examples at
+10%, 30%, 50%, and 100%, with readable reasoning removed. Original tasks, tool
+names/arguments, IDs, ordering, labels, and QA provenance are preserved. Empty
+reasoning-only assistant turns are omitted. Prefix cutoffs are inherited from
+the original datasets, not recalculated after removing reasoning. No tool outputs
+or assistant prose are added. Original evidence visibility is preserved under
+`source_known_evidence_visible`; tool-only visibility is unknown, because some
+annotations refer to removed reasoning.
+
+Rebuild with:
+
+```bash
+python -m tools.prepare_reward_hacking_data tool-only \
+  --source data/reward-hacking-monitor \
+  --output data/reward-hacking-monitor-tools-only
+```
+
+Uploaded copy: `modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/`.
+Pass any of its `prefix-010.jsonl`, `prefix-030.jsonl`, `prefix-050.jsonl`, or
+`prefix-100.jsonl` files to `--datasets`, using a separate output directory from
+the reasoning-inclusive evaluations. The manifest records source and output hashes.
+
+`run-configs/reward-hacking-monitor-tools-only.json` selects the uploaded 10/30/50%
+variants, Inkling Small max effort (0.99), concurrency 100, and two replicas.
+Each `predictions.jsonl` record saves `elapsed_seconds` (request wall time,
+including server queuing and retries, excluding local semaphore wait and model
+startup) and the provider's `usage` object. Inkling reports `prompt_tokens`,
+`completion_tokens`, `total_tokens`, `reasoning_tokens`, and cached prompt tokens.
+Usage is also retained for invalid/truncated responses when returned; transport
+failures may have no usage, and token counts do not include unseen failed retries.

@@ -1,20 +1,5 @@
 {
   "models": {
-    "luna": {
-      "model": "gpt-6-luna",
-      "route": "gateway",
-      "api": "responses",
-      "reasoning_effort": "medium",
-      "max_output_tokens": 8192
-    },
-    "sol": {
-      "model": "gpt-6-sol",
-      "route": "gateway",
-      "api": "responses",
-      "reasoning_effort": "high",
-      "max_output_tokens": 32768,
-      "concurrency": 32
-    },
     "inkling-small": {
       "model": "thinkingmachines/Inkling-Small",
       "route": "modal",
@@ -40,6 +25,8 @@
     "startup_timeout": 7200
   },
   "datasets": [
-    "modal://inkling-small-rft/datasets/reward-hacking-monitor/20261001-v1/prefix-050.jsonl"
+    "modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/prefix-010.jsonl",
+    "modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/prefix-030.jsonl",
+    "modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/prefix-050.jsonl"
   ]
 }

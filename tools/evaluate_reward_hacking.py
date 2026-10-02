@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 from miles_plugins.reward_hacking.curate import write_json
+from miles_plugins.reward_hacking.dataset_source import dataset_paths
 from miles_plugins.reward_hacking.evaluate import (
     dry_run,
     evaluate_model,
@@ -94,20 +95,24 @@ def _execute(args, config, rows, models):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("run-configs/reward-hacking-monitor.json"))
-    parser.add_argument("--datasets", type=Path, nargs="+")
+    parser.add_argument(
+        "--datasets", nargs="+", help="Local files or modal://volume/path URIs; defaults to config datasets"
+    )
     parser.add_argument("--models", nargs="+", default=["luna", "sol", "inkling-small"])
     parser.add_argument("--output", type=Path, default=Path("outputs/reward-hacking-monitor"))
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--attempts", type=int, default=1, help="Classifications per example per model")
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--limit", type=int, help="First N examples from each input file, for smoke runs")
-    parser.add_argument("--dry-run", action="store_true", help="Validate inputs without credentials, requests or GPUs")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate inputs without inference or GPUs; Modal datasets require download credentials",
+    )
     parser.add_argument("--cleanup", action="store_true")
     args = parser.parse_args()
     if args.attempts < 1 or args.concurrency < 1 or args.timeout <= 0 or (args.limit is not None and args.limit < 1):
         parser.error("attempts, concurrency, timeout and limit must be positive")
-    if not args.cleanup and not args.datasets:
-        parser.error("--datasets is required unless using --cleanup")
     if args.cleanup and args.dry_run:
         parser.error("--cleanup and --dry-run cannot be combined")
     if args.cleanup:
@@ -118,7 +123,11 @@ def main():
     config = json.loads(args.config.read_text())
     models = {alias: config["models"][alias] for alias in args.models}
     validate_models(models)
-    rows = repeat_examples(load_examples(args.datasets, args.limit), args.attempts)
+    sources = args.datasets or config.get("datasets")
+    if not sources:
+        parser.error("--datasets or config datasets is required")
+    with dataset_paths(sources, environment=config.get("modal", {}).get("environment", "main")) as paths:
+        rows = repeat_examples(load_examples(paths, args.limit), args.attempts)
     if args.dry_run:
         print(json.dumps(dry_run(rows, models), indent=2))
         return

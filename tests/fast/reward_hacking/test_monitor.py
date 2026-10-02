@@ -338,3 +338,27 @@ def test_all_models_use_the_pinned_proximal_qa_prompt(tmp_path):
     saved = json.loads((tmp_path / "run.json").read_text())
     assert saved["prompt_provenance"] == PROMPT_PROVENANCE
     assert (tmp_path / "system-prompt.txt").read_text() == SYSTEM_PROMPT
+
+
+def test_modal_dataset_download_matches_local_and_cleans_up(tmp_path, monkeypatch):
+    from miles_plugins.reward_hacking import dataset_source
+
+    local = tmp_path / "trace.jsonl"
+    local.write_text(json.dumps({"id": "trace", "messages": [{"role": "user", "content": "task"}]}) + "\n")
+    calls = []
+
+    def download(volume, remote, destination, environment):
+        calls.append((volume, remote, environment))
+        destination.write_bytes(local.read_bytes())
+
+    monkeypatch.setattr(dataset_source, "_download", download)
+    with dataset_source.dataset_paths(["modal://test-volume/data/trace.jsonl"], environment="test") as paths:
+        assert evaluate.load_examples(paths) == evaluate.load_examples([local])
+        downloaded = paths[0]
+    assert calls == [("test-volume", "/data/trace.jsonl", "test")]
+    assert not downloaded.exists()
+    with dataset_source.dataset_paths([local]) as paths:
+        assert paths == [local]
+    with pytest.raises(ValueError, match="Expected modal"):
+        with dataset_source.dataset_paths(["modal://test-volume"]):
+            pass

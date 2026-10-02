@@ -10,6 +10,7 @@ from pathlib import Path
 
 from miles_plugins.reward_hacking.curate import fetch_controls, select_controls
 from miles_plugins.reward_hacking.data import build_datasets
+from miles_plugins.reward_hacking.tool_only import build_tool_only
 
 
 def main():
@@ -32,6 +33,9 @@ def main():
     build.add_argument("--trace-root", type=Path, action="append", required=True)
     build.add_argument("--highlights", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
+    tools = commands.add_parser("tool-only", help="Remove reasoning while preserving existing prefix boundaries")
+    tools.add_argument("--source", type=Path, required=True)
+    tools.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "select-controls":
         result = select_controls(args.archive, args.output, seed=args.seed)
@@ -45,6 +49,8 @@ def main():
             base_url=args.base_url,
             session_file=args.session_file,
         )
+    elif args.command == "tool-only":
+        print(build_tool_only(args.source, args.output)["files"])
     else:
         result = build_datasets(args.positives, args.controls, args.trace_root, args.highlights, args.output)
         print(result["files"])
