@@ -137,6 +137,13 @@ Review the resulting array against the intended experiment. In particular, a
 template's smaller token budget is not a historical production recipe. No LR or
 optimizer choice is implied by allocating 64 GPUs.
 
+The Qwen3.8 production arguments warm the LR up over the first 8 updates
+(`--lr-warmup-iters 8`). A sweep's two updates can't finish that warmup, so remove the
+flag and its value from `recipe.json`. The sweep doesn't check for it. If it stays,
+Megatron stops when it builds the scheduler, on the allocated GPUs. The batch chain
+([#49](https://github.com/Proximal-Labs/miles/pull/49)) refuses the flag before launch.
+See the [Qwen3.8 LR note](qwen38-lora-lr.md#frozen-batch-runs).
+
 The sweep runs `plan.recipe` as written, so a per-step optimization is active only if
 its flag is in the array. In particular, `--skip-actor-forward-only` drops the separate
 old-policy log-prob pass, which is redundant when each update is one optimizer step with

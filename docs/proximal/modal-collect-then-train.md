@@ -270,6 +270,9 @@ python -m miles_plugins.proximal.offline_batch train \
 native shards, not an adapter-Volume snapshot. Use the matching saved recipe, with
 explicit seed/optimizer/learning rate and the intended supported GPU layout. Review
 the resolved arguments; example recipe defaults are not the last experiment's settings.
+A recipe saved from the Qwen3.8 overhead arguments carries `--lr-warmup-iters 8`.
+Remove it: a single update can't finish that warmup, and Megatron rejects it
+([why](qwen38-lora-lr.md#frozen-batch-runs)).
 
 The wrapper validates the batch and initialization, derives its group/sample counts,
 and supplies frozen samples to ordinary Miles `train.py` for exactly one update.

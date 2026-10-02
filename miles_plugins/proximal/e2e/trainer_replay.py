@@ -2,9 +2,10 @@
 
 Proves full training steps (log-probs, forward, backward, optimizer, checkpoint) on the
 intended GPUs, parallelism and sequence lengths before paying for real rollouts. It runs
-the same image, model arguments, train arguments and trainer environment as
-``modal_training``; only the rollout source changes: Miles's --load-debug-rollout-data
-feeds generated groups, so SGLang engines and weight pushes are skipped.
+the same image, model arguments, train arguments (without W&B tracking or the LR warmup)
+and trainer environment as ``modal_training``; only the rollout source changes: Miles's
+--load-debug-rollout-data feeds generated groups, so SGLang engines and weight pushes are
+skipped.
 
 Samples look like agent rollouts: a prompt, then alternating model spans (trained) and
 tool outputs (masked), with mixed rewards inside every group so advantages are non-zero.
@@ -43,6 +44,7 @@ import modal
 
 from miles_plugins.proximal import modal_training as node
 from miles_plugins.proximal.contracts import behavior_correction_argv
+from miles_plugins.proximal.e2e.argv import set_flag
 from miles_plugins.proximal.serving_app import DEPLOYMENT, RUN, base_volume
 
 MOCK = Path("/mock")
@@ -112,6 +114,9 @@ def replay_command(num_steps: int, extra_args: Sequence[str] = ()) -> list[str]:
         if flag in args:
             i = args.index(flag)
             del args[i : i + (1 if flag == "--use-wandb" else 2)]
+    # A replay runs fewer updates than the recipe's LR warmup, and Megatron refuses a warmup that
+    # outlasts the run. The LR schedule isn't what a replay measures.
+    args = set_flag(args, "--lr-warmup-iters", None)
     model_args = shlex.split(load_model_args(training.model_args, model_script_dir=node.FORK / "scripts/models"))
     research = run.research
     return [
