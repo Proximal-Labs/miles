@@ -40,6 +40,7 @@ from miles_plugins.proximal.contracts import (
     Attempt,
     CaptureReceipt,
     Policy,
+    ReplicaLoad,
     RunConfig,
     ServingContract,
     canonical_bytes,
@@ -676,6 +677,12 @@ class CaptureServer:
         async def contract(request: Request) -> ServingContract:
             self._admin(request)
             return self.serving
+
+        @app.get("/capture/load")
+        async def load(request: Request) -> ReplicaLoad:
+            self._admin(request)
+            # A sealed session takes no more model calls.
+            return ReplicaLoad(sessions=sum(not session.sealed for session in self.sessions.values()))
 
         @app.post("/sessions")
         async def create(attempt: Attempt, request: Request) -> dict[str, str]:

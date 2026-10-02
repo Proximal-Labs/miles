@@ -103,6 +103,9 @@ configuration of a previous experiment.
   config bounds active rollout samples across the collector; Modal request
   concurrency is a different quantity. Choose capacity from measurements for the
   actual context lengths, rather than multiplying a short-request benchmark.
+- Modal routes a rollout to a replica by its session ID, whatever that replica already
+  holds, so replicas fill unevenly. `launch_retry.replica_choices` above 1 (default 1)
+  makes each launch compare that many candidate replicas and take the least loaded.
 - `training.json` provides the state Volume, secrets and explicit Miles model and
   optimizer recipe. The CPU collector uses it to save `training-args.json`; the
   presence of training GPU settings does not allocate those GPUs in collection mode.
