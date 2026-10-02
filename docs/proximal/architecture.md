@@ -230,6 +230,17 @@ abandoned histories; source checkpoint/behavior lineage must be chosen deliberat
 No automatic 8-to-64-GPU resharding or creation of an initial trainer checkpoint
 from a serving-only adapter is implemented. See [offline batch runbook](offline-batches.md).
 
+A batch chain (`e2e.batch_chain`) instead applies one update per step to each LoRA
+configuration, every step on a different verified base-policy batch with disjoint
+groups. Step k continues step k-1's native state and trains at policy lag k, inside the
+source's `max_policy_lag`; the source's behavior correction is the only off-policy
+correction, as in online async RL. `ChainReplay` serves a step's batch exactly once at
+rollout ID k. Each step's receipt commits last and names its predecessor receipt, the
+batch hash, behavior policy and lag; continuation stages exactly the files it names.
+Because Miles warns and starts a fresh adapter when it cannot load one, a continued
+step also needs the trainer's restore evidence or the chain holds. An optional operator
+gate between steps reads an operator-created control Dict; no answer stops the chain.
+
 An explicitly authorized two-update comparison can reuse one verified base-policy
 batch across fresh LoRA parameterizations. The bounded `e2e.batch_sweep` composes
 `ReferenceReplay`, the existing clustered sizing lifecycle, and native `train.py`.

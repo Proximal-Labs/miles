@@ -12,12 +12,12 @@ from miles_plugins.proximal.state_checkpoints import NativeCompletion
 from miles_plugins.proximal.storage import write_atomic
 
 
-def stage_batch(source: Path, target: Path, plan: SweepPlan) -> None:
+def stage_batch(source: Path, target: Path, *, batch_sha256: str) -> None:
     """No trainer process reads the reloadable Volume mount after this boundary."""
     from miles_plugins.proximal.offline_batch import read_batch
 
     manifest = (source / "batch.json").read_bytes()
-    if hashlib.sha256(manifest).hexdigest() != plan.batch_sha256:
+    if hashlib.sha256(manifest).hexdigest() != batch_sha256:
         raise ValueError("Staging source differs from the authorized frozen batch")
     batch = read_batch(source)
     for group in batch.groups:

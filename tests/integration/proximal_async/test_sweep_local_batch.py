@@ -40,7 +40,7 @@ async def test_both_replay_updates_survive_disappearing_volume(config, policy, a
         recipe=("--optimizer", "adam", "--lr", "4e-5", "--seed", "42"),
     )
     local = tmp_path / "local-batch"
-    stage_batch(volume, local, plan)
+    stage_batch(volume, local, batch_sha256=plan.batch_sha256)
     volume.rename(tmp_path / "unmounted")
     assert hashlib.sha256((local / "batch.json").read_bytes()).hexdigest() == sha
     args = Namespace(

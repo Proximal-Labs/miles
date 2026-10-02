@@ -17,6 +17,7 @@ failure-hold budgets before submission.
 | Online async RL | [`modal_training`](../../miles_plugins/proximal/modal_training.py) | One GPU container sized by `training.json`; owns the online trainer and recovery snapshots. `SIZING_NODES` does not make this launcher multi-node. |
 | Multi-node capacity/timing check | [`e2e.step_sizing`](../../miles_plugins/proximal/e2e/step_sizing.py) | `SIZING_NODES` eight-GPU nodes; mock rollouts, no retained trained checkpoints. Qwen and Inkling profiles exist. |
 | Train an existing base-policy batch and retain adapters | [`e2e.batch_sweep`](../../miles_plugins/proximal/e2e/batch_sweep.py) | Qwen profile, `SIZING_NODES` nodes, **B300:8 per node**; two updates per configuration, local staging, native checkpoints and evaluation exports. |
+| One update per step over several base-policy batches, per LoRA configuration | [`e2e.batch_chain`](../../miles_plugins/proximal/e2e/batch_chain.py) | Same allocation as the sweep; each step trains a different batch at policy lag = step index, continuing the previous step's native state, with an optional operator gate between steps. See [Chain single updates over different batches](#chain-single-updates-over-different-batches). |
 | Exactly one independent update | [`offline_batch train`](offline-batches.md) | Runs inside an already allocated Miles/Ray environment. It does not allocate Modal nodes or commit its output. |
 
 The instructions below use `batch_sweep`, the launcher used for the real stored
@@ -24,7 +25,8 @@ The instructions below use `batch_sweep`, the launcher used for the real stored
 instead resume its certified first update and execute only the second. There is
 currently no general CLI that allocates an arbitrary cluster and hands it to
 `offline_batch train` for one fresh update. A held sweep also has no command queue
-for submitting arbitrary new training work.
+for submitting arbitrary new training work. For several single updates over different
+base-policy batches, use `e2e.batch_chain` (last section).
 
 ## Understand the allocation
 
@@ -368,3 +370,81 @@ separately deployed serving apps.
 This guide documents the existing
 [architecture and recovery boundaries](architecture.md). It adds no generic
 cluster service, automatic gang relaunch, or unbounded allocation retention.
+
+## Chain single updates over different batches
+
+[`e2e.batch_chain`](../../miles_plugins/proximal/e2e/batch_chain.py) takes the same
+allocation, staging, publication and failure hold as the sweep, but each arm (a LoRA
+target set) applies **one update per step on a different batch**: step k trains
+`batches[k]` at rollout ID k, continuing step k-1's native weights, optimizer,
+scheduler and RNG. Every batch must come from the same base policy, so step k trains
+on data k versions old; the source's behavior correction (TIS) is the only off-policy
+correction, and the source's `max_policy_lag` bounds the number of steps. Arms see the
+same batches in the same order and start fresh from that base policy.
+
+The plan schema is
+[`ChainPlan`](../../miles_plugins/proximal/e2e/batch_chain_inputs.py):
+
+```json
+{
+  "experiment_id": "p519-chain-20261002",
+  "samples": 1024,
+  "nodes": 4,
+  "batches": [
+    {"path": "RUN/batches/a", "sha256": "<sha256 of a/batch.json>"},
+    {"path": "RUN/batches/b", "sha256": "<sha256 of b/batch.json>"},
+    {"path": "RUN/batches/c", "sha256": "<sha256 of c/batch.json>"}
+  ],
+  "arms": [
+    {"name": "mlp", "target_modules": ["language_model.decoder.layers.*.mlp.linear_fc1", "language_model.decoder.layers.*.mlp.linear_fc2"]},
+    {"name": "full", "target_modules": ["language_model.decoder.layers.*.self_attention.linear_qkv", "...", "language_model.decoder.layers.*.mlp.linear_fc2"]}
+  ],
+  "recipe": ["<the collection's saved training-args.json array>"],
+  "gate": "manual"
+}
+```
+
+Validation refuses, before any GPU: a batch whose manifest hash differs from the plan,
+a source or sample count other than the configured run's, a behavior policy that
+differs between batches or lacks its zero-delta proof, two batches sharing a stored
+group (identical batches are a replay, not a step), and a step beyond
+`max_policy_lag`. Assembled batches must name the configured run as their anchor
+source; build every batch with the same anchor collection first.
+
+With `"gate": "manual"`, create the empty control Dict before launch (the launcher
+only references named objects), then approve each later step after reviewing its
+predecessor. Steps are 1-based; `stop` ends the chain at its next gate (a running step
+finishes and commits) without holding the cluster, and no answer within
+`gate_timeout_seconds` (default one hour) also stops it:
+
+```bash
+modal dict create batch-chain-p519-chain-20261002 --env main
+python - <<'PY'
+import modal
+control = modal.Dict.from_name("batch-chain-p519-chain-20261002", environment_name="main")
+print(control.get("awaiting"), control.get("last"))  # Next step and the last step's summary.
+control["go/mlp/2"] = True  # Or control["stop"] = True.
+PY
+```
+
+`last` holds the step's exit code, receipt, policy lag, resume proof and its final
+`train/*` row (loss, grad norm, TIS mean/clip fraction, train/rollout KL). The launch
+uses the sweep's environment and holding rules:
+
+```bash
+modal run --detach --env main -m miles_plugins.proximal.e2e.batch_chain \
+  --plan /absolute/path/to/chain.json --yes-train --yes-publish \
+  --out /absolute/path/to/chain-result.json > /absolute/path/to/chain-launch.log 2>&1
+```
+
+Each step commits under `experiments/<id>/<arm>/step-<n>/attempt-<a>/`: native and
+optimizer shards for every rank, an evaluation snapshot, `training.log`,
+`timings.json` and, last, `receipt.json` (batch hash, behavior policy, policy lag,
+the predecessor receipt and every file's digest). A continued step stages exactly
+its predecessor's verified files; Miles falls back to a fresh adapter when it cannot
+load one, so the chain also requires the trainer's log to show the restored optimizer
+and the expected iteration, and holds the cluster otherwise. A step whose native
+save committed is never applied again, whatever its exit code. All arms and steps
+must fit in the function's eight-hour limit, including gate waits; run arms as
+separate experiments on separate allocations to parallelize them.
+
