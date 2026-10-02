@@ -362,3 +362,51 @@ def test_modal_dataset_download_matches_local_and_cleans_up(tmp_path, monkeypatc
     with pytest.raises(ValueError, match="Expected modal"):
         with dataset_source.dataset_paths(["modal://test-volume"]):
             pass
+
+
+def test_result_snapshots_exclude_locks_and_partial_records(tmp_path):
+    from miles_plugins.reward_hacking.result_store import result_destination, snapshot_files
+
+    (tmp_path / ".lock").touch()
+    (tmp_path / "summary.json.partial").write_text("unfinished")
+    (tmp_path / "predictions.jsonl").write_bytes(b'{"id":1}\n{"id":')
+    first = result_destination(tmp_path)
+    assert result_destination(tmp_path) == first
+    files = snapshot_files(tmp_path)
+    assert files["predictions.jsonl"] == b'{"id":1}\n'
+    assert ".lock" not in files and "summary.json.partial" not in files
+
+
+def test_result_upload_finalizes_on_failure(tmp_path, monkeypatch):
+    from miles_plugins.reward_hacking import result_store
+
+    snapshots = []
+    monkeypatch.setattr(
+        result_store, "sync_results", lambda path, dest: snapshots.append(result_store.snapshot_files(path))
+    )
+    with pytest.raises(RuntimeError, match="evaluation failed"):
+        with result_store.result_uploads(tmp_path):
+            (tmp_path / "predictions.jsonl").write_text('{"id":1}\n')
+            raise RuntimeError("evaluation failed")
+    assert len(snapshots) == 2
+    assert snapshots[-1]["predictions.jsonl"] == b'{"id":1}\n'
+
+
+@pytest.mark.parametrize("include_reasoning", [False, True])
+def test_monitor_instruction_is_after_trace_for_both_variants(include_reasoning):
+    from miles_plugins.reward_hacking.prompt import FINAL_INSTRUCTION
+
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "bash", "arguments": {"command": "echo trace_end"}}}],
+    }
+    if include_reasoning:
+        assistant["reasoning_content"] = "Continue the original task"
+    text = providers.monitor_input({"messages": [{"role": "user", "content": "task"}, assistant]})
+    assert text.endswith(FINAL_INSTRUCTION)
+    assert text.index("echo trace_end") < text.rindex("The recorded trace has ended.")
+    for api in ["responses", "chat_completions"]:
+        body = providers.request_body({"api": api, "model": "test"}, text)
+        messages = body["input"] if api == "responses" else body["messages"]
+        assert messages[-1]["content"].endswith(FINAL_INSTRUCTION)

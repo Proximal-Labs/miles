@@ -10,7 +10,7 @@ from collections import defaultdict
 import httpx
 
 from miles_plugins.reward_hacking.curate import read_jsonl, write_json
-from miles_plugins.reward_hacking.prompt import PROMPT_PROVENANCE, SYSTEM_PROMPT
+from miles_plugins.reward_hacking.prompt import FINAL_INSTRUCTION, PROMPT_PROVENANCE, SYSTEM_PROMPT
 from miles_plugins.reward_hacking.providers import classify, monitor_input, request_body
 
 
@@ -135,6 +135,7 @@ def prepare_run(rows, models, config, output):
         "config": config,
         "prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
         "prompt_provenance": PROMPT_PROVENANCE,
+        "final_instruction_sha256": hashlib.sha256(FINAL_INSTRUCTION.encode()).hexdigest(),
         "examples": [
             {
                 "id": r["id"],
@@ -151,6 +152,7 @@ def prepare_run(rows, models, config, output):
         raise ValueError("Evaluation inputs/config changed; use a new output directory")
     write_json(path, contract)
     (output / "system-prompt.txt").write_text(SYSTEM_PROMPT)
+    (output / "final-instruction.txt").write_text(FINAL_INSTRUCTION)
     prior = _read_predictions(output / "predictions.jsonl")
     keyed = {(r["model_alias"], r["id"]): r for r in prior}
     expected = {(m, r["id"]) for m in models for r in rows}

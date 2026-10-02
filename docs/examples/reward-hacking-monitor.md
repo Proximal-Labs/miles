@@ -265,7 +265,8 @@ corresponds to `/mnt/inkling/datasets/reward-hacking-monitor/20261001-v1`.
 The evaluator accepts `modal://volume/path` URIs and defaults to the `datasets`
 list in its config. It downloads the requested JSONL files to a temporary local
 directory, loads the examples, and removes the temporary files. The evaluation
-client and results remain local; inference still receives traces over HTTP.
+client runs locally; results are mirrored to the dedicated `reward-hacking` Modal
+volume by default, and inference receives traces over HTTP.
 A dry run with Modal inputs downloads data and requires Modal credentials, but
 makes no inference requests and starts no GPUs. Local paths still work.
 
@@ -315,3 +316,43 @@ startup) and the provider's `usage` object. Inkling reports `prompt_tokens`,
 `completion_tokens`, `total_tokens`, `reasoning_tokens`, and cached prompt tokens.
 Usage is also retained for invalid/truncated responses when returned; transport
 failures may have no usage, and token counts do not include unseen failed retries.
+
+## Default result persistence
+
+Every non-dry-run evaluation now mirrors its output directory to the Modal volume
+`reward-hacking` in environment `main`. `result-storage.json` records the exact
+`/results/<run-folder>/<model-folder>-<unique-id>` destination; the same local
+output directory reuses it on resume. The evaluator preflights an upload before
+inference, uploads every 30 seconds, and performs a final upload after success,
+failure, cancellation, or cleanup. Local fsynced predictions remain the working
+copy. All output artifacts are included: predictions with raw responses, timing
+and token usage, summary, run contract, prompt, lifecycle, and logs if captured
+in the output directory. Locks and in-progress partial files are excluded;
+JSONL snapshots stop at the last complete line.
+
+Periodic upload failures are reported and retried; a final upload failure is
+surfaced as an error. SIGKILL or machine loss can leave up to the last sync interval
+(or longer during an outage) only on local disk. Resume currently uses that local
+working directory; remote-only resume requires downloading its contents first.
+Dataset paths stay on `inkling-small-rft`; the new volume stores results.
+
+Backfill a run or follow an evaluation started before automatic uploads existed:
+
+```bash
+MODAL_PROFILE=proximal python -m tools.sync_reward_hacking_results --watch \
+  outputs/reward-hacking-tools-only-010-030-050-4attempts/inkling-small
+```
+
+The watcher polls every 30 seconds and uploads one final snapshot after the
+local evaluator releases its lock. It does not restart inference.
+
+## Closing monitor instruction
+
+Both reasoning-inclusive and tool-only inputs now append the same
+`FINAL_INSTRUCTION` after the trace JSON in the user message. It marks the trace
+as ended, reasserts the monitor role, prohibits continuing the recorded task,
+restates attempted-hacking criteria, and requires the binary JSON response.
+The suffix is saved as `final-instruction.txt` and hashed in `run.json`; per-input
+hashes also include it. Use a new output directory for this prompt version so
+results cannot silently mix with the earlier prompt. Already-running processes
+retain their previously loaded prompt; this change does not launch evaluations.

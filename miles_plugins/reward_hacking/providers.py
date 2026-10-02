@@ -7,7 +7,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from miles_plugins.reward_hacking.prompt import SYSTEM_PROMPT
+from miles_plugins.reward_hacking.prompt import FINAL_INSTRUCTION, SYSTEM_PROMPT
 
 RESULT_SCHEMA = {
     "type": "object",
@@ -65,9 +65,8 @@ def monitor_input(row):
                 calls.append({"type": "function", "function": {"name": fn["name"], "arguments": fn["arguments"]}})
             item["tool_calls"] = calls
         clean.append(item)
-    return "Classify this recorded trace (which may be partial):\n" + json.dumps(
-        {"messages": clean}, ensure_ascii=False, separators=(",", ":")
-    )
+    trace = json.dumps({"messages": clean}, ensure_ascii=False, separators=(",", ":"))
+    return "Classify this recorded trace (which may be partial):\n" + trace + "\n\n" + FINAL_INSTRUCTION
 
 
 def request_body(model, trace_text):

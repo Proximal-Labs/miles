@@ -28,6 +28,7 @@ from miles_plugins.reward_hacking.evaluate import (
 )
 from miles_plugins.reward_hacking.modal_server import cancellation_handlers, inference_endpoint
 from miles_plugins.reward_hacking.providers import gateway_route
+from miles_plugins.reward_hacking.result_store import result_uploads
 
 
 def _cleanup(output):
@@ -118,7 +119,8 @@ def main():
     if args.cleanup:
         with (args.output / ".lock").open("w") as lock, cancellation_handlers():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            _cleanup(args.output)
+            with result_uploads(args.output):
+                _cleanup(args.output)
         return
     config = json.loads(args.config.read_text())
     models = {alias: config["models"][alias] for alias in args.models}
@@ -134,7 +136,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     with (args.output / ".lock").open("w") as lock, cancellation_handlers():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _execute(args, config, rows, models)
+        with result_uploads(args.output):
+            _execute(args, config, rows, models)
 
 
 if __name__ == "__main__":
