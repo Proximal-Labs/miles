@@ -20,7 +20,6 @@ from miles_plugins.proximal.options import TRANSFER
 from miles_plugins.proximal.serving import lora_serving_targets
 from miles_plugins.proximal.store import open_store
 
-
 LAYER = "base_model.model.model.layers.0"
 MODULES = tuple(f"self_attn.{m}" for m in ("q_proj", "k_proj", "v_proj", "o_proj")) + tuple(
     f"mlp.{m}" for m in ("gate_proj", "up_proj", "down_proj")
@@ -107,7 +106,9 @@ def make_updater(args, iterator_factory):
     )
 
 
-def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
+@pytest.mark.parametrize("delta_sync", [False, True])
+def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch, delta_sync):
+    config = config.model_copy(update={"lora_delta_sync": delta_sync})
     args = transfer_args(config, tmp_path)
     events = []
     fail = [False]
@@ -139,6 +140,24 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
             },
         )
 
+    bases = []
+    if delta_sync:
+        import modal
+        from tests.fast.proximal_publication.test_publication import FakeVolume
+
+        from miles_plugins.proximal.modal_volume import modal_publish_delta_snapshot
+
+        volume = FakeVolume()
+        monkeypatch.setattr(modal.Volume, "from_name", lambda *args, **kwargs: volume)
+
+        def publish_delta(authorization, snapshot, *, base, depth):
+            bases.append(None if base is None else base.manifest.metadata.checkpoint_iteration)
+            result = modal_publish_delta_snapshot(authorization, snapshot, base=base, depth=depth)
+            publish(authorization, snapshot)
+            return result
+
+        monkeypatch.setattr(weight_update, "modal_publish_delta_snapshot", publish_delta)
+
     client_cls = httpx.AsyncClient
     monkeypatch.setattr(weight_update, "modal_publish_snapshot", publish)
     monkeypatch.setattr(
@@ -167,6 +186,8 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
         restarted.update_weights()
         assert restarted.weight_version == 1
         assert current_version(config) == 1
+        if delta_sync:
+            assert bases == [None, 0, 0, None]  # Failure preserves the base; restart publishes a full anchor.
     finally:
         dist.destroy_process_group()
 

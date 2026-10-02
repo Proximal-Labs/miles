@@ -91,6 +91,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("modal_training.py", "remote"),  # Explicit-consent CPU collection with Volume persistence.
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),
+        ("modal_volume.py", "batch_upload"),  # Authorized rank-local shard uploads.
         ("preflight.py", "post"),  # The canary's model calls through capture, before any platform run.
         ("replica.py", "post"),
         ("replica.py", "post"),

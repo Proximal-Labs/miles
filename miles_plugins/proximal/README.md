@@ -252,3 +252,42 @@ scheduler after restart. Before production use, run the separate live v1 Volume
 visibility/latency test and fixed-batch Megatron GPU resume comparison. Async order
 and nondeterministic kernels mean this is not a bit-identical whole-run promise.
 Platform catalog registration and artifact download access remain a separate PR.
+
+
+## Optional LoRA delta publication
+
+Set `"lora_delta_sync": true` in the run config and use this Miles revision on
+both trainer and replicas. The default remains full-snapshot publication.
+This uses the existing SGLang disk-delta format: per-tensor byte XOR, Zstd level 1,
+unchanged tensors omitted, and Adler32 checksums of reconstructed tensors. The
+complete snapshot still undergoes SHA-256 verification before SGLang loads it.
+NumPy, safetensors and Zstandard are required on both sides (already in the Miles
+training image requirements).
+
+The trainer publishes a full anchor first, then at most seven deltas. It falls
+back to a full snapshot on layout/config changes or when a delta is larger.
+A restart starts a new full anchor. A cold replica retrieves the necessary anchor
+and replays its deltas. Keep anchors and intermediate deltas on the Volume while
+any policy that depends on them remains loadable; missing or corrupt artifacts
+fail closed. The new adapter is reconstructed into a temporary local directory,
+verified and atomically installed, preserving older active adapter versions.
+Deploy updated receivers before enabling the run option: old receivers cannot
+load delta-only publications.
+
+## Optional multi-rank uploads
+
+Set `"lora_sharded_upload": true` to have all training ranks upload disjoint byte
+ranges of the prepared snapshot. This option requires **one training node** with
+shared staging files, matching an eight-GPU Modal trainer. All ranks participate
+in completion/error collectives. Rank zero publishes the completion marker only
+after every rank's upload and readback verification succeeds; replica preparation
+and policy commit follow. An upload failure leaves the policy version unchanged
+and can be retried without replacing immutable remote files.
+
+HF tensor gathering, PEFT export and optional delta compression still happen on
+rank zero. This change parallelizes network publication, not tensor export. Ranks
+on one node share that node's egress bandwidth. Both options default to false and
+can be enabled separately or together. The receiver reconstructs the original
+files and applies the same snapshot/delta integrity checks before registering
+an immutable adapter. Updated receivers must be deployed before enabling either
+option. GPU/Modal performance remains unmeasured; CPU tests establish correctness.
