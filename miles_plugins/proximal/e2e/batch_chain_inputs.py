@@ -45,9 +45,13 @@ class ChainPlan(Contract):
     recipe: Annotated[tuple[str, ...], Field(min_length=1)]
     # "manual": every step after the first waits for an operator's approval in the control Dict.
     gate: Literal["manual", "none"]
+    # What an unanswered gate does. Stopping releases a scarce allocation, so it is explicit.
+    gate_timeout_action: Literal["stop", "continue_if_healthy"]
     gate_timeout_seconds: Annotated[int, Field(ge=60, le=21600)] = 3600
     step_attempts: Annotated[int, Field(ge=1, le=3)] = 2
-    failure_hold_seconds: Annotated[int, Field(ge=0, le=21600)] = 21600
+    # A step starts only if the remaining function time covers it (the longest measured step wins).
+    step_estimate_seconds: Annotated[int, Field(ge=60, le=6 * 3600)] = 3600
+    failure_hold_seconds: Annotated[int, Field(ge=0, le=21600)] = 1800
 
     @model_validator(mode="after")
     def _distinct(self) -> "ChainPlan":
@@ -94,6 +98,23 @@ def validate_batches(mount: Path, plan: ChainPlan, source: RunConfig) -> tuple["
     return tuple(batches)
 
 
+def check_chain_recipe(recipe: tuple[str, ...]) -> None:
+    """Continuation restores the LR scheduler from a run with a different length; only a constant,
+    warmup-free schedule with an explicit override survives that unchanged."""
+    check_recipe(recipe)
+
+    def value(flag: str) -> str | None:
+        return recipe[recipe.index(flag) + 1] if flag in recipe and recipe.index(flag) + 1 < len(recipe) else None
+
+    if "--override-opt_param-scheduler" not in recipe:
+        raise ValueError("A chain recipe needs --override-opt_param-scheduler to continue across steps")
+    if value("--lr-decay-style") != "constant":
+        raise ValueError("A chain recipe needs --lr-decay-style constant")
+    for flag in ("--lr-warmup-iters", "--lr-warmup-samples", "--lr-warmup-fraction"):
+        if value(flag) not in (None, "0", "0.0"):
+            raise ValueError(f"A chain recipe cannot warm up the learning rate ({flag})")
+
+
 def step_command(
     plan: ChainPlan,
     arm: ChainArm,
@@ -105,7 +126,7 @@ def step_command(
     resume_adapter: Path | None,
 ) -> list[str]:
     """Exactly one native update: rollout ``step`` of the arm, on ``plan.batches[step]``."""
-    check_recipe(plan.recipe)
+    check_chain_recipe(plan.recipe)
     if not 0 <= step < len(plan.batches):
         raise ValueError("Chain step outside the plan")
     if (step > 0) != (resume_adapter is not None):

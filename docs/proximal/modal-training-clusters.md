@@ -407,44 +407,63 @@ The plan schema is
 Validation refuses, before any GPU: a batch whose manifest hash differs from the plan,
 a source or sample count other than the configured run's, a behavior policy that
 differs between batches or lacks its zero-delta proof, two batches sharing a stored
-group (identical batches are a replay, not a step), and a step beyond
-`max_policy_lag`. Assembled batches must name the configured run as their anchor
-source; build every batch with the same anchor collection first.
+group (identical batches are a replay, not a step), a step beyond `max_policy_lag`,
+and a recipe without `--override-opt_param-scheduler`, a constant LR and no warmup
+(each step restores the scheduler from a run of a different length). Assembled batches
+must name the configured run as their anchor source; build every batch with the same
+anchor collection first. A continued step's command is fully validated on the gang
+after its predecessor is staged (Miles restarts at rollout 0 without one); a rejected
+command fails only that arm.
 
-With `"gate": "manual"`, create the empty control Dict before launch (the launcher
-only references named objects), then approve each later step after reviewing its
-predecessor. Steps are 1-based; `stop` ends the chain at its next gate (a running step
-finishes and commits) without holding the cluster, and no answer within
-`gate_timeout_seconds` (default one hour) also stops it:
+Multi-node allocations are scarce, so the launcher keeps the gang through anything
+local to a step:
+
+- **Launch independence.** The local entrypoint validates, runs the CPU preflight,
+  `spawn`s the clustered call and exits; with `modal run --detach` the call does not
+  depend on the launching process. All coordination lives in a named Dict the operator
+  creates, empty, before launch (`batch-chain-<experiment_id>`); the launcher only
+  references named objects.
+- **Transient errors.** Coordination reads and writes retry for two minutes, Volume
+  reloads and commits for five; the checkpoint publisher fails the cluster only after
+  five minutes of consecutive errors.
+- **Time.** The function may run 24 hours. A step starts only if the remaining time
+  covers 1.3 times the longest step so far (or `step_estimate_seconds`) plus 15 minutes.
+- **Failures stay local.** A step that fails all its attempts, cannot be certified,
+  is rejected before training, or commits without proof that it resumed its
+  predecessor (Miles silently starts a fresh adapter when it cannot load one) ends
+  only its own arm; the other arms still run. Failures are reported, not held.
+- **Gates.** `gate_timeout_action` is required: `stop` ends the chain when a gate goes
+  unanswered for `gate_timeout_seconds`; `continue_if_healthy` proceeds when the last
+  step was durable, proved its resume and had finite loss and grad norm.
+- **Restarts.** If Modal replays the call on a new gang, it exits immediately without a
+  hold; committed steps remain, and a follow-up plan can run the unfinished arms.
+  Only an unexpected exception holds the nodes, for `failure_hold_seconds` (default 30
+  minutes) for forensics.
+
+Create the empty chain Dict, launch, then approve each later step after reviewing its
+predecessor. Steps are 1-based; `go-all` approves every remaining step; `stop` ends the
+chain at its next gate (a running step finishes and commits):
 
 ```bash
 modal dict create batch-chain-p519-chain-20261002 --env main
+modal run --detach --env main -m miles_plugins.proximal.e2e.batch_chain \
+  --plan /absolute/path/to/chain.json --yes-train --yes-publish --out chain-launch.json
 python - <<'PY'
 import modal
 control = modal.Dict.from_name("batch-chain-p519-chain-20261002", environment_name="main")
 print(control.get("awaiting"), control.get("last"))  # Next step and the last step's summary.
-control["go/mlp/2"] = True  # Or control["stop"] = True.
+control["go/mlp/2"] = True  # Or control["go-all"] = True, or control["stop"] = True.
 PY
 ```
 
 `last` holds the step's exit code, receipt, policy lag, resume proof and its final
-`train/*` row (loss, grad norm, TIS mean/clip fraction, train/rollout KL). The launch
-uses the sweep's environment and holding rules:
-
-```bash
-modal run --detach --env main -m miles_plugins.proximal.e2e.batch_chain \
-  --plan /absolute/path/to/chain.json --yes-train --yes-publish \
-  --out /absolute/path/to/chain-result.json > /absolute/path/to/chain-launch.log 2>&1
-```
+`train/*` row (loss, grad norm, TIS mean/clip fraction, train/rollout KL).
+`chain-launch.json` records the spawned FunctionCall ID.
 
 Each step commits under `experiments/<id>/<arm>/step-<n>/attempt-<a>/`: native and
 optimizer shards for every rank, an evaluation snapshot, `training.log`,
 `timings.json` and, last, `receipt.json` (batch hash, behavior policy, policy lag,
 the predecessor receipt and every file's digest). A continued step stages exactly
-its predecessor's verified files; Miles falls back to a fresh adapter when it cannot
-load one, so the chain also requires the trainer's log to show the restored optimizer
-and the expected iteration, and holds the cluster otherwise. A step whose native
-save committed is never applied again, whatever its exit code. All arms and steps
-must fit in the function's eight-hour limit, including gate waits; run arms as
-separate experiments on separate allocations to parallelize them.
-
+its predecessor's verified files. A step whose native save committed is never applied
+again, whatever its exit code. The final `completed.json` lists every step, receipt,
+failed arm and the stop reason.

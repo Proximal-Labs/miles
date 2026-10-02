@@ -35,8 +35,9 @@ def chain(config, batches):
         nodes=1,
         batches=tuple(batches),
         arms=(ChainArm(name="mlp", target_modules=("linear_fc1", "linear_fc2")),),
-        recipe=("--optimizer", "adam", "--lr", "4e-5", "--seed", "42"),
+        recipe=("--optimizer", "adam", "--lr", "4e-5", "--seed", "42", "--lr-decay-style", "constant"),
         gate="none",
+        gate_timeout_action="stop",
     )
 
 

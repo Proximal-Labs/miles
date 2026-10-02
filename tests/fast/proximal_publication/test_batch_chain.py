@@ -24,6 +24,7 @@ from miles_plugins.proximal.e2e.batch_chain_coordination import (
     hold_failed_cluster,
     publish_ready,
     resume_confirmed,
+    retrying,
     run_chain,
     train_metrics,
 )
@@ -32,6 +33,7 @@ from miles_plugins.proximal.e2e.batch_chain_inputs import (
     ChainArm,
     ChainBatch,
     ChainPlan,
+    check_chain_recipe,
     step_command,
     validate_batches,
 )
@@ -58,8 +60,12 @@ def plan():
         nodes=1,
         batches=tuple(ChainBatch(path=f"run/batches/{c}", sha256=c * 64) for c in "abc"),
         arms=(ChainArm(name="mlp", target_modules=MLP), ChainArm(name="full", target_modules=FULL)),
-        recipe=("--optimizer", "adam", "--lr", "4e-5", "--seed", "42", "--num-rollout", "9", "--use-wandb"),
+        recipe=(
+            *("--optimizer", "adam", "--lr", "4e-5", "--seed", "42"),
+            *("--lr-decay-style", "constant", "--override-opt_param-scheduler", "--num-rollout", "9", "--use-wandb"),
+        ),
         gate="manual",
+        gate_timeout_action="stop",
     )
 
 
@@ -271,13 +277,57 @@ def test_logs_yield_metrics_and_proof_of_continuation():
     assert not resume_confirmed(resumed + "Training will start with freshly initialized adapter weights.", 2)
 
 
+@pytest.mark.parametrize(
+    "drop, add, message",
+    [
+        ("--override-opt_param-scheduler", (), "override"),
+        ("--lr-decay-style", ("--lr-decay-style", "cosine"), "constant"),
+        (None, ("--lr-warmup-iters", "10"), "warm up"),
+    ],
+)
+def test_chain_recipe_keeps_the_restored_schedule_meaningful(plan, drop, add, message):
+    recipe = list(plan.recipe)
+    if drop:
+        index = recipe.index(drop)
+        del recipe[index : index + (2 if drop == "--lr-decay-style" else 1)]
+    with pytest.raises(ValueError, match=message):
+        check_chain_recipe((*recipe, *add))
+
+
+def test_transient_errors_are_retried_and_persistent_ones_surface():
+    clock, calls = [0.0], []
+
+    def flaky():
+        calls.append(clock[0])
+        if len(calls) < 3:
+            raise ConnectionError("blip")
+        return "ok"
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    assert retrying(flaky, what="read", budget_seconds=60, clock=lambda: clock[0], sleep=sleep) == "ok"
+    with pytest.raises(ConnectionError):
+        retrying(
+            lambda: (_ for _ in ()).throw(ConnectionError("down")),
+            what="read",
+            budget_seconds=5,
+            clock=lambda: clock[0],
+            sleep=sleep,
+        )
+
+
+def train_row(loss=-0.01, grad=0.0016):
+    return [{"step": 0, "train/loss": loss, "train/grad_norm": grad}]
+
+
 class FakeCluster:
     """One node whose publisher scans whenever the coordinator waits, as the real thread would."""
 
-    def __init__(self, tmp_path, plan, outcomes, gates=None):
+    def __init__(self, tmp_path, plan, outcomes, gates=None, remaining=10**6, bad_finalize=()):
         self.tmp, self.plan, self.outcomes, self.gates = tmp_path, plan, outcomes, dict(gates or {})
         self.state, self.calls, self.staged, self.resets, self.finalized = {}, [], [], [], []
-        self.copied, self.finished = set(), set()
+        self.done, self.bad_finalize = set(), set(bad_finalize)
         self.publisher = ChainPublisher(
             rank=0,
             state=self.state,
@@ -297,13 +347,14 @@ class FakeCluster:
             run_step=self.run_step,
             persist=lambda *args: None,
             describe_receipt=lambda path: StateFile(path=path, size_bytes=1, sha256="f" * 64),
+            remaining_seconds=lambda: remaining,
         )
 
     def wait(self, predicate, timeout, what):
         for _ in range(3):
             if predicate():
                 return
-            publish_ready(self.plan, self.publisher, self.copied, self.finished)
+            publish_ready(self.plan, self.publisher, self.done)
         raise AssertionError(f"Coordinator waited for missing evidence: {what}")
 
     def stage(self, arm, step, attempt, previous):
@@ -311,37 +362,69 @@ class FakeCluster:
         return self.tmp / f"batch-{step}", (self.tmp / "resume") if previous else None
 
     def finalize(self, arm, step, attempt, completion, receipts):
+        if (arm.name, step) in self.bad_finalize:
+            raise ValueError("Invalid or nonfinite serving adapter")
         self.finalized.append((arm.name, step, attempt))
         return f"run/{arm.name}/step-{step + 1}/attempt-{attempt}/receipt.json"
 
     def run_step(self, arm, step, attempt, bundle, adapter):
         self.calls.append((arm.name, step, attempt, adapter is not None))
-        code, saves, *resumed = self.outcomes.get((arm.name, step, attempt), (0, True))
+        outcome = self.outcomes.get((arm.name, step, attempt), (0, True))
+        if outcome == "rejected":
+            return {"rejected": "SystemExit: 2", "exit_code": None, "train": [], "wall_s": 0}
+        code, saves, *resumed = outcome
         if saves:
             local = self.publisher.local_adapter(arm, step, attempt)
             local.mkdir(parents=True)
             (local / "native_checkpoint.json").write_text(native(step).model_dump_json())
-        result = {"exit_code": code, "perf": []}
+        result = {"exit_code": code, "perf": [], "train": train_row(), "wall_s": 2400}
         if adapter is not None:
             result["resume_confirmed"] = resumed[0] if resumed else True
         return result
+
+    def steps(self, arm=None):
+        return [(a, s) for a, s, *_ in self.calls if arm is None or a == arm]
 
 
 def test_both_arms_take_every_step_in_order_continuing_their_own_receipts(tmp_path, plan):
     fake = FakeCluster(tmp_path, plan, {})
     results = run_chain(plan, fake.runtime)
-    assert [(a, s) for a, s, *_ in fake.calls] == [(a.name, s) for a in plan.arms for s in range(3)]
+    assert fake.steps() == [(a.name, s) for a in plan.arms for s in range(3)]
     assert [c[3] for c in fake.calls] == [False, True, True] * 2
     assert fake.staged[1][3] == "run/mlp/step-1/attempt-0/receipt.json"
     assert fake.staged[4][3] == "run/full/step-1/attempt-0/receipt.json"
-    assert len(results) == 6 and fake.resets == []
+    assert len(results) == 6 and fake.resets == [] and not fake.state.get("stop-all")
 
 
-def test_operator_stop_ends_the_chain_without_holding(tmp_path, plan):
+def test_operator_stop_ends_the_chain(tmp_path, plan):
     fake = FakeCluster(tmp_path, plan, {}, gates={("mlp", 2): "stop"})
     results = run_chain(plan, fake.runtime)
-    assert [(a, s) for a, s, *_ in fake.calls] == [("mlp", 0), ("mlp", 1)]
-    assert len(results) == 2 and fake.state["stop-all"]
+    assert fake.steps() == [("mlp", 0), ("mlp", 1)]
+    assert len(results) == 2 and fake.state["stop-reason"] == "operator stop"
+
+
+@pytest.mark.parametrize("action, continues", [("stop", False), ("continue_if_healthy", True)])
+def test_unanswered_gate_follows_the_declared_action(tmp_path, plan, action, continues):
+    plan = plan.model_copy(update={"gate_timeout_action": action})
+    fake = FakeCluster(tmp_path, plan, {}, gates={("mlp", 1): "timeout"})
+    run_chain(plan, fake.runtime)
+    assert (("mlp", 1) in fake.steps()) == continues
+    assert len(fake.steps()) == (6 if continues else 1)
+
+
+def test_unanswered_gate_after_an_unhealthy_step_stops(tmp_path, plan):
+    plan = plan.model_copy(update={"gate_timeout_action": "continue_if_healthy"})
+    fake = FakeCluster(tmp_path, plan, {}, gates={("mlp", 1): "timeout"})
+    fake.run_step = lambda *a, original=fake.run_step: {**original(*a), "train": train_row(loss=float("nan"))}
+    fake.runtime = fake.runtime.__class__(**{**fake.runtime.__dict__, "run_step": fake.run_step})
+    run_chain(plan, fake.runtime)
+    assert fake.steps() == [("mlp", 0)] and "no approval" in fake.state["stop-reason"]
+
+
+def test_a_step_starts_only_with_enough_function_time(tmp_path, plan):
+    fake = FakeCluster(tmp_path, plan, {}, remaining=1.3 * 3600 + 899)
+    assert run_chain(plan, fake.runtime) == []
+    assert "too little function time" in fake.state["stop-reason"]
 
 
 def test_failed_attempt_retries_from_the_same_receipt_on_fresh_ray(tmp_path, plan):
@@ -362,19 +445,23 @@ def test_committed_update_is_never_applied_twice_after_cleanup_failure(tmp_path,
     assert [(a, s, t) for a, s, t, _ in fake.calls if a == "mlp"] == [("mlp", 0, 0), ("mlp", 1, 0), ("mlp", 2, 0)]
 
 
-def test_continuation_without_proof_of_resumed_state_holds(tmp_path, plan):
-    fake = FakeCluster(tmp_path, plan, {("mlp", 1, 0): (0, True, False)})
-    with pytest.raises(RuntimeError, match="without proof"):
-        run_chain(plan, fake.runtime)
-    assert fake.state["stop-all"]
-
-
-def test_exhausted_arm_holds_after_the_independent_arm_runs(tmp_path, plan):
-    fake = FakeCluster(tmp_path, plan, {("mlp", 1, 0): (1, False), ("mlp", 1, 1): (1, False)})
-    with pytest.raises(RuntimeError, match="holding allocation"):
-        run_chain(plan, fake.runtime)
-    assert [(a, s) for a, s, *_ in fake.calls if a == "full"] == [("full", 0), ("full", 1), ("full", 2)]
-    assert ("mlp", 2) not in [(a, s) for a, s, *_ in fake.calls]
+@pytest.mark.parametrize(
+    "outcomes, bad_finalize, reason",
+    [
+        ({("mlp", 1, 0): (0, True, False)}, (), "no proof"),
+        ({("mlp", 1, 0): (1, False), ("mlp", 1, 1): (1, False)}, (), "never became durable"),
+        ({("mlp", 1, 0): "rejected"}, (), "rejected before training"),
+        ({}, (("mlp", 1),), "could not certify"),
+    ],
+)
+def test_a_failed_arm_stops_only_itself(tmp_path, plan, outcomes, bad_finalize, reason):
+    fake = FakeCluster(tmp_path, plan, outcomes, bad_finalize=bad_finalize)
+    run_chain(plan, fake.runtime)
+    assert ("mlp", 2) not in fake.steps()
+    assert fake.steps("full") == [("full", 0), ("full", 1), ("full", 2)]
+    assert reason in fake.state["arm-failed/mlp"] and "arm-failed/full" not in fake.state
+    if outcomes.get(("mlp", 1, 0)) == "rejected":
+        assert fake.steps("mlp") == [("mlp", 0), ("mlp", 1)]  # A deterministic rejection is not retried.
 
 
 @pytest.mark.parametrize("release", [True, False])
@@ -397,6 +484,13 @@ def test_control_plane_outage_does_not_bypass_allocation_hold(release):
         clock[0] += seconds
 
     hold_failed_cluster(
-        State(), 0, hold_seconds=20, entered=0, exc=RuntimeError("failed"), clock=lambda: clock[0], sleep=sleep
+        State(),
+        0,
+        hold_seconds=20,
+        entered=0,
+        limit_seconds=24 * 3600,
+        exc=RuntimeError("failed"),
+        clock=lambda: clock[0],
+        sleep=sleep,
     )
     assert clock[0] == (10 if release else 20)
