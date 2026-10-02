@@ -1,0 +1,242 @@
+{
+  "source_run": "/mnt/inkling/checkpoints/deepseek-distill-10ep-bs32-010",
+  "output_dir": "/mnt/inkling/evaluations/deepseek-distill-010-epochs2-5-deepswe30-errors-retry-001",
+  "environment": "main",
+  "epochs": [
+    2,
+    5
+  ],
+  "validation_step": 12,
+  "evaluation": {
+    "platform_url": "https://backend-public-bc16.onrender.com",
+    "sets": {
+      "deepswe30": [
+        49785,
+        49786,
+        49788,
+        49789,
+        49790,
+        49793,
+        49794,
+        49800,
+        49809,
+        49813,
+        49819,
+        49829,
+        49834,
+        49836,
+        49839,
+        49847,
+        49849,
+        49850,
+        49853,
+        49855,
+        49856,
+        49859,
+        49865,
+        49867,
+        49871,
+        49881,
+        49887,
+        49888,
+        49890,
+        49894
+      ]
+    },
+    "rollouts_per_environment": 8,
+    "max_concurrent_rollouts": 400,
+    "serving_max_running_requests": 128,
+    "serving_tokenizer_workers": 8,
+    "serving_cpu": 32,
+    "serving_replicas": 2,
+    "modal_secret": "inkling-eval",
+    "platform_ui_url": "https://platform.proximal.so",
+    "max_concurrent_evaluations": 1
+  },
+  "pinned_environments": {
+    "49785": {
+      "environmentId": 49785,
+      "imageId": 1004226,
+      "sourceCommitSha": "0981e20acc326155c4346dee375d709781d5b21c",
+      "imageDigest": "sha256:afd8b3a7ba81eb7bdd99826610abdeaf25409941e53701ee1844631c33ad855c"
+    },
+    "49786": {
+      "environmentId": 49786,
+      "imageId": 1004222,
+      "sourceCommitSha": "460df4a29dbe8be9967f3adc1ab67596c949b038",
+      "imageDigest": "sha256:8d7e8654c0338230eee5953cce3fdbbe9cb9718309c41ea0a40cf0ad7df61cd7"
+    },
+    "49788": {
+      "environmentId": 49788,
+      "imageId": 1004225,
+      "sourceCommitSha": "26ae685d3e6a5eca77f9c4f91c94370faafcd1b7",
+      "imageDigest": "sha256:9763afb1ddfc1d793ca4d38b5454afed1f583af3837af0ff4fdcda489e24a42b"
+    },
+    "49789": {
+      "environmentId": 49789,
+      "imageId": 1004255,
+      "sourceCommitSha": "d0c50232925075c9106ac5e844b4a925c6c56716",
+      "imageDigest": "sha256:9cce504fb7bfd2be6797e2a1e637025893ab4684be47a82e92f2176e06734cf8"
+    },
+    "49790": {
+      "environmentId": 49790,
+      "imageId": 1004245,
+      "sourceCommitSha": "1f518c075508e6761386a76dcb0f66154c92362e",
+      "imageDigest": "sha256:6a72476602d115fcd54b18974c7e04a3d92601776e768d191cefb7809d8209ed"
+    },
+    "49793": {
+      "environmentId": 49793,
+      "imageId": 1004232,
+      "sourceCommitSha": "0e19b34c91542e24b808a49d504d4f401ef485f6",
+      "imageDigest": "sha256:080f490fa72a2c614c2d0b58fbca310dca6c41a3e5889415c6aa3884c091d805"
+    },
+    "49794": {
+      "environmentId": 49794,
+      "imageId": 1004234,
+      "sourceCommitSha": "103c435b8dedacca1311e235bc504452209ecd23",
+      "imageDigest": "sha256:0992353fb307487621863174197c7409c2caa6fa4f235d05b0908e076de0c6d2"
+    },
+    "49800": {
+      "environmentId": 49800,
+      "imageId": 1004249,
+      "sourceCommitSha": "e8ba3b0ab7a292b05b0e90f7fbab2b0ed6d2ebb3",
+      "imageDigest": "sha256:5b8d75ecbaea92414619269210cf407356cb3b0fccf6e862af3712c9feb0816c"
+    },
+    "49809": {
+      "environmentId": 49809,
+      "imageId": 1004268,
+      "sourceCommitSha": "32277db894e7a817c2688dfa74e6ebcd90d66a06",
+      "imageDigest": "sha256:0e7da18de9183e347685b54aff11d4d561e9aa91043c0cde9a95951172eae2a8"
+    },
+    "49813": {
+      "environmentId": 49813,
+      "imageId": 1004275,
+      "sourceCommitSha": "eff2cdfc8ff5bcddf9ba37a99f17cc5df4c3450f",
+      "imageDigest": "sha256:6e89323d092624754707fa723c37b0230b316ae0b0f5948524ea22e2c0df11cc"
+    },
+    "49819": {
+      "environmentId": 49819,
+      "imageId": 1004287,
+      "sourceCommitSha": "b39022b056f3942e9cdd1e6972054c66bc192330",
+      "imageDigest": "sha256:2626e1809585a57aa481f9aaeaf12f81fbd4fdfd40b802a976d8135cb61149b4"
+    },
+    "49829": {
+      "environmentId": 49829,
+      "imageId": 1004300,
+      "sourceCommitSha": "d6eb360c8c1ff3ca9aeb6a3c43f6b6c8028c34c7",
+      "imageDigest": "sha256:e433832a5aeabf99704ec6e56aa9f76d0f96678eac576891b94177e07908c740"
+    },
+    "49834": {
+      "environmentId": 49834,
+      "imageId": 1004365,
+      "sourceCommitSha": "59f0d195e6c898a7b85d605b6d845d23ecbdc7cd",
+      "imageDigest": "sha256:0307e315fe256b04fd260238ea5ca03fd126e847d437abcbc0c3d6b2bb90b783"
+    },
+    "49836": {
+      "environmentId": 49836,
+      "imageId": 1004303,
+      "sourceCommitSha": "8a624b310f401d8afa55223fc6057410918cd2be",
+      "imageDigest": "sha256:7682c63dcb019e5b54b24c49774a1c21122560c3228c0195e231f09d28b11fac"
+    },
+    "49839": {
+      "environmentId": 49839,
+      "imageId": 1004196,
+      "sourceCommitSha": "cb8f8c465c6cf9b81d21a838798710d74ee6c19f",
+      "imageDigest": "sha256:776f6d33c6df820d86a3dcee01f509897fc3757f0f1038bc15432c46338345b5"
+    },
+    "49847": {
+      "environmentId": 49847,
+      "imageId": 1004173,
+      "sourceCommitSha": "5decc282b948c65314fac7875817b71e0458aa7b",
+      "imageDigest": "sha256:6608b2c92e9b8fbf9e964f1dc6381247b2cb4bc1ebf2e37bb3def034ea59ae3b"
+    },
+    "49849": {
+      "environmentId": 49849,
+      "imageId": 1004180,
+      "sourceCommitSha": "80b4882c918be72b7d61e8454b7373737c576bbb",
+      "imageDigest": "sha256:b81751528571424009ab218692b029f3d82d0e7f37c46befc0550aded2c0956f"
+    },
+    "49850": {
+      "environmentId": 49850,
+      "imageId": 1004164,
+      "sourceCommitSha": "06a41c5134e318a02f19068a53efe7dec49be8bb",
+      "imageDigest": "sha256:7bdc8cf0f682ffaa72ef43ff5b5b4025092e30e8d70c74747e11135efa7673b2"
+    },
+    "49853": {
+      "environmentId": 49853,
+      "imageId": 1004242,
+      "sourceCommitSha": "2395191e0024dd9c826b27fd0b54e091754d27e5",
+      "imageDigest": "sha256:0c92a402be44840b8001c2f320d75d2265a82e56a27a7da982d7e282bdbab37a"
+    },
+    "49855": {
+      "environmentId": 49855,
+      "imageId": 1004158,
+      "sourceCommitSha": "2570e84009668cbd2a7c9bc34417a9b4b9eae5ef",
+      "imageDigest": "sha256:d8aa57d24a98c51170f0d7a84f14a7cf27a64e623319bdb79a008baf647b9698"
+    },
+    "49856": {
+      "environmentId": 49856,
+      "imageId": 1004206,
+      "sourceCommitSha": "5fefb669f9ce99eccf88f8937a2afbe558b4f591",
+      "imageDigest": "sha256:0fe4f5c7d947daaedbe329a27812e10d0a0c1bc02421a91c4e9fa342de632376"
+    },
+    "49859": {
+      "environmentId": 49859,
+      "imageId": 1004168,
+      "sourceCommitSha": "9f23a8c34a6c80ab7d004c394f2a09ae633a73c3",
+      "imageDigest": "sha256:c38f46d486a268c3489c751a01000d1459951735f4861240da0d5855e1b24109"
+    },
+    "49865": {
+      "environmentId": 49865,
+      "imageId": 1004208,
+      "sourceCommitSha": "84d35ba6da494589088599485a7149c415cf9ef1",
+      "imageDigest": "sha256:e89103a1b0f0d27a5a8126c7ba3d3eeed31c4ca5cd0b30e28b71715ac35263b8"
+    },
+    "49867": {
+      "environmentId": 49867,
+      "imageId": 1004144,
+      "sourceCommitSha": "31647aca3c2bb1910598ea2500b869afd7dffe3b",
+      "imageDigest": "sha256:159e8f3e119b46e3fa511b5c9f69a62541acde6d81932103c6b73a916767e750"
+    },
+    "49871": {
+      "environmentId": 49871,
+      "imageId": 1004153,
+      "sourceCommitSha": "092c9cf0d91e3e12e2e1b26f2fe20c446b033042",
+      "imageDigest": "sha256:9b5ef8c78b75f928203346a272d8a2586616ff7c3892ccc156da9e1d4edde4ca"
+    },
+    "49881": {
+      "environmentId": 49881,
+      "imageId": 1004337,
+      "sourceCommitSha": "b9ab5a36d33e4ea262dae71d44e4a5c770562bd2",
+      "imageDigest": "sha256:bcf97c88c012680847d8fe7caa898abe78cd01dc6d73ba9f0672d916d0634490"
+    },
+    "49887": {
+      "environmentId": 49887,
+      "imageId": 1004152,
+      "sourceCommitSha": "a99695d6358df01f930233d3c9f3a8b1b129df0a",
+      "imageDigest": "sha256:c591328aced940ebcf172264ee0c698c2a6a06af130e91ac1d097418952a4cda"
+    },
+    "49888": {
+      "environmentId": 49888,
+      "imageId": 1004167,
+      "sourceCommitSha": "67af2b525d3d518e570dd4cbfcf43c4aeb035804",
+      "imageDigest": "sha256:ef62c94d46b99ef58500df3b19f055b07d067c56c61c234f0659e72b6cf6876f"
+    },
+    "49890": {
+      "environmentId": 49890,
+      "imageId": 1004332,
+      "sourceCommitSha": "3ac8309fa3738bd4f844cb649eb0d46231048460",
+      "imageDigest": "sha256:a77a3e7c84f04cbb80c91961a36623ad021c1b5c187cada39099d795d8231b72"
+    },
+    "49894": {
+      "environmentId": 49894,
+      "imageId": 1004139,
+      "sourceCommitSha": "b13617108caadd0faf2af7d07e09d2953acc9e7d",
+      "imageDigest": "sha256:a72f4aee8befdefab65f8a0d916c91f07100299653ab0a9576972a6e02a6f87d"
+    }
+  },
+  "retry_sources": {
+    "12": "/mnt/inkling/evaluations/deepseek-distill-010-epochs2-5-deepswe30-8rollouts-001",
+    "30": "/mnt/inkling/evaluations/deepseek-distill-010-epoch5-deepswe30-8rollouts-002"
+  }
+}

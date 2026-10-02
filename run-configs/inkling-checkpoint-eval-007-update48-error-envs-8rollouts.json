@@ -1,0 +1,34 @@
+{
+  "source_run": "/mnt/inkling/checkpoints/inkling-sft-278-bs32-10epochs-007",
+  "output_dir": "/mnt/inkling/evaluations/inkling-sft-007-update48-deepswe-error-envs-8rollouts-001",
+  "environment": "main",
+  "epochs": [
+    5.525179856115108
+  ],
+  "validation_step": 18,
+  "evaluation": {
+    "platform_url": "https://backend-public-bc16.onrender.com",
+    "sets": {
+      "deepswe30": [
+        49871
+      ]
+    },
+    "rollouts_per_environment": 8,
+    "max_concurrent_rollouts": 400,
+    "serving_max_running_requests": 128,
+    "serving_tokenizer_workers": 8,
+    "serving_cpu": 32,
+    "serving_replicas": 2,
+    "modal_secret": "inkling-eval",
+    "platform_ui_url": "https://platform.proximal.so",
+    "max_concurrent_evaluations": 2
+  },
+  "pinned_environments": {
+    "49871": {
+      "environmentId": 49871,
+      "imageId": 1004153,
+      "sourceCommitSha": "092c9cf0d91e3e12e2e1b26f2fe20c446b033042",
+      "imageDigest": "sha256:9b5ef8c78b75f928203346a272d8a2586616ff7c3892ccc156da9e1d4edde4ca"
+    }
+  }
+}
