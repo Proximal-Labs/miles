@@ -274,13 +274,15 @@ class LaunchRetry(Contract):
     what is trained; without a retry one such failure drops the whole group. Retries
     wait ``backoff_seconds * 2**n`` (capped at ``max_backoff_seconds``) with full jitter,
     and each rollout's first launch waits up to ``stagger_seconds`` so a group's launches
-    do not arrive at once.
+    do not arrive at once. ``replica_choices`` above 1 places each launch on the least
+    loaded of that many candidate replicas (``rollout.place``).
     """
 
     attempts: Positive
     backoff_seconds: Annotated[FiniteFloat, Field(gt=0)]
     max_backoff_seconds: Annotated[FiniteFloat, Field(gt=0)]
     stagger_seconds: Annotated[FiniteFloat, Field(ge=0)]
+    replica_choices: Positive = 1
 
     @model_validator(mode="after")
     def _bounded(self) -> "LaunchRetry":
@@ -478,6 +480,12 @@ class SessionHandle(Contract):
     rollout_id: Nonempty
     base_url: Endpoint
     request_sha256: Digest
+
+
+class ReplicaLoad(Contract):
+    """A replica's live rollouts."""
+
+    sessions: Annotated[int, Field(ge=0)]
 
 
 class CaptureReceipt(Contract):

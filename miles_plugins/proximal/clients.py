@@ -20,6 +20,7 @@ from miles_plugins.proximal.contracts import (
     Grade,
     Policy,
     PolicyEvidence,
+    ReplicaLoad,
     ServingContract,
     SessionHandle,
     affinity_headers,
@@ -107,6 +108,8 @@ LAUNCH_FAILED_PREFIX = "Launch failed:"
 # Cloudflare's origin errors (52x), and 500s such as an exhausted database pool.
 TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 REQUEST_ATTEMPTS = 4
+# A load probe only informs a launch's placement: one try, no retries.
+LOAD_PROBE_SECONDS = 5.0
 # How long a status read may keep failing before the rollout is given up. A failed read
 # says nothing about the rollout, which keeps running on the platform.
 STATUS_OUTAGE_SECONDS = 300.0
@@ -171,6 +174,14 @@ class CaptureClient:
             self.client, "GET", f"{self.url}/capture/contract", headers=self.headers | affinity_headers(affinity)
         )
         return ServingContract.model_validate_json(response.content)
+
+    async def load(self, affinity: str) -> ReplicaLoad:
+        """The live rollouts on the replica this affinity key routes to."""
+        response = await self.client.get(
+            f"{self.url}/capture/load", headers=self.headers | affinity_headers(affinity), timeout=LOAD_PROBE_SECONDS
+        )
+        response.raise_for_status()
+        return ReplicaLoad.model_validate_json(response.content)
 
     def _session(self, handle: SessionHandle) -> str:
         return f"{self.url}/sessions/{handle.session_id}"

@@ -26,10 +26,12 @@ from miles_plugins.proximal.contracts import (
     FailedAttempt,
     Grade,
     LaunchRetry,
+    ReplicaLoad,
     SessionHandle,
     Task,
     canonical_bytes,
     pinned_dataset,
+    platform_rollout_id,
     read_run_config,
 )
 from miles_plugins.proximal.data_source import PlatformTaskSource
@@ -215,6 +217,23 @@ async def execute_attempt(
             task.add_done_callback(_releases.discard)
 
 
+async def place(attempt: Attempt, capture: CaptureClient, choices: int) -> Attempt:
+    """The attempt under whichever of ``choices`` candidate identities routes to the replica
+    with the fewest live rollouts. The given identity is the first candidate and wins a tie;
+    a replica that does not answer is not chosen."""
+    if choices == 1:
+        return attempt
+    candidates = [attempt.attempt_id, *(uuid.uuid4().hex for _ in range(choices - 1))]
+    loads = await asyncio.gather(
+        *(capture.load(platform_rollout_id(candidate)) for candidate in candidates), return_exceptions=True
+    )
+    answered = [(load.sessions, index) for index, load in enumerate(loads) if isinstance(load, ReplicaLoad)]
+    if not answered:
+        logger.warning("No replica reported its load for attempt %s; keeping its identity", attempt.attempt_id)
+        return attempt
+    return Attempt.model_validate({**attempt.model_dump(), "attempt_id": candidates[min(answered)[1]]})
+
+
 async def execute_with_launch_retry(
     attempt: Attempt,
     sample: Sample,
@@ -232,6 +251,7 @@ async def execute_with_launch_retry(
     rng = rng or random.Random()
     await asyncio.sleep(rng.uniform(0, retry.stagger_seconds))
     for launch in range(retry.attempts):
+        attempt = await place(attempt, capture, retry.replica_choices)
         try:
             return await execute_attempt(
                 attempt, sample, capture=capture, platform=platform, artifact_root=artifact_root, store=store

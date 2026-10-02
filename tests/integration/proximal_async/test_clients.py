@@ -170,6 +170,19 @@ async def test_only_transient_statuses_are_retried(status, retried, monkeypatch)
             assert len(calls) == 1
 
 
+async def test_a_load_probe_is_one_try(authorization):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(503, text="busy")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await CaptureClient(authorization, client).load("any")
+    assert len(calls) == 1
+
+
 async def test_a_malformed_platform_reply_fails_the_attempt_not_the_run(config, authorization, attempt):
     """Only IneligibleAttempt is contained to its group; any other error stops the rollout worker."""
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler(config, attempt, "malformed"))) as client:

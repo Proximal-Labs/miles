@@ -17,7 +17,7 @@ from miles.rollout.session.samples.codec import decode_samples_and_merge_input_s
 from miles.utils.types import Sample
 from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient
-from miles_plugins.proximal.contracts import AcceptedAttempt, serving_contract
+from miles_plugins.proximal.contracts import AcceptedAttempt, ReplicaLoad, serving_contract
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
 
@@ -439,8 +439,10 @@ async def test_capture_composed_like_a_replica(config, authorization, policy, at
                 json={"model": config.base_model.name, "messages": [{"role": "user", "content": "hi"}]},
             )
             assert reply.status_code == 200, reply.text
+            assert await client.load("any") == ReplicaLoad(sessions=1)
             receipt, _ = await client.collect(handle, attempt)
             assert receipt.num_calls == 1 and admitted == [other.policy, policy]
+            assert await client.load("any") == ReplicaLoad(sessions=0)  # Sealed.
     assert (tmp_path / "capture" / "sessions" / handle.session_id / "receipt.json").exists()
 
 
@@ -467,6 +469,7 @@ async def test_a_new_run_on_the_same_deployment_needs_no_redeploy(
             client = CaptureClient(authorization, http)
             assert await client.serving_contract("any") == serving_contract(config)
             assert (await http.get(f"{config.capture.url}/capture/contract")).status_code == 401
+            assert (await http.get(f"{config.capture.url}/capture/load")).status_code == 401
 
             sampling = attempt.sampling
             next_run = attempt.model_copy(
