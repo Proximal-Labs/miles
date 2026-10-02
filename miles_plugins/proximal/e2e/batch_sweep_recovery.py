@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from miles_plugins.proximal.e2e.batch_sweep_artifacts import SweepStep
+from miles_plugins.proximal.e2e.batch_sweep_artifacts import EXPORTS, SweepStep
 from miles_plugins.proximal.e2e.batch_sweep_inputs import SweepPhase, SweepPlan
 from miles_plugins.proximal.initial_policy import copy_base_policy, verify_base_policy
 from miles_plugins.proximal.state_artifacts import copy_verified, describe, verify
@@ -56,12 +56,12 @@ def read_resume(mount: Path, plan: SweepPlan, phase: SweepPhase) -> tuple[Path, 
             raise ValueError(f"Native sweep resume changes {name}")
     adapter = path.parent / "checkpoints" / "iter_0000000" / "adapter"
     names = [file.path for file in receipt.files]
-    required = {"adapter_config.json", "adapter_model.bin"} | {
+    required = {"adapter_config.json", *(name for name in EXPORTS if name in names)} | {
         f"{prefix}{rank}.pt"
         for rank in range(receipt.native.world_size)
         for prefix in ("adapter_megatron_rank", "training_state_rank")
     }
-    if len(set(names)) != len(names) or set(names) != required:
+    if len(set(names)) != len(names) or set(names) != required or len(required & set(EXPORTS)) != 1:
         raise ValueError("Resume receipt must contain exactly every native, optimizer and serving file")
     for file in receipt.files:
         verify(adapter / file.path, file)
