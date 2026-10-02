@@ -382,6 +382,11 @@ on data k versions old; the source's behavior correction (TIS) is the only off-p
 correction, and the source's `max_policy_lag` bounds the number of steps. Arms see the
 same batches in the same order and start fresh from that base policy.
 
+`nodes: 1` runs on one 8-GPU container, which schedules far faster than a gang (use it for
+smoke runs). Modal's size-1 cluster reports no IPv4 list or cluster ID, so Ray runs on
+loopback (as the single-node trainer does), the container's task ID scopes coordination,
+and the RDMA check is skipped because one node has no inter-node traffic.
+
 The plan schema is
 [`ChainPlan`](../../miles_plugins/proximal/e2e/batch_chain_inputs.py):
 
