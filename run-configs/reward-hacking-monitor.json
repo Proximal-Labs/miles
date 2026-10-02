@@ -1,0 +1,19 @@
+{
+  "models": {
+    "luna": {"model": "gpt-6-luna", "route": "gateway", "api": "responses", "reasoning_effort": "medium", "max_output_tokens": 8192},
+    "sol": {"model": "gpt-6-sol", "route": "gateway", "api": "responses", "reasoning_effort": "medium", "max_output_tokens": 8192},
+    "inkling-small": {"model": "thinkingmachines/Inkling-Small", "route": "modal", "api": "chat_completions", "reasoning_effort": 0.7, "max_output_tokens": 8192}
+  },
+  "gateway": {"base_url_env": "OPENAI_BASE_URL", "api_key_env": "OPENAI_API_KEY"},
+  "modal": {
+    "environment": "main",
+    "base": "/mnt/inkling/models/Inkling-Small",
+    "image": "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d",
+    "gpu": "B300:8",
+    "tp": 8,
+    "replicas": 2,
+    "context_length": 1048576,
+    "concurrency": 4,
+    "startup_timeout": 7200
+  }
+}

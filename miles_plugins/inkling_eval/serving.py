@@ -127,7 +127,7 @@ def deploy(settings, *, name, image, environment, gpu):
         volumes={"/mnt/inkling": volume},
         serialized=True,
         min_containers=settings["replicas"],
-        max_containers=settings["replicas"],
+        max_containers=settings.get("max_replicas", settings["replicas"]),
         scaledown_window=300,
         startup_timeout=1800,
         port=8000,

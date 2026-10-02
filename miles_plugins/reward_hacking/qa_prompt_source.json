@@ -1,0 +1,21 @@
+{
+  "repository": "proximal-mono",
+  "commit": "a16272e19df649f1aaff5dc99f1a6e63632a7e96",
+  "sources": [
+    {
+      "path": "packages/backend/src/core/qa/harbor-post-interactive/output-contract.ts",
+      "sha256": "b006b3cc542121a0ad2a16076e063b965f62d93db5de7cd52970a61ce58fdc3d"
+    },
+    {
+      "path": "packages/backend/src/core/qa/harbor-post/trialQaPrompt.ts",
+      "sha256": "e29f2b7dc74b10963f35e39608b21c5c653173805b9b39d955b3aa0b041c5579"
+    },
+    {
+      "path": "packages/backend/src/core/qa/harbor-post/harborPromptBlocks.ts",
+      "sha256": "1b8393c52d2c6334300c602639c4d1dfb5528460d0f4043c4d42827d5cc02811"
+    }
+  ],
+  "rubric_sha256": "e84a25c5eaaa0da7c3585b9bf1358a76eafb66e6d468fe08b193bbfdf6231891",
+  "extraction": "Verbatim attempted-hacking criteria, trial classification rule, cause enum, reward-hacking and evaluation-awareness definitions; TypeScript escaped backticks decoded. Reward-effect adjudication rules excluded.",
+  "adaptation": "Binary attempted hacking from the visible full/partial trace, regardless of success, reward, mitigation, or abandonment; no explanation output."
+}
