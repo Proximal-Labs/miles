@@ -5,6 +5,8 @@ that process restarts. This helper does not provision replicas, evict adapters,
 perform inference, or declare a policy globally ready.
 """
 
+import shutil
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,8 +17,13 @@ import httpx
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles_plugins.proximal.adapter_delta import materialize_snapshot
-from miles_plugins.proximal.snapshot import BaseModelIdentity, Nonempty, SnapshotReference, snapshot_relative_path
+from miles_plugins.proximal.snapshot import (
+    BaseModelIdentity,
+    Nonempty,
+    SnapshotReference,
+    read_snapshot,
+    snapshot_relative_path,
+)
 
 _AUTHORITY = object()
 
@@ -99,6 +106,22 @@ class ReplicaLoRALoader:
         self._lock = threading.Lock()
         self._loaded: dict[str, RegisteredAdapter] = {}
 
+    @property
+    def upload_directory(self) -> Path:
+        return self._cache / "incoming"
+
+    def install_uploaded(self, directory: Path, reference: SnapshotReference) -> None:
+        with self._lock:
+            snapshot = read_snapshot(directory, reference)
+            if snapshot.manifest.metadata.base_model != self._config.base_model:
+                raise ValueError("Uploaded snapshot base model does not match this replica")
+            destination = self._cache / snapshot_relative_path(reference)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                read_snapshot(destination, reference)
+            else:
+                directory.rename(destination)
+
     def ensure_loaded(self, reference: SnapshotReference) -> RegisteredAdapter:
         """Serialize refresh/copy/register within this replica; never change an existing adapter name."""
         with self._lock:
@@ -127,7 +150,20 @@ class ReplicaLoRALoader:
         destination = self._cache / snapshot_relative_path(reference)
         if not destination.exists():
             self._reload_volume()  # No Volume file is held open across this call.
-        return materialize_snapshot(self._mount, self._cache, reference, self._config.base_model).directory
+            source = read_snapshot(self._mount / snapshot_relative_path(reference), reference)
+            if source.manifest.metadata.base_model != self._config.base_model:
+                raise ValueError("Snapshot base model does not match this replica")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            # Copy into a temporary sibling so a failed copy is never a cache hit.
+            with tempfile.TemporaryDirectory(prefix=".load-", dir=destination.parent) as temporary:
+                staged = Path(temporary) / "bundle"
+                shutil.copytree(source.directory, staged)
+                read_snapshot(staged, reference)
+                staged.rename(destination)
+        cached = read_snapshot(destination, reference)
+        if cached.manifest.metadata.base_model != self._config.base_model:
+            raise ValueError("Cached snapshot base model does not match this replica")
+        return destination
 
     def unload_idle(self, reference: SnapshotReference) -> None:
         """Caller must hold its request-admission lock and prove no active users.

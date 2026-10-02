@@ -1,8 +1,8 @@
 """Existing WeightUpdater -> complete PEFT snapshot -> Volume -> serving policy.
 
-All ranks join HF tensor gathers. Rank zero exports the adapter; optional
-sharded publication lets every rank upload disjoint ranges on one training node.
-Collective verdicts keep a failed upload from stranding sibling ranks.
+All ranks join HF gathers. HTTP scatters full-snapshot byte ranges to every rank;
+plain Volume publication retains the existing rank-zero path. Recovery archives
+are drained by the run-state writer before a policy becomes fleet-selectable.
 
 A version becomes selectable only after a replica verified it and the rollout
 store recorded it. The first publication of a process rewinds the store to the
@@ -11,11 +11,10 @@ resumed checkpoint, abandoning versions whose weights the resume discarded.
 
 import asyncio
 import json
-import socket
 import tempfile
+import time
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack
 from pathlib import Path
 
 import httpx
@@ -30,20 +29,15 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
-from miles_plugins.proximal.adapter_delta import prepare_delta
+from miles_plugins.proximal import policy_archive
 from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.clients import ServingPoolClient
-from miles_plugins.proximal.contracts import Policy, read_run_config
-from miles_plugins.proximal.modal_volume import (
-    authorize_volume_publication,
-    modal_complete_sharded,
-    modal_publish_delta_snapshot,
-    modal_publish_shard,
-    modal_publish_snapshot,
-)
+from miles_plugins.proximal.contracts import Policy, PolicyEvidence, RunStateArtifacts, read_run_config
+from miles_plugins.proximal.http_sync import REPLICA_HEADER, PartReceipt, UploadTarget, upload_headers, upload_request
+from miles_plugins.proximal.modal_volume import authorize_volume_publication, modal_publish_snapshot
 from miles_plugins.proximal.serving import lora_serving_targets
-from miles_plugins.proximal.sharded_snapshot import ShardedSnapshot, prepare_sharded
+from miles_plugins.proximal.sharded_snapshot import ShardedManifest, prepare_sharded
 from miles_plugins.proximal.snapshot import PreparedSnapshot, SnapshotMetadata, prepare_snapshot
 from miles_plugins.proximal.store import open_store
 
@@ -88,8 +82,6 @@ class ModalVolumeTransfer(WeightTransferProtocol):
             self.config, yes_rollouts=args.proximal_yes_rollouts, yes_publish=args.proximal_yes_publish
         )
         self.initial_weight_version = args.start_rollout_id or 0
-        self._previous_snapshot: PreparedSnapshot | None = None
-        self._delta_depth = 0
         self._rewound = False
         self._tensors: dict[str, torch.Tensor] = {}
         self._error: str | None = None
@@ -116,19 +108,28 @@ class ModalVolumeTransfer(WeightTransferProtocol):
             raise ValueError(
                 "Modal publication requires full adapter gather, one actor cell, and no local rollout engines"
             )
+        if self.config.weight_sync_transport == "http" and not isinstance(
+            self.config.artifact_storage, RunStateArtifacts
+        ):
+            raise ValueError("HTTP publication requires the Modal run-state writer for background recovery archives")
         self.rollout_engines = rollout_engines
         self.is_sender = dist.get_rank() == 0
-        if self.config.lora_sharded_upload:
-            hosts: list[str | None] = [None] * dist.get_world_size()
-            dist.all_gather_object(hosts, socket.gethostname(), group=get_gloo_group())  # type: ignore[no-untyped-call]
-            if len(set(hosts)) != 1:
-                raise ValueError("Sharded Modal upload currently requires ranks on one training node")
 
     def begin_sync(
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
         self._tensors.clear()
         self._error = None
+        if self.config.weight_sync_transport == "http":
+            error = None
+            if self.is_sender:
+                deadline = time.monotonic() + self.config.request_timeout_seconds
+                while policy_archive.pending_path(self.config).exists():
+                    if time.monotonic() >= deadline:
+                        error = "Previous policy archive is still pending; refusing another update"
+                        break
+                    time.sleep(0.1)
+            self._check_rank_errors(error)
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -149,86 +150,146 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         except Exception as exc:
             self._error = f"{type(exc).__name__}: adapter staging failed"
 
-    def finalize(self, weight_version: int) -> None:
-        verdict: list[str | None] = [self._error]
-        if self.is_sender and verdict[0] is None:
-            # A layout SGLang would serve differently from the trained adapter never publishes.
-            verdict[0] = adapter_layout_problem(
-                {name: tuple(tensor.shape) for name, tensor in self._tensors.items()},
-                serving_targets=lora_serving_targets(self.config),
-                rank=self.args.lora_rank,
-            )
-        dist.broadcast_object_list(verdict, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
-        try:
-            if verdict[0] is not None:
-                raise RuntimeError(verdict[0])
-            if self.config.lora_sharded_upload:
-                self._publish_sharded(weight_version)
-            else:
-                if self.is_sender:
-                    try:
-                        asyncio.run(self._publish(weight_version))
-                    except Exception as exc:
-                        # Do not distribute provider exceptions that might contain credentials.
-                        verdict[0] = f"{type(exc).__name__}: immutable policy publication failed"
-                dist.broadcast_object_list(verdict, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
-                if verdict[0] is not None:
-                    raise RuntimeError(verdict[0])
-        finally:
-            self._tensors.clear()
-
     @staticmethod
     def _check_rank_errors(error: str | None) -> None:
         errors: list[str | None] = [None] * dist.get_world_size()
         dist.all_gather_object(errors, error, group=get_gloo_group())  # type: ignore[no-untyped-call]
         if any(errors):
-            raise RuntimeError(f"Sharded publication failed: {errors}")
+            raise RuntimeError(f"Policy publication failed: {errors}")
 
-    def _publish_sharded(self, version: int) -> None:
-        publication = authorize_volume_publication(self.config.volume, yes_publish=True)
-        plans: list[ShardedSnapshot | None] = [None]
+    def finalize(self, weight_version: int) -> None:
+        error = self._error
+        if self.is_sender and error is None:
+            error = adapter_layout_problem(
+                {name: tuple(tensor.shape) for name, tensor in self._tensors.items()},
+                serving_targets=lora_serving_targets(self.config),
+                rank=self.args.lora_rank,
+            )
+        try:
+            self._check_rank_errors(error)
+            if self.config.weight_sync_transport == "http":
+                self._publish_http(weight_version)
+            else:
+                if self.is_sender:
+                    try:
+                        asyncio.run(self._publish(weight_version))
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: immutable policy publication failed"
+                self._check_rank_errors(error)
+        finally:
+            self._tensors.clear()
+
+    def _publish_http(self, version: int) -> None:
+        plans: list[ShardedManifest | None] = [None]
+        targets: list[UploadTarget | None] = [None]
+        outgoing: list[list[tuple[int, bytes]]] | None = None
         snapshot = None
-        depth = 0
-        # Rank zero owns the staging lifetime until all ranks have completed their uploads.
-        with ExitStack() as stack:
-            error = None
-            if self.is_sender:
-                try:
-                    snapshot = self._export_snapshot(version)
-                    temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=snapshot.directory.parent)))
-                    delta = None
-                    if self.config.lora_delta_sync and self._previous_snapshot is not None:
-                        delta = prepare_delta(
-                            snapshot, self._previous_snapshot, depth=self._delta_depth + 1, output=temporary / "delta"
-                        )
-                    depth = 0 if delta is None else delta.manifest.depth
-                    plans[0] = prepare_sharded(
-                        snapshot.directory if delta is None else delta.directory,
-                        snapshot.reference,
-                        kind="snapshot" if delta is None else "delta",
-                        world_size=dist.get_world_size(),
-                        marker=temporary / "parts.json",
-                    )
-                except Exception as exc:
-                    error = f"{type(exc).__name__}: adapter export failed"
-            self._check_rank_errors(error)
-            dist.broadcast_object_list(plans, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
-            plan = plans[0]
-            assert plan is not None
+        error = None
+        if self.is_sender:
             try:
-                modal_publish_shard(publication, plan, rank=dist.get_rank())
+                snapshot = self._export_snapshot(version)
+                prepared_manifest = prepare_sharded(
+                    snapshot.directory, snapshot.reference, world_size=dist.get_world_size()
+                )
+                plans[0] = prepared_manifest
+                outgoing = [[] for _ in range(dist.get_world_size())]
+                index = 0
+                for name, parts in prepared_manifest.files.items():
+                    with (snapshot.directory / name).open("rb") as stream:
+                        for part in parts:
+                            stream.seek(part.offset)
+                            outgoing[part.rank].append((index, stream.read(part.size_bytes)))
+                            index += 1
             except Exception as exc:
-                error = f"rank {dist.get_rank()}: {type(exc).__name__}: shard upload failed"
-            self._check_rank_errors(error)
+                error = f"{type(exc).__name__}: adapter export failed"
+        self._check_rank_errors(error)
+        dist.broadcast_object_list(plans, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
+        manifest = plans[0]
+        assert manifest is not None
+        # Ranks receive their own bytes; no cross-machine shared filesystem is assumed.
+        incoming: list[list[tuple[int, bytes]] | None] = [None]
+        dist.scatter_object_list(incoming, outgoing, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
+        del outgoing
+        with httpx.Client(
+            base_url=self.config.inference_url,
+            headers=upload_headers(self.authorization, manifest.snapshot),
+            timeout=self.config.request_timeout_seconds,
+            trust_env=False,
+        ) as client:
             if self.is_sender:
                 try:
-                    assert snapshot is not None
-                    modal_complete_sharded(publication, plan)
-                    asyncio.run(self._activate(snapshot, version))
-                    self._previous_snapshot, self._delta_depth = snapshot, depth
+                    client.headers["Content-Type"] = "application/json"
+                    response = upload_request(
+                        client, "POST", "/policies/uploads", content=manifest.model_dump_json().encode()
+                    )
+                    reply_target = UploadTarget.model_validate_json(response.content)
+                    targets[0] = reply_target
+                    if reply_target.snapshot != manifest.snapshot:
+                        raise ValueError("Replica acknowledged another snapshot")
                 except Exception as exc:
-                    error = f"{type(exc).__name__}: immutable policy publication failed"
+                    error = f"{type(exc).__name__}: HTTP upload handshake failed"
             self._check_rank_errors(error)
+            dist.broadcast_object_list(targets, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
+            target = targets[0]
+            assert target is not None
+            client.headers[REPLICA_HEADER] = target.replica_id
+            client.headers["Content-Type"] = "application/octet-stream"
+            prefix = f"/policies/uploads/{manifest.snapshot.sha256}"
+            try:
+                try:
+                    assert incoming[0] is not None
+                    upload_parts = [part for group in manifest.files.values() for part in group]
+                    for index, data in incoming[0]:
+                        response = upload_request(client, "PUT", f"{prefix}/{index}", content=data)
+                        receipt = PartReceipt.model_validate_json(response.content)
+                        if (
+                            receipt.sha256 != upload_parts[index].sha256
+                            or receipt.size_bytes != upload_parts[index].size_bytes
+                        ):
+                            raise ValueError("Replica acknowledged different part bytes")
+                except Exception as exc:
+                    error = f"rank {dist.get_rank()}: {type(exc).__name__}: HTTP shard upload failed"
+                self._check_rank_errors(error)
+                if self.is_sender:
+                    try:
+                        response = upload_request(client, "POST", f"{prefix}/complete", content=b"")
+                        evidence = PolicyEvidence.model_validate_json(response.content)
+                        if (
+                            evidence.snapshot != manifest.snapshot
+                            or evidence.base_model != self.config.base_model
+                            or evidence.request_model
+                            != f"{self.config.base_model.name}:miles-{manifest.snapshot.sha256}"
+                        ):
+                            raise ValueError("Replica did not verify the published policy")
+                        asyncio.run(self._rewind())
+                        policy_archive.enqueue(
+                            self.authorization,
+                            Policy(
+                                run_id=self.config.run_id,
+                                version=version,
+                                snapshot=manifest.snapshot,
+                                base_model=self.config.base_model,
+                            ),
+                        )
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: HTTP policy preparation failed"
+                self._check_rank_errors(error)
+            except BaseException:
+                if self.is_sender:
+                    try:
+                        upload_request(client, "DELETE", prefix, content=b"")
+                    except httpx.HTTPError:
+                        pass  # The original failure wins; a replaced replica has no upload to cancel.
+                raise
+
+    async def _rewind(self) -> None:
+        if not self._rewound:
+            store = await open_store(self.config)
+            try:
+                await store.rewind(keep_through=self.initial_weight_version)
+                self._rewound = True
+            finally:
+                await store.close()
 
     def _export_snapshot(self, version: int) -> PreparedSnapshot:
         if not self._tensors:
@@ -252,21 +313,7 @@ class ModalVolumeTransfer(WeightTransferProtocol):
     async def _publish(self, version: int) -> None:
         snapshot = self._export_snapshot(version)
         publication = authorize_volume_publication(self.config.volume, yes_publish=True)
-        depth = 0
-        if self.config.lora_delta_sync:
-            depth = await asyncio.to_thread(
-                modal_publish_delta_snapshot,
-                publication,
-                snapshot,
-                base=self._previous_snapshot,
-                depth=self._delta_depth + 1,
-            )
-        else:
-            await asyncio.to_thread(modal_publish_snapshot, publication, snapshot)
-        await self._activate(snapshot, version)
-        self._previous_snapshot, self._delta_depth = snapshot, depth
-
-    async def _activate(self, snapshot: PreparedSnapshot, version: int) -> None:
+        await asyncio.to_thread(modal_publish_snapshot, publication, snapshot)
         policy = Policy(
             run_id=self.config.run_id, version=version, snapshot=snapshot.reference, base_model=self.config.base_model
         )

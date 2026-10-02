@@ -302,8 +302,7 @@ class RunConfig(Contract):
     # Header name -> environment variable name, never credential values.
     inference_header_env: dict[str, Nonempty]
     volume: VolumeDestination
-    lora_delta_sync: bool = False
-    lora_sharded_upload: bool = False
+    weight_sync_transport: Literal["volume", "http"] = "volume"
     # Mount point for stored group payloads, sealed captures and publication staging.
     artifact_directory: Path
     artifact_storage: ArtifactStorage

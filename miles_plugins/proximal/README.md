@@ -254,40 +254,44 @@ and nondeterministic kernels mean this is not a bit-identical whole-run promise.
 Platform catalog registration and artifact download access remain a separate PR.
 
 
-## Optional LoRA delta publication
+## Full-snapshot HTTP weight sync
 
-Set `"lora_delta_sync": true` in the run config and use this Miles revision on
-both trainer and replicas. The default remains full-snapshot publication.
-This uses the existing SGLang disk-delta format: per-tensor byte XOR, Zstd level 1,
-unchanged tensors omitted, and Adler32 checksums of reconstructed tensors. The
-complete snapshot still undergoes SHA-256 verification before SGLang loads it.
-NumPy, safetensors and Zstandard are required on both sides (already in the Miles
-training image requirements).
+Set `"weight_sync_transport": "http"` in the run config to enable rank-sharded
+HTTP delivery through the Modal training launcher. The default `"volume"` keeps
+existing full-snapshot publication. Deploy updated serving replicas first.
+The existing `ModalVolumeTransfer` import path is retained for config compatibility.
 
-The trainer publishes a full anchor first, then at most seven deltas. It falls
-back to a full snapshot on layout/config changes or when a delta is larger.
-A restart starts a new full anchor. A cold replica retrieves the necessary anchor
-and replays its deltas. Keep anchors and intermediate deltas on the Volume while
-any policy that depends on them remains loadable; missing or corrupt artifacts
-fail closed. The new adapter is reconstructed into a temporary local directory,
-verified and atomically installed, preserving older active adapter versions.
-Deploy updated receivers before enabling the run option: old receivers cannot
-load delta-only publications.
+Rank zero gathers/exports a complete adapter and scatters disjoint byte ranges
+to every training rank. Each rank uploads its own bytes; sender nodes need no
+shared staging filesystem. This introduces an inter-rank scatter and extra CPU
+copies, which must be measured in production. Export is still centralized.
 
-## Optional multi-rank uploads
+All upload requests use one affinity key and carry the receiver instance ID
+returned by the handshake. A request routed to another replica is rejected.
+Checksummed parts are reconstructed and the complete snapshot verified before
+SGLang loads it. A failed rank leaves the policy unselected; the whole upload can
+be retried. One incomplete upload per receiver bounds staging; a pinned cancel
+cleans up failed attempts. A lost receiver/affinity change may require a retry.
 
-Set `"lora_sharded_upload": true` to have all training ranks upload disjoint byte
-ranges of the prepared snapshot. This option requires **one training node** with
-shared staging files, matching an eight-GPU Modal trainer. All ranks participate
-in completion/error collectives. Rank zero publishes the completion marker only
-after every rank's upload and readback verification succeeds; replica preparation
-and policy commit follow. An upload failure leaves the policy version unchanged
-and can be retried without replacing immutable remote files.
+After HTTP readiness, the trainer queues one immutable full snapshot for the
+**existing run-state writer**. That writer calls the existing plain Volume
+publisher and commits the policy to the rollout store only after durability.
+A replacement replica therefore loads selected policies from the normal adapter
+Volume. HTTP readiness is earlier than fleet-selectable readiness; this does
+not remove Volume latency from policy availability. There is no guaranteed
+end-to-end speedup from the earlier transport benchmark.
 
-HF tensor gathering, PEFT export and optional delta compression still happen on
-rank zero. This change parallelizes network publication, not tensor export. Ranks
-on one node share that node's egress bandwidth. Both options default to false and
-can be enabled separately or together. The receiver reconstructs the original
-files and applies the same snapshot/delta integrity checks before registering
-an immutable adapter. Updated receivers must be deployed before enabling either
-option. GPU/Modal performance remains unmeasured; CPU tests establish correctness.
+Training continues after enqueue; the next sync waits if that one archive is
+still pending, with a bounded timeout. Archive failures retain the item for the
+writer's existing retry loop. The writer's existing shutdown drain includes it.
+The HTTP path requires `run_state` artifact storage, supplied by the Modal
+training launcher, so it cannot silently enqueue without a writer. HTTP is a
+benchmark-selected candidate and remains opt-in until deployed GPU validation.
+
+Native adapter/optimizer/scheduler/RNG checkpoints, their state Volume, capture
+semantics and restore path are unchanged. Local checkpoint capture/save still
+blocks; Volume publication already runs in the background. Inference-policy
+archival is separate from resumable native training checkpoints.
+
+The previous experimental delta and Volume-sharding flags are removed. There
+is no generic full-parameter delta implementation or new checkpoint subsystem.

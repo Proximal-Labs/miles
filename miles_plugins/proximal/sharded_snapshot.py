@@ -1,27 +1,19 @@
-"""Byte shards for parallel upload from ranks sharing one node's staging files."""
+"""Byte ranges for full-snapshot HTTP uploads from training ranks."""
 
 import hashlib
-import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles_plugins.proximal.snapshot import Digest, SnapshotReference, _regular_file, snapshot_relative_path
+from miles_plugins.proximal.snapshot import Digest, SnapshotReference, _regular_file
 
-PayloadKind = Literal["snapshot", "delta"]
 PayloadFile = Literal[
     "adapter_config.json",
     "adapter_model.safetensors",
     "adapter_model.bin",
     "manifest.json",
-    "model-00000-of-00001.safetensors",
-    "model.safetensors.index.json",
-    "transport.json",
 ]
 
 
@@ -34,23 +26,19 @@ class Part(FrozenStrictBaseModel):
 
 class ShardedManifest(FrozenStrictBaseModel):
     schema_version: Literal[1] = 1
-    kind: PayloadKind
     snapshot: SnapshotReference
-    world_size: Annotated[int, Field(ge=1)]
+    world_size: Annotated[int, Field(ge=1, le=4096)]
     files: dict[PayloadFile, tuple[Part, ...]]
 
     @model_validator(mode="after")
     def _validate_parts(self) -> "ShardedManifest":
         names = set(self.files)
         full_names = {"adapter_config.json", "manifest.json"}
-        if self.kind == "snapshot":
-            valid = names in (full_names | {"adapter_model.safetensors"}, full_names | {"adapter_model.bin"})
-        else:
-            valid = names == {"model-00000-of-00001.safetensors", "model.safetensors.index.json", "transport.json"}
+        valid = names in (full_names | {"adapter_model.safetensors"}, full_names | {"adapter_model.bin"})
         if not valid:
             raise ValueError("Invalid sharded payload file set")
         for parts in self.files.values():
-            if not parts:
+            if not parts or len(parts) > self.world_size:
                 raise ValueError("Missing file parts")
             offset = 0
             for part in parts:
@@ -60,21 +48,12 @@ class ShardedManifest(FrozenStrictBaseModel):
         return self
 
 
-@dataclass(frozen=True)
-class ShardedSnapshot:
-    directory: Path
-    manifest: ShardedManifest
-    marker: Path
-
-
 def sharded_relative_path(reference: SnapshotReference) -> str:
     return f"sharded/{reference.sha256}"
 
 
-def prepare_sharded(
-    directory: Path, reference: SnapshotReference, *, kind: PayloadKind, world_size: int, marker: Path
-) -> ShardedSnapshot:
-    """Balance each file over all upload ranks; retain canonical snapshot/delta bytes."""
+def prepare_sharded(directory: Path, reference: SnapshotReference, *, world_size: int) -> ShardedManifest:
+    """Balance each file over all upload ranks; retain canonical snapshot bytes."""
     if world_size < 1:
         raise ValueError("Need at least one upload rank")
     files = {}
@@ -93,16 +72,14 @@ def prepare_sharded(
                         dict(offset=offset, size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), rank=rank)
                     )
         files[path.name] = parts
-    manifest = ShardedManifest.model_validate(dict(kind=kind, snapshot=reference, world_size=world_size, files=files))
-    marker.write_text(manifest.model_dump_json())
-    return ShardedSnapshot(directory, manifest, marker)
+    return ShardedManifest.model_validate(dict(snapshot=reference, world_size=world_size, files=files))
 
 
 def part_relative_path(name: str, part: Part) -> str:
     return f"parts/{name}/{part.rank}-{part.sha256}"
 
 
-def _restore_sharded(mount: Path, reference: SnapshotReference, output: Path) -> PayloadKind:
+def restore_sharded(mount: Path, reference: SnapshotReference, output: Path) -> None:
     source = mount / sharded_relative_path(reference)
     if source.is_symlink() or not source.is_dir():
         raise ValueError("Expected a sharded snapshot directory")
@@ -125,20 +102,3 @@ def _restore_sharded(mount: Path, reference: SnapshotReference, output: Path) ->
                         destination.write(block)
                 if digest.hexdigest() != part.sha256:
                     raise ValueError("Snapshot part integrity mismatch")
-    return manifest.kind
-
-
-@contextmanager
-def snapshot_transport(mount: Path, cache: Path, reference: SnapshotReference) -> Iterator[tuple[PayloadKind, Path]]:
-    full = mount / snapshot_relative_path(reference)
-    delta = mount / f"deltas/{reference.sha256}"
-    if (full / "manifest.json").exists():
-        yield "snapshot", full
-    elif (delta / "transport.json").exists():
-        yield "delta", delta
-    else:
-        cache.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".shards-", dir=cache) as temporary:
-            directory = Path(temporary) / "bundle"
-            kind = _restore_sharded(mount, reference, directory)
-            yield kind, directory
