@@ -17,6 +17,7 @@ Run with --plan chain.json --yes-train --yes-publish.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,7 @@ from miles_plugins.proximal.e2e.batch_chain_coordination import (
     ChainPublisher,
     ChainRuntime,
     GateAnswer,
+    cluster_identity,
     hold_failed_cluster,
     publish_ready,
     resume_confirmed,
@@ -455,19 +457,23 @@ def chain(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
         raise ValueError("Chain authorization differs from the configured source")
     plan = ChainPlan.model_validate_json(plan_json)
     info = modal.experimental.get_cluster_info()
-    rank, ips = info.rank, list(info.container_ipv4_ips)
-    if plan.nodes != len(ips):
-        raise ValueError("Allocated cluster differs from the validated plan")
-    state = _ResilientState(store, info.cluster_id)
+    rank, ips, cluster_id = cluster_identity(
+        nodes=plan.nodes,
+        rank=info.rank,
+        ipv4s=list(info.container_ipv4_ips),
+        cluster_id=info.cluster_id,
+        task_id=os.environ.get("MODAL_TASK_ID", ""),
+    )
+    state = _ResilientState(store, cluster_id)
     root = _root(plan)
     sampler = cluster._MemorySampler(state, rank)
     publisher_stop = threading.Event()
     publisher: threading.Thread | None = None
     try:
-        policy = _start(plan, state, root, rank, ips, info.cluster_id)
+        policy = _start(plan, state, root, rank, ips, cluster_id)
         fabric = cluster._fabric()
         state[f"fabric-{rank}"] = fabric
-        if not cluster._fabric_ok(fabric):
+        if plan.nodes > 1 and not cluster._fabric_ok(fabric):  # One node has no inter-node traffic.
             raise RuntimeError(f"Node {rank} lacks verified RDMA")
         cluster.prepare_node()
         cluster._wait(lambda: all(state.get(f"fabric-{r}") for r in range(plan.nodes)), 900, "all fabrics", state)
@@ -490,7 +496,7 @@ def chain(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
             lambda: all(state.get(f"memory-{r}") for r in range(1, plan.nodes)), 300, "worker reports", state
         )
         peaks = {"0": sampler.peaks, **{str(r): state[f"memory-{r}"] for r in range(1, plan.nodes)}}
-        report = _report(plan, state, results, policy, peaks) | {"cluster_id": info.cluster_id}
+        report = _report(plan, state, results, policy, peaks) | {"cluster_id": cluster_id}
         write_atomic(root / "completed.json", json.dumps(report, indent=2, default=str).encode())
         _commit()
         return report

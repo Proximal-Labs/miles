@@ -21,6 +21,7 @@ from miles_plugins.proximal.e2e.batch_chain_artifacts import (
 from miles_plugins.proximal.e2e.batch_chain_coordination import (
     ChainPublisher,
     ChainRuntime,
+    cluster_identity,
     hold_failed_cluster,
     publish_ready,
     resume_confirmed,
@@ -315,6 +316,29 @@ def test_transient_errors_are_retried_and_persistent_ones_surface():
             clock=lambda: clock[0],
             sleep=sleep,
         )
+
+
+def test_one_node_runs_on_loopback_scoped_by_its_task():
+    assert cluster_identity(nodes=1, rank=0, ipv4s=[], cluster_id="", task_id="ta-1") == (0, ["127.0.0.1"], "ta-1")
+    assert cluster_identity(nodes=2, rank=1, ipv4s=["10.0.0.1", "10.0.0.2"], cluster_id="cu-1", task_id="ta-2") == (
+        1,
+        ["10.0.0.1", "10.0.0.2"],
+        "cu-1",
+    )
+
+
+@pytest.mark.parametrize(
+    "nodes, ipv4s, cluster_id, task_id",
+    [
+        (2, [], "", "ta-1"),  # A size-1 allocation for a two-node plan.
+        (2, ["10.0.0.1"], "cu-1", "ta-1"),
+        (2, ["10.0.0.1", "10.0.0.2"], "", "ta-1"),
+        (1, [], "", ""),  # No task ID: restarts would be indistinguishable.
+    ],
+)
+def test_allocation_must_match_the_plan(nodes, ipv4s, cluster_id, task_id):
+    with pytest.raises(ValueError):
+        cluster_identity(nodes=nodes, rank=0, ipv4s=ipv4s, cluster_id=cluster_id, task_id=task_id)
 
 
 def train_row(loss=-0.01, grad=0.0016):

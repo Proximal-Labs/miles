@@ -65,6 +65,24 @@ def retrying(
             delay = min(delay * 2, 15.0)
 
 
+def cluster_identity(
+    *, nodes: int, rank: int, ipv4s: list[str], cluster_id: str, task_id: str
+) -> tuple[int, list[str], str]:
+    """This node's rank, the Ray addresses and the scope for coordination and restart detection.
+
+    Modal's size-1 cluster reports no IPv4 list and no cluster ID. One node runs Ray on
+    loopback, like the single-node trainer, and its task ID (new on every container) stands
+    in for the cluster ID.
+    """
+    if nodes == 1 and not ipv4s and not cluster_id:
+        if rank != 0 or not task_id:
+            raise ValueError("A single-node chain needs rank 0 and its container's task ID")
+        return 0, ["127.0.0.1"], task_id
+    if nodes != len(ipv4s) or not cluster_id:
+        raise ValueError("Allocated cluster differs from the validated plan")
+    return rank, ipv4s, cluster_id
+
+
 @dataclass(frozen=True)
 class ChainRuntime:
     """What one node can do. Only rank 0's ``gate``, ``run_step`` and ``persist`` are called."""
