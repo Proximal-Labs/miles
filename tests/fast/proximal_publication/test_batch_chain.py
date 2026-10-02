@@ -318,27 +318,32 @@ def test_transient_errors_are_retried_and_persistent_ones_surface():
         )
 
 
-def test_one_node_runs_on_loopback_scoped_by_its_task():
-    assert cluster_identity(nodes=1, rank=0, ipv4s=[], cluster_id="", task_id="ta-1") == (0, ["127.0.0.1"], "ta-1")
-    assert cluster_identity(nodes=2, rank=1, ipv4s=["10.0.0.1", "10.0.0.2"], cluster_id="cu-1", task_id="ta-2") == (
-        1,
-        ["10.0.0.1", "10.0.0.2"],
-        "cu-1",
+def test_one_node_runs_ray_at_its_own_address_scoped_by_its_task():
+    assert cluster_identity(nodes=1, rank=0, ipv4s=[], cluster_id="", task_id="ta-1", local_ipv4="172.20.0.15") == (
+        0,
+        ["172.20.0.15"],
+        "ta-1",
     )
+    assert cluster_identity(
+        nodes=2, rank=1, ipv4s=["10.0.0.1", "10.0.0.2"], cluster_id="cu-1", task_id="ta-2", local_ipv4=""
+    ) == (1, ["10.0.0.1", "10.0.0.2"], "cu-1")
 
 
 @pytest.mark.parametrize(
-    "nodes, ipv4s, cluster_id, task_id",
+    "nodes, ipv4s, cluster_id, task_id, local_ipv4",
     [
-        (2, [], "", "ta-1"),  # A size-1 allocation for a two-node plan.
-        (2, ["10.0.0.1"], "cu-1", "ta-1"),
-        (2, ["10.0.0.1", "10.0.0.2"], "", "ta-1"),
-        (1, [], "", ""),  # No task ID: restarts would be indistinguishable.
+        (2, [], "", "ta-1", "172.20.0.15"),  # A size-1 allocation for a two-node plan.
+        (2, ["10.0.0.1"], "cu-1", "ta-1", ""),
+        (2, ["10.0.0.1", "10.0.0.2"], "", "ta-1", ""),
+        (1, [], "", "", "172.20.0.15"),  # No task ID: restarts would be indistinguishable.
+        (1, [], "", "ta-1", ""),  # No address for Ray to register.
     ],
 )
-def test_allocation_must_match_the_plan(nodes, ipv4s, cluster_id, task_id):
+def test_allocation_must_match_the_plan(nodes, ipv4s, cluster_id, task_id, local_ipv4):
     with pytest.raises(ValueError):
-        cluster_identity(nodes=nodes, rank=0, ipv4s=ipv4s, cluster_id=cluster_id, task_id=task_id)
+        cluster_identity(
+            nodes=nodes, rank=0, ipv4s=ipv4s, cluster_id=cluster_id, task_id=task_id, local_ipv4=local_ipv4
+        )
 
 
 def train_row(loss=-0.01, grad=0.0016):

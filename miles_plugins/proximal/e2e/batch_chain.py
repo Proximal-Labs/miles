@@ -456,6 +456,8 @@ def chain(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
     if source != RUN:
         raise ValueError("Chain authorization differs from the configured source")
     plan = ChainPlan.model_validate_json(plan_json)
+    from ray.util import get_node_ip_address  # type: ignore[import-not-found,import-untyped,unused-ignore]
+
     info = modal.experimental.get_cluster_info()
     rank, ips, cluster_id = cluster_identity(
         nodes=plan.nodes,
@@ -463,6 +465,7 @@ def chain(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
         ipv4s=list(info.container_ipv4_ips),
         cluster_id=info.cluster_id,
         task_id=os.environ.get("MODAL_TASK_ID", ""),
+        local_ipv4=str(get_node_ip_address()) if plan.nodes == 1 else "",  # type: ignore[no-untyped-call,unused-ignore]
     )
     state = _ResilientState(store, cluster_id)
     root = _root(plan)

@@ -66,18 +66,19 @@ def retrying(
 
 
 def cluster_identity(
-    *, nodes: int, rank: int, ipv4s: list[str], cluster_id: str, task_id: str
+    *, nodes: int, rank: int, ipv4s: list[str], cluster_id: str, task_id: str, local_ipv4: str
 ) -> tuple[int, list[str], str]:
     """This node's rank, the Ray addresses and the scope for coordination and restart detection.
 
-    Modal's size-1 cluster reports no IPv4 list and no cluster ID. One node runs Ray on
-    loopback, like the single-node trainer, and its task ID (new on every container) stands
-    in for the cluster ID.
+    Modal's size-1 cluster reports no IPv4 list and no cluster ID. One node runs Ray at its own
+    address as Ray detects it (Ray registered that address, not loopback, when started with
+    ``--node-ip-address 127.0.0.1``, so the all-GPUs check never matched), and its task ID
+    (new on every container) stands in for the cluster ID.
     """
     if nodes == 1 and not ipv4s and not cluster_id:
-        if rank != 0 or not task_id:
-            raise ValueError("A single-node chain needs rank 0 and its container's task ID")
-        return 0, ["127.0.0.1"], task_id
+        if rank != 0 or not task_id or not local_ipv4:
+            raise ValueError("A single-node chain needs rank 0, its container's task ID and its own address")
+        return 0, [local_ipv4], task_id
     if nodes != len(ipv4s) or not cluster_id:
         raise ValueError("Allocated cluster differs from the validated plan")
     return rank, ipv4s, cluster_id
