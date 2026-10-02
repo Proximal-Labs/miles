@@ -101,11 +101,12 @@ configuration of a previous experiment.
 - `serving.json` chooses the replica hardware, engine image, precision/cache
   settings, context ceiling and replica bounds. `max_in_flight_samples` in the run
   config bounds active rollout samples across the collector. Modal's
-  `target_concurrency` counts requests, not rollouts, and places rollouts at random;
-  `max_sessions_per_replica` caps rollouts per replica (a refused rollout is placed
-  again under a new attempt identity). Keep `min_replicas` × cap a few percent above
-  `max_in_flight_samples`. Choose capacity from measurements for the actual context lengths, rather than
-  multiplying a short-request benchmark.
+  `target_concurrency` counts requests, not rollouts, and places rollouts at random.
+  `max_sessions_per_replica` is opt-in: unset, replicas take whatever lands on them;
+  set, it caps rollouts per replica (a refused rollout is placed again under a new
+  attempt identity). With it set, keep `min_replicas` × cap a few percent above
+  `max_in_flight_samples`. Choose capacity from measurements for the actual context
+  lengths, rather than multiplying a short-request benchmark.
 - `training.json` provides the state Volume, secrets and explicit Miles model and
   optimizer recipe. The CPU collector uses it to save `training-args.json`; the
   presence of training GPU settings does not allocate those GPUs in collection mode.

@@ -82,7 +82,7 @@ class ServingDeployment(Contract):
     max_replicas: Positive
     # Modal's target for concurrent requests per replica; it does not bound rollouts per replica.
     target_concurrency: Positive
-    # Hard cap on live rollouts per replica; null leaves the run's max_in_flight_samples.
+    # Opt-in hard cap on live rollouts per replica; null (the default) sets none.
     max_sessions_per_replica: Positive | None = None
     scaledown_window_seconds: Positive
     startup_timeout_seconds: Positive

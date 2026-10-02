@@ -407,8 +407,8 @@ class CaptureServer:
     ):
         self.config = require_authorization(authorization)
         self.policy_known = policy_known
-        # Live sessions this replica holds at once (ServingDeployment.max_sessions_per_replica).
-        self.max_sessions = self.config.max_in_flight_samples if max_sessions is None else max_sessions
+        # Opt-in cap on the live sessions this replica holds (ServingDeployment.max_sessions_per_replica).
+        self.max_sessions = max_sessions
         self.admin_key = secret_env(self.config.capture.api_key_env)
         self.platform_key = secret_env(self.config.capture.platform_key_env)
         self.root = root
@@ -559,12 +559,14 @@ class CaptureServer:
             if session_id is None:
                 if index.exists():
                     raise HTTPException(410, "Attempt was lost or released; create a new execution identity")
-                if len(self.sessions) >= self.max_sessions:
+                if self.max_sessions is not None and len(self.sessions) >= self.max_sessions:
                     raise HTTPException(
                         429,
                         f"This replica holds its cap of {self.max_sessions} capture sessions",
                         headers={REPLICA_FULL_HEADER: str(self.max_sessions)},
                     )
+                if len(self.sessions) >= self.config.max_in_flight_samples:
+                    raise HTTPException(429, "Capture session capacity reached")
                 sampling = attempt.sampling
                 session_id = self.core.registry.create_session(
                     # Registered so SessionCore can check each request's temperature against the trainer's.

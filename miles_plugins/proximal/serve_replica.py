@@ -111,7 +111,7 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Gateway config")
     parser.add_argument("--run-config", required=True, help="The run config capture enforces")
     parser.add_argument("--capture-root", required=True, help="Capture's state directory on this replica")
-    parser.add_argument("--max-sessions", type=int, help="Live rollouts this replica admits")
+    parser.add_argument("--max-sessions", type=int, help="Opt-in cap on the live rollouts this replica admits")
     parser.add_argument("--volume-name", required=True)
     parser.add_argument("--environment-name", required=True)
     parser.add_argument("--volume-mount", required=True)

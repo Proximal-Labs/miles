@@ -17,7 +17,13 @@ from miles.rollout.session.samples.codec import decode_samples_and_merge_input_s
 from miles.utils.types import Sample
 from miles_plugins.proximal.capture_server import CaptureServer, EngineEndpoint, capture_tokenizer
 from miles_plugins.proximal.clients import CaptureClient, IneligibleAttempt, PlatformClient, ReplicaFull
-from miles_plugins.proximal.contracts import AcceptedAttempt, serving_contract
+from miles_plugins.proximal.contracts import (
+    REPLICA_FULL_HEADER,
+    AcceptedAttempt,
+    affinity_headers,
+    platform_rollout_id,
+    serving_contract,
+)
 from miles_plugins.proximal.data_source import PlatformTaskSource
 from miles_plugins.proximal.rollout import execute_attempt, wait_for_releases
 
@@ -552,6 +558,36 @@ async def test_a_full_replica_refuses_a_new_session_once(config, authorization, 
             assert posts == ["/sessions"]  # Not retried: the same session ID routes to the same replica.
             await client.release(first)
             await client.create(second)
+
+
+async def test_without_a_cap_a_replica_refuses_only_at_the_runs_capacity(
+    config, authorization, policy, attempt, tokenizer, tmp_path
+):
+    engine = scripted_engine(config, policy, tokenizer, [])
+
+    async def admits(candidate):
+        return True
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(engine)) as gateway:
+        server = CaptureServer(
+            authorization,
+            tokenizer=tokenizer,
+            engine=EngineEndpoint(client=gateway, url="http://replica-gateway", headers={}),
+            policy_known=admits,
+            root=tmp_path / "capture",
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app)) as http:
+            client = CaptureClient(authorization, http)
+            for index in range(config.max_in_flight_samples):
+                await client.create(attempt.model_copy(update={"attempt_id": f"attempt-{index}"}))
+            extra = attempt.model_copy(update={"attempt_id": "attempt-extra"})
+            refused = await http.post(
+                f"{client.url}/sessions",
+                headers=client.headers | affinity_headers(platform_rollout_id(extra.attempt_id)),
+                json=extra.model_dump(mode="json"),
+            )
+            # The refusal main already made: retried as transient, never placed again as a full replica.
+            assert refused.status_code == 429 and REPLICA_FULL_HEADER not in refused.headers
 
 
 def test_waiting_for_finished_releases_does_not_spin_the_event_loop():
