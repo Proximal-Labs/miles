@@ -1005,10 +1005,11 @@ def load_model_state(
 
     load_dir = getattr(args, "load", None)
     native_optimizer_restored = False
+    native_scheduler_restored = False
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
-            iteration, _, native_optimizer_restored = load_checkpoint(
+            iteration, _, native_optimizer_restored, native_scheduler_restored = load_checkpoint(
                 model,
                 optimizer,
                 opt_param_scheduler,
@@ -1043,7 +1044,10 @@ def load_model_state(
 
     # Megatron checkpoint loads can restore scheduler state directly. In that
     # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
+    # A LoRA adapter's training state restores it under any scheduler flags,
+    # so the loader's own answer decides there.
+    scheduler_restored = native_scheduler_restored or (args.use_checkpoint_opt_param_scheduler and iteration > 0)
+    if opt_param_scheduler is not None and not scheduler_restored:
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
     if args.finetune and not is_lora_enabled(args):
