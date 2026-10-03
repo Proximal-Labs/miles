@@ -451,6 +451,18 @@ def test_unanswered_gate_after_an_unhealthy_step_stops(tmp_path, plan):
     assert fake.steps() == [("mlp", 0)] and "no approval" in fake.state["stop-reason"]
 
 
+@pytest.mark.parametrize("answer, full_steps", [("timeout", [0, 1, 2]), ("stop", [])])
+def test_a_fresh_arm_has_its_own_gate_and_does_not_inherit_a_failed_arms_health(tmp_path, plan, answer, full_steps):
+    plan = plan.model_copy(update={"gate_timeout_action": "continue_if_healthy"})
+    fake = FakeCluster(tmp_path, plan, {("mlp", 1, 0): (0, True, False)}, gates={("full", 0): answer})
+    run_chain(plan, fake.runtime)
+
+    assert fake.steps("mlp") == [("mlp", 0), ("mlp", 1)]
+    assert "no proof" in fake.state["arm-failed/mlp"]
+    assert fake.steps("full") == [("full", step) for step in full_steps]
+    assert bool(fake.state.get("stop-all")) == (answer == "stop")
+
+
 def test_a_step_starts_only_with_enough_function_time(tmp_path, plan):
     fake = FakeCluster(tmp_path, plan, {}, remaining=1.3 * 3600 + 899)
     assert run_chain(plan, fake.runtime) == []

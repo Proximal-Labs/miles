@@ -487,9 +487,13 @@ local to a step:
   is rejected before training, or commits without proof that it resumed its
   predecessor (Miles silently starts a fresh adapter when it cannot load one) ends
   only its own arm; the other arms still run. Failures are reported, not held.
-- **Gates.** `gate_timeout_action` is required: `stop` ends the chain when a gate goes
-  unanswered for `gate_timeout_seconds`; `continue_if_healthy` proceeds when the last
-  step was durable, proved its resume and had finite loss and grad norm.
+- **Gates.** Every update after the first in the whole chain, including a fresh arm,
+  retains its manual gate. `gate_timeout_action` is required: `stop` ends the chain
+  when a gate goes unanswered for `gate_timeout_seconds`; `continue_if_healthy`
+  permits a fresh independent arm or a continuation whose previous step in that
+  same arm was durable, proved its resume and had finite loss and grad norm. A failed
+  arm cannot supply the health decision for another arm's fresh start. Explicit
+  operator stop and insufficient remaining function time always stop the chain.
 - **Restarts.** If Modal replays the call on a new gang, it exits immediately without a
   hold; committed steps remain, and a follow-up plan can run the unfinished arms.
   Only an unexpected exception holds the nodes, for `failure_hold_seconds` (default 30

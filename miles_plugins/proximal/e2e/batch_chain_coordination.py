@@ -159,7 +159,8 @@ def _rank0_decision(plan: ChainPlan, runtime: ChainRuntime, arm: ChainArm, step:
     if plan.gate == "manual" and not first:
         answer = runtime.gate(arm, step)
         if answer == "timeout":
-            if plan.gate_timeout_action != "continue_if_healthy" or not state.get("last-healthy"):
+            may_continue = plan.gate_timeout_action == "continue_if_healthy" and (step == 0 or state.get("last-healthy"))
+            if not may_continue:
                 state["stop-reason"] = f"no approval for {arm.name} step {step + 1}"
                 return "stop"
         if answer == "stop":
