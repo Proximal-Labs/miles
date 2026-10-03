@@ -11,6 +11,7 @@ resumed checkpoint, abandoning versions whose weights the resume discarded.
 
 import asyncio
 import json
+import logging
 import tempfile
 import time
 from argparse import Namespace
@@ -39,6 +40,8 @@ from miles_plugins.proximal.serving import lora_serving_targets
 from miles_plugins.proximal.sharded_snapshot import ShardedManifest, prepare_sharded
 from miles_plugins.proximal.snapshot import PreparedSnapshot, SnapshotMetadata, prepare_snapshot
 from miles_plugins.proximal.store import open_store
+
+logger = logging.getLogger(__name__)
 
 
 def peft_config_json(config: dict[str, JsonValue], *, rank: int, base_model_name: str) -> str:
@@ -184,6 +187,7 @@ class ModalVolumeTransfer(WeightTransferProtocol):
             self._tensors.clear()
 
     def _publish_http(self, version: int) -> None:
+        started = time.monotonic()
         plans: list[ShardedManifest | None] = [None]
         fleets: list[tuple[http_fleet.ReplicaUpload, ...]] = [()]
         outgoing: list[list[tuple[int, bytes]]] | None = None
@@ -219,6 +223,7 @@ class ModalVolumeTransfer(WeightTransferProtocol):
                     upstreams = http_fleet.discover_replicas(self.config)
                     fleets[0] = http_fleet.begin_uploads(self.authorization, manifest, upstreams)
                 except Exception as exc:
+                    logger.exception("HTTP fleet discovery or handshake failed")
                     error = f"{type(exc).__name__}: HTTP fleet discovery or handshake failed"
             self._check_rank_errors(error)
             dist.broadcast_object_list(fleets, src=0, group=get_gloo_group())  # type: ignore[no-untyped-call]
@@ -226,6 +231,7 @@ class ModalVolumeTransfer(WeightTransferProtocol):
                 assert incoming[0] is not None
                 http_fleet.send_to_replicas(self.authorization, manifest, fleets[0], incoming[0])
             except Exception as exc:
+                logger.exception("HTTP shard upload failed on rank %s", dist.get_rank())
                 error = f"rank {dist.get_rank()}: {type(exc).__name__}: HTTP shard upload failed"
             self._check_rank_errors(error)
             if self.is_sender:
@@ -243,7 +249,15 @@ class ModalVolumeTransfer(WeightTransferProtocol):
                             base_model=self.config.base_model,
                         ),
                     )
+                    logger.info(
+                        "HTTP adapter delivered: version=%s snapshot=%s replicas=%s seconds=%.3f; awaiting archive",
+                        version,
+                        manifest.snapshot.sha256,
+                        len(fleets[0]),
+                        time.monotonic() - started,
+                    )
                 except Exception as exc:
+                    logger.exception("HTTP fleet preparation failed")
                     error = f"{type(exc).__name__}: HTTP fleet preparation failed"
             self._check_rank_errors(error)
         except BaseException:

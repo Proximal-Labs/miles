@@ -1,6 +1,8 @@
 """Discover the Modal serving fleet and deliver each rank's bytes to every replica."""
 
 import asyncio
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -14,6 +16,7 @@ from miles_plugins.proximal.http_sync import REPLICA_HEADER, UploadTarget, uploa
 from miles_plugins.proximal.sharded_snapshot import ShardedManifest
 
 UPSTREAM_HEADER = "modal-flash-upstream"
+logger = logging.getLogger(__name__)
 
 
 def discover_replicas(config: RunConfig) -> tuple[str, ...]:
@@ -102,6 +105,7 @@ def send_to_replicas(
     prefix = f"/policies/uploads/{manifest.snapshot.sha256}"
 
     def send(replica: ReplicaUpload) -> None:
+        started = time.monotonic()
         with _client(authorization, replica.upstream) as client:
             client.headers[REPLICA_HEADER] = replica.target.replica_id
             client.headers["Content-Type"] = "application/octet-stream"
@@ -117,6 +121,13 @@ def send_to_replicas(
                     or evidence.request_model != f"{config.base_model.name}:miles-{manifest.snapshot.sha256}"
                 ):
                     raise ValueError("Replica did not verify the published policy")
+                logger.info(
+                    "HTTP adapter loaded: snapshot=%s replica=%s upstream=%s prepare_seconds=%.3f",
+                    manifest.snapshot.sha256,
+                    replica.target.replica_id,
+                    replica.upstream,
+                    time.monotonic() - started,
+                )
 
     if not targets:
         raise ValueError("Cannot publish to an empty HTTP fleet")
