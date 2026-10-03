@@ -88,6 +88,10 @@ def test_http_auth_integrity_routing_and_cold_replica_recovery(config, tmp_path,
     with receiver(config, tmp_path / "first", monkeypatch) as (gateway, loaded), TestClient(gateway.app) as client:
         assert client.post("/policies/uploads", json=plan.model_dump(mode="json")).status_code == 401
         client.headers["Authorization"] = "Bearer fleet-secret"
+        for key, value in (("offset", 1), ("rank", 4)):
+            invalid = plan.model_dump(mode="json")
+            invalid["files"]["adapter_model.bin"][0][key] = value
+            assert client.post("/policies/uploads", json=invalid).status_code == 422
         start = client.post("/policies/uploads", json=plan.model_dump(mode="json"))
         assert start.status_code == 200, start.text
         prefix = f"/policies/uploads/{full.reference.sha256}"
@@ -191,13 +195,13 @@ def rank_worker(rank, world, args, root, fail_rank):
 
 @pytest.mark.parametrize("fail_rank", [None, 2])
 def test_four_real_ranks_send_http_and_failed_rank_can_retry(config, tmp_path, monkeypatch, fail_rank):
+    assert config.weight_sync_transport == "http"
     monkeypatch.setenv("FLEET_TEST_KEY", "Bearer fleet-secret")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         config = config.model_copy(
             update={
                 "inference_url": f"http://127.0.0.1:{sock.getsockname()[1]}",
-                "weight_sync_transport": "http",
                 "artifact_storage": RunStateArtifacts(kind="run_state"),
             }
         )

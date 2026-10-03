@@ -256,9 +256,9 @@ Platform catalog registration and artifact download access remain a separate PR.
 
 ## Full-snapshot HTTP weight sync
 
-Set `"weight_sync_transport": "http"` through the Modal training launcher after
-updating serving replicas. Full Volume publication remains the default; the
-`ModalVolumeTransfer` import path stays compatible.
+HTTP is the default weight-sync transport. Update serving replicas before running
+the Modal training launcher. Set `"weight_sync_transport": "volume"` to use the
+previous full Volume path. The `ModalVolumeTransfer` import path stays compatible.
 
 Rank zero exports the adapter and scatters disjoint byte ranges to training
 ranks, which upload concurrently without shared storage. The receiver checks
