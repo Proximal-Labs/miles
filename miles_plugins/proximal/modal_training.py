@@ -393,8 +393,7 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     max_containers=1,
 )
 def train() -> int:
-    from miles_plugins.proximal import policy_archive, state_artifacts, state_checkpoints
-    from miles_plugins.proximal.authorization import authorize_run
+    from miles_plugins.proximal import state_artifacts, state_checkpoints
     from miles_plugins.proximal.e2e import snapshots
     from miles_plugins.proximal.e2e.local_postgres import local_postgres
     from miles_plugins.proximal.state_writer import StateWriter, checkpoint_publisher
@@ -435,9 +434,6 @@ def train() -> int:
             artifacts=RUN.artifact_directory,
             snapshot_root=SNAPSHOT,
             commit=state_volume.commit,
-            publish_policy=lambda: policy_archive.publish_pending(
-                authorize_run(runtime_run, yes_rollouts=True, yes_publish=True)
-            ),
             publish_checkpoint=checkpoint_publisher(
                 dsn=dsn,
                 pg_bin=pg_bin,

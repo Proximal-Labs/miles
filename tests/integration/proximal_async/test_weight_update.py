@@ -108,7 +108,6 @@ def make_updater(args, iterator_factory):
 
 
 def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_path, monkeypatch):
-    config = config.model_copy(update={"weight_sync_transport": "volume"})
     args = transfer_args(config, tmp_path)
     events = []
     fail = [False]
@@ -173,7 +172,6 @@ def test_weight_update_exports_real_tensors_then_commits_version(config, tmp_pat
 
 
 def test_weight_update_refuses_a_non_finite_adapter(config, tmp_path, monkeypatch):
-    config = config.model_copy(update={"weight_sync_transport": "volume"})
     """A policy with NaN weights never reaches the Volume, serving or the store."""
     uploads = []
     monkeypatch.setattr(weight_update, "modal_publish_snapshot", lambda authorization, snapshot: uploads.append(1))
@@ -192,7 +190,6 @@ def test_weight_update_refuses_a_non_finite_adapter(config, tmp_path, monkeypatc
 
 
 def test_weight_update_refuses_an_adapter_sglang_would_mis_serve(config, tmp_path, monkeypatch):
-    config = config.model_copy(update={"weight_sync_transport": "volume"})
     """An adapter tensor outside the decoder layers never reaches the Volume, serving or the store."""
     uploads = []
     monkeypatch.setattr(weight_update, "modal_publish_snapshot", lambda authorization, snapshot: uploads.append(1))

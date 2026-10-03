@@ -302,9 +302,6 @@ class RunConfig(Contract):
     # Header name -> environment variable name, never credential values.
     inference_header_env: dict[str, Nonempty]
     volume: VolumeDestination
-    # "http" needs the Modal training launcher's run-state writer, which archives each
-    # policy before it is selectable; a trainer started any other way sets "volume".
-    weight_sync_transport: Literal["volume", "http"] = "http"
     # Mount point for stored group payloads, sealed captures and publication staging.
     artifact_directory: Path
     artifact_storage: ArtifactStorage
