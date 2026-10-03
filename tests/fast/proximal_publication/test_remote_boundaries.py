@@ -65,7 +65,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
             # FastAPI route decorators are not outbound network calls.
             receiver = ast.unparse(node.func.value)
-            if method in {"batch_upload", "post", "request"} and receiver not in {"app", "self.app"}:
+            if method in {"batch_upload", "post", "request", "stop_app"} and receiver not in {"app", "self.app"}:
                 mutations.append((name, method))
             if method == "from_name" and not receiver.endswith("Secret"):
                 # Volumes are referenced, never created. (Secret.from_name cannot create.)
@@ -89,6 +89,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("gateway.py", "post"),
         ("modal_training.py", "remote"),  # Paid training node, run by hand.
         ("modal_training.py", "remote"),  # Explicit-consent CPU collection with Volume persistence.
+        ("modal_training.py", "stop_app"),  # The node's own serving pool, when the deployment opts in.
         ("modal_volume.py", "batch_upload"),
         ("modal_volume.py", "batch_upload"),
         ("preflight.py", "post"),  # The canary's model calls through capture, before any platform run.
