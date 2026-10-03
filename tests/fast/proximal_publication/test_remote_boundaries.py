@@ -46,6 +46,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
             method = node.func.attr
             # Paid Modal function calls, each an explicit script run by hand.
             if method == "remote" and name in {
+                "e2e/batch_chain.py",
                 "e2e/batch_sweep.py",
                 "e2e/stage_base.py",
                 "e2e/grad_attribution.py",
@@ -62,6 +63,10 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if method == "ephemeral" and name in {"e2e/step_sizing.py", "e2e/batch_sweep.py"}:
                 mutations.append((name, method))
                 continue
+            # The chain spawns its clustered call so it outlives the launching process.
+            if method == "spawn" and name == "e2e/batch_chain.py":
+                mutations.append((name, method))
+                continue
             assert method not in {"deploy", "spawn", "remote", "ephemeral", "remove_file", "unload_lora_adapter"}
             # FastAPI route decorators are not outbound network calls.
             receiver = ast.unparse(node.func.value)
@@ -74,6 +79,8 @@ def test_remote_mutations_stay_in_authorized_adapters():
     assert sorted(mutations) == [
         ("capture_server.py", "post"),  # Recorded inference only; policy warm-up moved to the pool client.
         ("clients.py", "request"),  # The shared retrying request helper every client uses.
+        ("e2e/batch_chain.py", "remote"),  # CPU preflight.
+        ("e2e/batch_chain.py", "spawn"),  # The explicitly authorized GPU chain, independent of the launcher.
         ("e2e/batch_sweep.py", "ephemeral"),  # One run-scoped coordination store.
         *(("e2e/batch_sweep.py", "remote"),) * 2,  # CPU preflight, then explicitly authorized GPU sweep.
         ("e2e/grad_attribution.py", "remote"),  # Paid gradient attribution on a recorded step, run by hand.

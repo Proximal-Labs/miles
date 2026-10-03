@@ -120,17 +120,10 @@ def validate_source(bundle: Path, plan: SweepPlan, source: RunConfig) -> "Batch"
     return batch
 
 
-def phase_command(
-    plan: SweepPlan,
-    phase: SweepPhase,
-    source: RunConfig,
-    *,
-    bundle: Path,
-    save: Path,
-    resume_adapter: Path | None = None,
-) -> list[str]:
-    """Native Miles loop, exact behavior data, fresh optimizer for each phase."""
-    forbidden = {
+# Flags that would change initialization, persistence or the data path of a frozen
+# base-policy experiment; the native Miles loop must own every optimizer step.
+UNSUPPORTED_RECIPE_FLAGS = frozenset(
+    {
         "--lora-adapter-path",
         "--no-load-optim",
         "--no-load-rng",
@@ -152,16 +145,40 @@ def phase_command(
         "--use-dynamic-global-batch-size",
         "--debug-disable-optimizer",
     }
-    if blocked := forbidden & {token.split("=", 1)[0] for token in plan.recipe}:
+)
+
+
+def check_recipe(recipe: tuple[str, ...]) -> None:
+    if blocked := UNSUPPORTED_RECIPE_FLAGS & {token.split("=", 1)[0] for token in recipe}:
         raise ValueError(f"Unsupported frozen-base experiment flags: {sorted(blocked)}")
-    if not {"--seed", "--optimizer", "--lr"} <= set(plan.recipe):
-        raise ValueError("Sweep recipe must explicitly declare optimizer, learning rate and seed")
-    args = list(plan.recipe)
+    if not {"--seed", "--optimizer", "--lr"} <= set(recipe):
+        raise ValueError("Experiment recipe must explicitly declare optimizer, learning rate and seed")
+
+
+def native_train_argv(
+    recipe: tuple[str, ...],
+    source: RunConfig,
+    *,
+    nodes: int,
+    samples: int,
+    target_modules: tuple[str, ...],
+    num_rollout: int,
+    start_rollout_id: int,
+    rollout_function: str,
+    batch_flag: str,
+    bundle: Path,
+    save: Path,
+    resume_adapter: Path | None,
+) -> list[str]:
+    """Native Miles train-only loop over stored behavior data: the source's sampling, LoRA
+    shape and behavior correction, an explicit target set and one save per update."""
+    check_recipe(recipe)
+    args = list(recipe)
     for flag in ("--use-wandb", "--wandb-project", "--wandb-group", "--eval-interval"):
         args = set_flag(args, flag, None)
     research = source.research
     values = {
-        "--actor-num-nodes": str(plan.nodes),
+        "--actor-num-nodes": str(nodes),
         "--actor-num-gpus-per-node": "8",
         "--hf-checkpoint": str(source.tokenizer_path),
         "--load": str(source.tokenizer_path),
@@ -170,26 +187,24 @@ def phase_command(
         "--lora-rank": str(research.lora.rank),
         "--lora-alpha": str(research.lora.alpha),
         "--lora-dropout": "0",
-        "--target-modules": ",".join(phase.target_modules),
+        "--target-modules": ",".join(target_modules),
         "--n-samples-per-prompt": str(research.group_size),
-        "--rollout-batch-size": str(plan.samples // research.group_size),
-        "--global-batch-size": str(plan.samples),
-        "--num-rollout": str(phase.updates),
-        "--start-rollout-id": "1" if phase.resume is not None else "0",
+        "--rollout-batch-size": str(samples // research.group_size),
+        "--global-batch-size": str(samples),
+        "--num-rollout": str(num_rollout),
+        "--start-rollout-id": str(start_rollout_id),
         "--rollout-num-gpus": "0",
         "--rollout-max-response-len": str(research.sampling.max_tokens),
         "--rollout-max-context-len": str(research.sampling.max_sequence_tokens),
-        "--rollout-function-path": "miles_plugins.proximal.e2e.state_gpu_replay.ReferenceReplay",
-        "--verification-batch": str(bundle),
+        "--rollout-function-path": rollout_function,
+        batch_flag: str(bundle),
         "--save": str(save),
         "--save-interval": "1",
     }
-    if plan.samples % research.group_size:
-        raise ValueError("Sweep samples must be a whole number of source training groups")
+    if samples % research.group_size:
+        raise ValueError("Samples must be a whole number of source training groups")
     for flag, value in values.items():
         args = set_flag(args, flag, value)
-    if (phase.resume is None) != (resume_adapter is None):
-        raise ValueError("Native resume requires its verified, staged adapter directory")
     if resume_adapter is not None:
         args = set_flag(args, "--lora-adapter-path", str(resume_adapter))
     for flag in ("--use-rollout-logprobs", "--use-tis", "--tis-clip", "--tis-clip-low"):
@@ -202,6 +217,35 @@ def phase_command(
     for flag in ("--debug-train-only", "--disable-rollout-global-dataset"):
         args = set_flag(args, flag, None) + [flag]
     return ["python", "/fork/train.py", *args]
+
+
+def phase_command(
+    plan: SweepPlan,
+    phase: SweepPhase,
+    source: RunConfig,
+    *,
+    bundle: Path,
+    save: Path,
+    resume_adapter: Path | None = None,
+) -> list[str]:
+    """Native Miles loop, exact behavior data, fresh optimizer for each phase."""
+    check_recipe(plan.recipe)
+    if (phase.resume is None) != (resume_adapter is None):
+        raise ValueError("Native resume requires its verified, staged adapter directory")
+    return native_train_argv(
+        plan.recipe,
+        source,
+        nodes=plan.nodes,
+        samples=plan.samples,
+        target_modules=phase.target_modules,
+        num_rollout=phase.updates,
+        start_rollout_id=1 if phase.resume is not None else 0,
+        rollout_function="miles_plugins.proximal.e2e.state_gpu_replay.ReferenceReplay",
+        batch_flag="--verification-batch",
+        bundle=bundle,
+        save=save,
+        resume_adapter=resume_adapter,
+    )
 
 
 def validate_phase_args(args: object, plan: SweepPlan, source: RunConfig, phase: SweepPhase) -> None:

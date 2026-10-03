@@ -4,7 +4,7 @@ import json
 import tempfile
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NamedTuple
 
 import torch
 from pydantic import Field
@@ -18,6 +18,7 @@ from miles_plugins.proximal.lora_targets import convert_target_modules_to_hf
 from miles_plugins.proximal.snapshot import (
     Digest,
     Nonempty,
+    PreparedSnapshot,
     SnapshotMetadata,
     SnapshotReference,
     prepare_snapshot,
@@ -70,22 +71,31 @@ def publish_node_files(
     return files
 
 
-def finalize_step(
+class CertifiedUpdate(NamedTuple):
+    files: tuple[StateFile, ...]
+    snapshot: PreparedSnapshot
+
+
+def certify_update(
     authorization: AuthorizedRun,
     *,
-    plan: SweepPlan,
-    phase: SweepPhase,
+    nodes: int,
+    targets: tuple[str, ...],
     step: int,
     native: NativeCompletion,
     receipts: Sequence[Sequence[StateFile]],
-    root: Path,
-    commit: Callable[[], None],
-) -> dict[str, object]:
-    """All node commits precede the globally complete marker and eval snapshot manifest."""
+    adapter: Path,
+    eval_root: Path,
+    snapshot_run_id: str,
+) -> CertifiedUpdate:
+    """Verify every node's committed native shards, then stage the update's evaluation snapshot.
+
+    Writes the native completion marker beside the shards; publishing the receipt is the caller's.
+    """
     source = require_authorization(authorization)
-    if native.iteration != step or native.world_size != 8 * plan.nodes:
-        raise ValueError("Native completion does not describe this sweep update")
-    if not (native.optimizer and native.scheduler and native.rng) or len(receipts) != plan.nodes:
+    if native.iteration != step or native.world_size != 8 * nodes:
+        raise ValueError("Native completion does not describe this update")
+    if not (native.optimizer and native.scheduler and native.rng) or len(receipts) != nodes:
         raise ValueError("Every node and full training state are required")
     files: dict[str, StateFile] = {}
     for receipt in receipts:
@@ -101,15 +111,14 @@ def finalize_step(
     )
     if not required <= files.keys():
         raise ValueError(f"Missing native/evaluation checkpoint files: {sorted(required - files.keys())}")
-    adapter = root / phase.name / "checkpoints" / f"iter_{step:07d}" / "adapter"
     for file in files.values():
         verify(adapter / file.path, file)
     config = json.loads((adapter / "adapter_config.json").read_text())
-    targets = list(convert_target_modules_to_hf(list(phase.target_modules)))
+    serving_targets = list(convert_target_modules_to_hf(list(targets)))
     lora = source.research.lora
-    # The trainer lists every adapted module path; the tensor layout check below ties them to the phase's targets.
+    # The trainer lists every adapted module path; the tensor layout check below ties them to the targets.
     if (config.get("r"), config.get("lora_alpha")) != (lora.rank, lora.alpha):
-        raise ValueError("Serving export differs from the phase's LoRA configuration")
+        raise ValueError("Serving export differs from the configured LoRA shape")
     export = adapter / export_file(files)
     tensors = (
         load_file(str(export), device="cpu")
@@ -126,41 +135,72 @@ def finalize_step(
     ):
         raise ValueError("Invalid or nonfinite serving adapter")
     problem = adapter_layout_problem(
-        {name: tuple(tensor.shape) for name, tensor in tensors.items()}, serving_targets=targets, rank=lora.rank
+        {name: tuple(tensor.shape) for name, tensor in tensors.items()},
+        serving_targets=serving_targets,
+        rank=lora.rank,
     )
     if problem:
         raise ValueError(problem)
     write_atomic(adapter / "native_checkpoint.json", native.model_dump_json().encode())
-    # Replicas serve the published form: the phase's serving targets and the pinned base model's name.
+    # Replicas serve the published form: the serving targets and the pinned base model's name.
     with tempfile.TemporaryDirectory(prefix="sweep-eval-") as staged:
         write_adapter(
             Path(staged),
             tensors=tensors,
             config_json=peft_config_json(
-                config | {"target_modules": targets}, rank=lora.rank, base_model_name=source.base_model.name
+                config | {"target_modules": serving_targets}, rank=lora.rank, base_model_name=source.base_model.name
             ),
         )
         snapshot = prepare_snapshot(
             Path(staged),
-            metadata=SnapshotMetadata(
-                run_id=f"{plan.experiment_id}-{phase.name}", checkpoint_iteration=step, base_model=source.base_model
-            ),
-            output_root=root / phase.name / "eval",
+            metadata=SnapshotMetadata(run_id=snapshot_run_id, checkpoint_iteration=step, base_model=source.base_model),
+            output_root=eval_root,
         )
+    return CertifiedUpdate(files=tuple(sorted(files.values(), key=lambda f: f.path)), snapshot=snapshot)
+
+
+def publish_receipt(
+    receipt_path: Path, result: dict[str, object], snapshot: PreparedSnapshot, *, commit: Callable[[], None]
+) -> None:
+    """All payloads and snapshot bytes commit before the completion receipt."""
+    commit()
+    read_snapshot(snapshot.directory, snapshot.reference)
+    write_atomic(receipt_path, json.dumps(result, sort_keys=True).encode())
+    commit()
+
+
+def finalize_step(
+    authorization: AuthorizedRun,
+    *,
+    plan: SweepPlan,
+    phase: SweepPhase,
+    step: int,
+    native: NativeCompletion,
+    receipts: Sequence[Sequence[StateFile]],
+    root: Path,
+    commit: Callable[[], None],
+) -> dict[str, object]:
+    """All node commits precede the globally complete marker and eval snapshot manifest."""
+    certified = certify_update(
+        authorization,
+        nodes=plan.nodes,
+        targets=phase.target_modules,
+        step=step,
+        native=native,
+        receipts=receipts,
+        adapter=root / phase.name / "checkpoints" / f"iter_{step:07d}" / "adapter",
+        eval_root=root / phase.name / "eval",
+        snapshot_run_id=f"{plan.experiment_id}-{phase.name}",
+    )
     result: dict[str, object] = {
         "phase": phase.name,
         "update": step + 1,
         "batch_sha256": plan.batch_sha256,
         "targets": phase.target_modules,
         "native": native.model_dump(mode="json"),
-        "files": [file.model_dump(mode="json") for file in sorted(files.values(), key=lambda f: f.path)],
-        "snapshot": snapshot.reference.model_dump(mode="json"),
-        "eval_path": str(snapshot.directory.relative_to(root)),
+        "files": [file.model_dump(mode="json") for file in certified.files],
+        "snapshot": certified.snapshot.reference.model_dump(mode="json"),
+        "eval_path": str(certified.snapshot.directory.relative_to(root)),
     }
-    # All payloads and snapshot bytes commit before the completion receipt.
-    commit()
-    read_snapshot(snapshot.directory, snapshot.reference)
-    receipt_path = root / phase.name / f"step-{step + 1}.json"
-    write_atomic(receipt_path, json.dumps(result, sort_keys=True).encode())
-    commit()
+    publish_receipt(root / phase.name / f"step-{step + 1}.json", result, certified.snapshot, commit=commit)
     return result

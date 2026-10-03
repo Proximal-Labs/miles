@@ -381,7 +381,7 @@ def sweep(plan_json: str, authorization: AuthorizedRun, store: modal.Dict) -> di
             _check_commands(plan, bundle, hardware=True)
             state["validated"] = True
         cluster._wait(lambda: state.get("validated"), 1800, "source validation", state)
-        stage_batch(bundle, LOCAL / "batch", plan)
+        stage_batch(bundle, LOCAL / "batch", batch_sha256=plan.batch_sha256)
         bundle = LOCAL / "batch"
         state[f"batch-staged/{rank}"] = True
         cluster._wait(
