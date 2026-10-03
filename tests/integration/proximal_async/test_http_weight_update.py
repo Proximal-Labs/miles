@@ -282,27 +282,35 @@ def test_discovery_validates_pool_url_and_complete_membership(config, monkeypatc
     reply = api_pb2.FlashContainerListResponse()
     reply.containers.add(host="replica-b")
     reply.containers.add(host="replica-a")
+    function = api_pb2.FunctionGetResponse(function_id="fu-serving")
+    function.handle_metadata._experimental_flash_urls.append(config.inference_url)
+    loops = []
+
+    async def get_function(*args, **kwargs):
+        loops.append(asyncio.get_running_loop())
+        return function
+
     stub = SimpleNamespace(
-        FunctionGet=AsyncMock(return_value=SimpleNamespace(function_id="fu-serving")),
+        FunctionGet=AsyncMock(side_effect=get_function),
         FlashContainerList=AsyncMock(return_value=reply),
     )
     monkeypatch.setattr(_Client, "from_env", AsyncMock(return_value=SimpleNamespace(stub=stub)))
-    get_url = AsyncMock(return_value=config.inference_url)
-
-    def server(app, name, *, environment_name):
-        assert (app, name, environment_name) == ("serving-test", "Replica", config.volume.environment_name)
-        return SimpleNamespace(get_url=SimpleNamespace(aio=get_url))
-
-    monkeypatch.setattr(modal.Server, "from_name", server)
     assert http_fleet.discover_replicas(config) == ("replica-a:443", "replica-b:443")
+    request = stub.FunctionGet.call_args.args[0]
+    assert (request.app_name, request.object_tag, request.environment_name) == (
+        "serving-test",
+        "Replica",
+        config.volume.environment_name,
+    )
     assert stub.FlashContainerList.call_args.args[0].function_id == "fu-serving"
-    get_url.return_value = "https://another-pool.example"
+    function.handle_metadata._experimental_flash_urls[0] = "https://another-pool.example"
     with pytest.raises(ValueError, match="URL differs"):
         http_fleet.discover_replicas(config)
-    get_url.return_value = config.inference_url
+    function.handle_metadata._experimental_flash_urls[0] = config.inference_url
     reply.containers[1].host = "replica-b"
     with pytest.raises(ValueError, match="distinct replicas"):
         http_fleet.discover_replicas(config)
+    assert len(set(loops)) == 1 and not loops[0].is_closed()
     del reply.containers[1:]
     with pytest.raises(ValueError, match="distinct replicas"):
         http_fleet.discover_replicas(config)

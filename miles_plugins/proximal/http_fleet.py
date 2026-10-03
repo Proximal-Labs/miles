@@ -1,6 +1,5 @@
 """Discover the Modal serving fleet and deliver each rank's bytes to every replica."""
 
-import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 def discover_replicas(config: RunConfig) -> tuple[str, ...]:
     """List actual containers, not affinity guesses; refuse a partial warm pool."""
     # Only the Modal launcher uses discovery; optional SDK imports stay at this boundary.
-    import modal
+    from modal._utils.async_utils import synchronize_api
     from modal.client import _Client
     from modal_proto import api_pb2
 
@@ -33,15 +32,16 @@ def discover_replicas(config: RunConfig) -> tuple[str, ...]:
     async def discover() -> tuple[str, ...]:
         client = await _Client.from_env()
         environment = config.volume.environment_name
-        server = modal.Server.from_name(pool.app_name, "Replica", environment_name=environment)
-        url = await server.get_url.aio()
-        if url is None or url.rstrip("/") != config.inference_url.rstrip("/"):
-            raise ValueError("Discovered Modal serving URL differs from inference_url")
         function = await client.stub.FunctionGet(
-            api_pb2.FunctionGetRequest(app_name=pool.app_name, object_tag="Replica", environment_name=environment)
+            api_pb2.FunctionGetRequest(app_name=pool.app_name, object_tag="Replica", environment_name=environment),
+            timeout=30,
+            retry=None,
         )
+        urls = list(function.handle_metadata._experimental_flash_urls)
+        if len(urls) != 1 or urls[0].rstrip("/") != config.inference_url.rstrip("/"):
+            raise ValueError("Discovered Modal serving URL differs from inference_url")
         reply = await client.stub.FlashContainerList(
-            api_pb2.FlashContainerListRequest(function_id=function.function_id)
+            api_pb2.FlashContainerListRequest(function_id=function.function_id), timeout=30, retry=None
         )
         hosts = []
         for container in reply.containers:
@@ -53,7 +53,9 @@ def discover_replicas(config: RunConfig) -> tuple[str, ...]:
             raise ValueError(f"HTTP sync needs at least {pool.min_replicas} distinct replicas, found {len(hosts)}")
         return tuple(sorted(hosts))
 
-    return asyncio.run(discover())
+    # Modal caches its gRPC client: every call must use the SDK's persistent loop.
+    # asyncio.run() followed by a public .aio() call crosses loops and can deadlock.
+    return synchronize_api(discover)()
 
 
 @dataclass(frozen=True)

@@ -73,8 +73,6 @@ def test_remote_mutations_stay_in_authorized_adapters():
             if method in {"batch_upload", "post", "request", "stop_app"} and receiver not in {"app", "self.app"}:
                 mutations.append((name, method))
             if method == "from_name" and not receiver.endswith("Secret"):
-                if name == "http_fleet.py" and receiver == "modal.Server":
-                    continue  # Read-only lookup of the already deployed fleet, never a deployment.
                 # Volumes are referenced, never created. (Secret.from_name cannot create.)
                 [create] = [kw.value for kw in node.keywords if kw.arg == "create_if_missing"]
                 assert isinstance(create, ast.Constant) and create.value is False
