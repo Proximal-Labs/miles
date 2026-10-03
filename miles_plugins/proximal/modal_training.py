@@ -486,6 +486,10 @@ def train() -> int:
             # optimizer boundary before the local Postgres context exits.
             try:
                 writer.close()
+            except BaseException:
+                # The node fails after all: Modal may retry it, and the retry needs the pool.
+                completed = False
+                raise
             finally:
                 for process in reversed(processes):
                     process.terminate()
