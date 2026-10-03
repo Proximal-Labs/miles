@@ -196,7 +196,13 @@ async def test_each_finished_rollout_frees_its_submission_slot(config, tmp_path,
     await producer.close()
 
 
-async def test_a_failed_group_waits_for_siblings_before_retry(config, tmp_path, policy, store, monkeypatch):
+async def test_under_drop_a_failed_member_fails_its_group_after_its_siblings(
+    config, tmp_path, policy, store, monkeypatch
+):
+    """Under "drop" nothing is relaunched: the failed member's group is rejected, but only once
+    its siblings' paid work has finished. Under "retry" the member is relaunched in its group
+    instead (test_attempt_relaunch)."""
+    config = config.model_copy(update={"research": config.research.model_copy(update={"unused_groups": "drop"})})
     calls = 0
     slow = asyncio.Event()
     started = asyncio.Event()
@@ -218,7 +224,7 @@ async def test_a_failed_group_waits_for_siblings_before_retry(config, tmp_path, 
     assert not running.done()
     slow.set()
     result = await asyncio.wait_for(running, 2)
-    assert len(completed) == 1
+    assert calls == 2 and len(completed) == 1
     assert len(freed) == 2 and {sample.status for sample in result.group} == {Sample.Status.ABORTED}
     await producer.close()
 

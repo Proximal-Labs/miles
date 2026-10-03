@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, assert_never
 
 import httpx
 
@@ -27,6 +27,7 @@ from miles_plugins.proximal.contracts import (
     Grade,
     LaunchRetry,
     Policy,
+    Research,
     SessionHandle,
     Task,
     canonical_bytes,
@@ -245,8 +246,47 @@ async def execute_with_launch_retry(
                 "Launch %d of attempt %s failed (%s); relaunching in %.0fs", launch + 1, attempt.attempt_id, exc, delay
             )
             await asyncio.sleep(delay)
-            attempt = Attempt.model_validate({**attempt.model_dump(), "attempt_id": uuid.uuid4().hex})
+            attempt = relaunched(attempt)
     raise AssertionError("unreachable")
+
+
+def relaunched(attempt: Attempt) -> Attempt:
+    """The same group member under a new attempt identity: its own platform run and capture session."""
+    return Attempt.model_validate({**attempt.model_dump(), "attempt_id": uuid.uuid4().hex})
+
+
+def member_relaunches(research: Research) -> int:
+    """How many failed members a group may relaunch before the group fails as a whole.
+
+    Members are independent draws given the task and policy, so relaunching a failed one
+    keeps the same distribution as retrying its whole group (each member is a draw that
+    finished eligibly) without discarding its siblings' finished work. Under "retry" a
+    group may spend ``group_size`` relaunches, never more extra attempts than one retry of
+    the whole group, and then fails and its task is retried as before. Under "drop" a
+    failed member still drops its group.
+    """
+    match research.unused_groups:
+        case "retry":
+            return research.group_size
+        case "drop":
+            return 0
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+class _GroupRelaunches:
+    """The relaunch budget a group's members share. Once one member gives up, the group cannot
+    complete, so the others stop relaunching; attempts already running still finish."""
+
+    def __init__(self, budget: int) -> None:
+        self.remaining = budget
+        self.given_up = False
+
+    def take(self) -> bool:
+        if self.given_up or self.remaining == 0:
+            return False
+        self.remaining -= 1
+        return True
 
 
 def _sample_index(sample: Sample) -> int:
@@ -268,6 +308,7 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
         self._capture: CaptureClient | None = None
         self._platform: PlatformClient | None = None
         self._store: RolloutStore | None = None
+        self._member_relaunches = member_relaunches(self.config.research)
 
     # Async like FullyAsyncRolloutFn.__call__, which Miles's executor awaits; the
     # base class annotates the sync form.
@@ -345,18 +386,9 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             )
             for sample in prompt_group
         ]
+        relaunches = _GroupRelaunches(self._member_relaunches)
         tasks = [
-            asyncio.create_task(
-                execute_with_launch_retry(
-                    attempt,
-                    sample,
-                    capture=self._capture,
-                    platform=self._platform,
-                    artifact_root=self.config.artifact_directory / self.config.run_id / "accepted",
-                    retry=self.config.launch_retry,
-                    store=self._store,
-                )
-            )
+            asyncio.create_task(self._execute_member(attempt, sample, relaunches))
             for attempt, sample in zip(attempts, prompt_group, strict=True)
         ]
         if (sample_done := self._scheduler.sample_done_callback) is not None:
@@ -391,6 +423,55 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         return DataBufferInput(prompt_group=prompt_group, group=[sample for sample in result])
+
+    async def _execute_member(self, attempt: Attempt, sample: Sample, relaunches: _GroupRelaunches) -> Sample:
+        """One group member's sample. An attempt that fails ineligibly (an execution failure,
+        never a graded zero) is relaunched as soon as it fails, under a new attempt identity with
+        the same group, sample index, task and policy, while the group's budget lasts and its
+        policy is still selectable. Its siblings keep running and are not re-run."""
+        assert self._capture is not None and self._platform is not None
+        try:
+            while True:
+                try:
+                    return await execute_with_launch_retry(
+                        attempt,
+                        sample,
+                        capture=self._capture,
+                        platform=self._platform,
+                        artifact_root=self.config.artifact_directory / self.config.run_id / "accepted",
+                        retry=self.config.launch_retry,
+                        store=self._store,
+                    )
+                except (IneligibleAttempt, httpx.HTTPError) as exc:
+                    # Rechecked after the await: a sibling may have given up meanwhile.
+                    if not relaunches.take() or not await self._selectable(attempt.policy) or relaunches.given_up:
+                        raise
+                    replacement = relaunched(attempt)
+                    # Messages carry only our own text or the request method, URL and status, never headers.
+                    logger.warning(
+                        "Attempt %s (sample %d of group %s) failed (%s: %s); relaunching it as attempt %s, "
+                        "%d relaunches left for the group",
+                        attempt.attempt_id,
+                        attempt.sample_index,
+                        attempt.group_id,
+                        type(exc).__name__,
+                        exc,
+                        replacement.attempt_id,
+                        relaunches.remaining,
+                    )
+                    attempt = replacement
+        except (Exception, asyncio.CancelledError):
+            relaunches.given_up = True
+            raise
+
+    async def _selectable(self, policy: Policy) -> bool:
+        """Whether a group sampled from ``policy`` can still be trained on: the batch query
+        selects groups within ``max_policy_lag`` of the newest published policy. A stale
+        group's failed member is not relaunched; the group fails and its task is retried
+        (or dropped) under the current policy."""
+        assert self._store is not None
+        current = await self._store.current_policy()
+        return current is not None and current.version - policy.version <= self.config.research.max_policy_lag
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         raise ValueError("Platform eval needs a separately pinned evaluation contract; training-only first pass")

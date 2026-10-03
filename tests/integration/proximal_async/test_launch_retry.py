@@ -1,4 +1,5 @@
-"""A rollout the platform could not start is relaunched; any other failure still fails its group."""
+"""A rollout the platform could not start is relaunched with backoff; any other failure is left to
+its group, which relaunches the member or fails (test_attempt_relaunch)."""
 
 import random
 from dataclasses import replace
