@@ -99,6 +99,8 @@ The second command prints the reward and token counts and persists `accepted/<at
 
 Run the launcher in the existing Miles trainer environment attached to your Ray cluster (`RAY_ADDRESS` as appropriate). It calls the normal `train_async.train`; there is no second optimizer loop.
 
+Started this way, outside the Modal training launcher, the run config must set `"weight_sync_transport": "volume"`. The default, `"http"`, needs the launcher's run-state writer to archive each policy, and without it the trainer stops at startup with an error naming this setting (see [Full-snapshot HTTP weight sync](#full-snapshot-http-weight-sync)).
+
 ```bash
 python -m miles_plugins.proximal.runtime train \
   --config /config/run.json --yes-rollouts --yes-publish -- \
@@ -259,6 +261,11 @@ Platform catalog registration and artifact download access remain a separate PR.
 HTTP is the default weight-sync transport. Update serving replicas before running
 the Modal training launcher. Set `"weight_sync_transport": "volume"` to use the
 previous full Volume path. The `ModalVolumeTransfer` import path stays compatible.
+
+The default applies to every run config that does not name a transport, and only the
+Modal training launcher can run it. A trainer started any other way (`runtime train`
+on your own cluster, as in section 5) must set `"weight_sync_transport": "volume"`,
+as `examples/proximal/run.example.json` does; otherwise it refuses to start.
 
 Rank zero exports the adapter and scatters disjoint byte ranges to training
 ranks, which upload concurrently without shared storage. The receiver checks

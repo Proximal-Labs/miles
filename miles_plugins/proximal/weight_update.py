@@ -111,7 +111,10 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         if self.config.weight_sync_transport == "http" and not isinstance(
             self.config.artifact_storage, RunStateArtifacts
         ):
-            raise ValueError("HTTP publication requires the Modal run-state writer for background recovery archives")
+            raise ValueError(
+                "HTTP publication requires the Modal run-state writer for background recovery archives; "
+                'outside the Modal training launcher set "weight_sync_transport": "volume" in the run config'
+            )
         self.rollout_engines = rollout_engines
         self.is_sender = dist.get_rank() == 0
 
