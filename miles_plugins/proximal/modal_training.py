@@ -52,6 +52,7 @@ import modal.experimental
 from pydantic import TypeAdapter
 
 from miles_plugins.proximal.contracts import (
+    HTTPServingPool,
     RunConfig,
     RunStateArtifacts,
     SafeId,
@@ -393,14 +394,21 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     max_containers=1,
 )
 def train() -> int:
-    from miles_plugins.proximal import state_artifacts, state_checkpoints
+    from miles_plugins.proximal import policy_archive, state_artifacts, state_checkpoints
+    from miles_plugins.proximal.authorization import authorize_run
     from miles_plugins.proximal.e2e import snapshots
     from miles_plugins.proximal.e2e.local_postgres import local_postgres
     from miles_plugins.proximal.state_writer import StateWriter, checkpoint_publisher
 
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     # Only this composition root supplies run_state: its writer acknowledges the outbox.
-    runtime_run = RUN.model_copy(update={"artifact_storage": RunStateArtifacts(kind="run_state")})
+    # Deployment identity wins over a hand-authored run field: never upload to another pool.
+    runtime_run = RUN.model_copy(
+        update={
+            "artifact_storage": RunStateArtifacts(kind="run_state"),
+            "weight_sync_pool": HTTPServingPool(app_name=DEPLOYMENT.app_name, min_replicas=DEPLOYMENT.min_replicas),
+        }
+    )
     CONFIG.write_text(runtime_run.model_dump_json())
     _set_keys()
     # A retry may land in the container of the failed attempt: clear its Ray and state.
@@ -434,6 +442,9 @@ def train() -> int:
             artifacts=RUN.artifact_directory,
             snapshot_root=SNAPSHOT,
             commit=state_volume.commit,
+            publish_policy=lambda: policy_archive.publish_pending(
+                authorize_run(runtime_run, yes_rollouts=True, yes_publish=True)
+            ),
             publish_checkpoint=checkpoint_publisher(
                 dsn=dsn,
                 pg_bin=pg_bin,

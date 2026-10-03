@@ -106,6 +106,22 @@ class ReplicaLoRALoader:
         self._lock = threading.Lock()
         self._loaded: dict[str, RegisteredAdapter] = {}
 
+    @property
+    def upload_directory(self) -> Path:
+        return self._cache / "incoming"
+
+    def install_uploaded(self, directory: Path, reference: SnapshotReference) -> None:
+        with self._lock:
+            snapshot = read_snapshot(directory, reference)
+            if snapshot.manifest.metadata.base_model != self._config.base_model:
+                raise ValueError("Uploaded snapshot base model does not match this replica")
+            destination = self._cache / snapshot_relative_path(reference)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                read_snapshot(destination, reference)
+            else:
+                directory.rename(destination)
+
     def ensure_loaded(self, reference: SnapshotReference) -> RegisteredAdapter:
         """Serialize refresh/copy/register within this replica; never change an existing adapter name."""
         with self._lock:

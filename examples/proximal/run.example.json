@@ -71,6 +71,7 @@
     "volume_name": "miles-adapters",
     "environment_name": "main"
   },
+  "weight_sync_transport": "volume",
   "artifact_directory": "/artifacts",
   "store_dsn_env": "PROXIMAL_ROLLOUT_STORE_DSN",
   "tokenizer_path": "/models/DeepSWE-Preview-4887205c533cd162baac7ba758159cfc3304cf94",

@@ -49,6 +49,12 @@ class ReplicaGateway:
         self._healthy = True
         self.app = FastAPI()
         self._routes()
+        from miles_plugins.proximal.http_sync import add_upload_routes
+
+        async def prepare_upload(reference: SnapshotReference) -> PolicyEvidence:
+            return await self.prepare(PreparePolicy(snapshot=reference, base_model=config.replica.base_model))
+
+        add_upload_routes(self.app, loader=loader, authorize=self._authorize, prepare=prepare_upload)
 
     async def validate_engine(self) -> None:
         reply = await self.client.get(f"{self.config.replica.backend_url}/get_model_info", follow_redirects=False)
