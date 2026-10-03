@@ -26,6 +26,7 @@ from miles_plugins.proximal.contracts import (
     FailedAttempt,
     Grade,
     LaunchRetry,
+    Policy,
     SessionHandle,
     Task,
     canonical_bytes,
@@ -297,12 +298,21 @@ class PlatformRolloutFn(FullyAsyncRolloutFn):
             self._platform = PlatformClient(self.authorization, self._client)
         return self._client
 
+    async def _published_policy(self, store: RolloutStore) -> Policy:
+        """The newest selectable policy, waiting for the trainer's first. An HTTP-synced
+        policy is committed by the run-state writer after its archive, shortly after the
+        sync returns and so possibly after the first rollout is asked for."""
+        deadline = time.monotonic() + self.config.request_timeout_seconds
+        while (policy := await store.current_policy()) is None:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("No published policy yet; the trainer publishes one before rollouts start")
+            await asyncio.sleep(1)
+        return policy
+
     async def _preflight(self) -> None:
         """Before any platform run: capture answers, seals, and ends an over-long turn cleanly."""
         assert self._store is not None
-        policy = await self._store.current_policy()
-        if policy is None:
-            raise RuntimeError("No published policy yet; the trainer publishes one before rollouts start")
+        policy = await self._published_policy(self._store)
         report = await canary(self.authorization, self._http(), policy)
         logger.info("Preflight canary passed: %s", report)
 

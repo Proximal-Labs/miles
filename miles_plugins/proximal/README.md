@@ -99,6 +99,8 @@ The second command prints the reward and token counts and persists `accepted/<at
 
 Run the launcher in the existing Miles trainer environment attached to your Ray cluster (`RAY_ADDRESS` as appropriate). It calls the normal `train_async.train`; there is no second optimizer loop.
 
+Started this way, outside the Modal training launcher, the run config must set `"weight_sync_transport": "volume"`. The default, `"http"`, needs the launcher's run-state writer to archive each policy, and without it the trainer stops at startup with an error naming this setting (see [Full-snapshot HTTP weight sync](#full-snapshot-http-weight-sync)).
+
 ```bash
 python -m miles_plugins.proximal.runtime train \
   --config /config/run.json --yes-rollouts --yes-publish -- \
@@ -252,3 +254,34 @@ scheduler after restart. Before production use, run the separate live v1 Volume
 visibility/latency test and fixed-batch Megatron GPU resume comparison. Async order
 and nondeterministic kernels mean this is not a bit-identical whole-run promise.
 Platform catalog registration and artifact download access remain a separate PR.
+
+
+## Full-snapshot HTTP weight sync
+
+HTTP is the default weight-sync transport. Update serving replicas before running
+the Modal training launcher. Set `"weight_sync_transport": "volume"` to use the
+previous full Volume path. The `ModalVolumeTransfer` import path stays compatible.
+
+The default applies to every run config that does not name a transport, and only the
+Modal training launcher can run it. A trainer started any other way (`runtime train`
+on your own cluster, as in section 5) must set `"weight_sync_transport": "volume"`,
+as `examples/proximal/run.example.json` does; otherwise it refuses to start.
+
+Rank zero exports the adapter and scatters disjoint byte ranges to training
+ranks, which upload concurrently without shared storage. The receiver checks
+part sizes/checksums, reconstructs the snapshot and loads it into SGLang.
+Requests use affinity and a receiver ID; misrouting or a failed rank rejects the
+update. Retry the whole upload after failure.
+
+After HTTP readiness, the existing `StateWriter` archives the snapshot through
+the plain Volume publisher. Only then does the policy become fleet-selectable,
+so replacement replicas can recover it. One pending archive is allowed; the
+next sync waits with a timeout. Existing writer retries and shutdown drain apply.
+The first sync returns before its policy is selectable, so the rollout producer
+waits for that first policy instead of failing at startup.
+HTTP requires `run_state` artifact storage, supplied by the Modal launcher.
+
+Native checkpoints and restore are unchanged: local capture remains synchronous,
+and Volume persistence stays in the existing background writer. Production GPU
+validation is pending. Centralized export, inter-rank scatter and archive latency
+still need end-to-end measurement; transport timings alone do not show a speedup.
