@@ -28,6 +28,8 @@ def _payload(value, roots):
 
 def _reasoning(block):
     kind = block.get("kind")
+    if kind == "google_genai_thought":
+        return block.get("thought", ""), "reasoning"
     if kind == "anthropic_thinking":
         return block.get("thinking", ""), "reasoning"
     if kind == "chat_completions_reasoning":

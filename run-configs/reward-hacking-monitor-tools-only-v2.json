@@ -1,0 +1,32 @@
+{
+  "models": {
+    "inkling-small": {
+      "model": "thinkingmachines/Inkling-Small",
+      "route": "modal",
+      "api": "chat_completions",
+      "reasoning_effort": 0.99,
+      "max_output_tokens": 32768,
+      "concurrency": 100
+    }
+  },
+  "gateway": {
+    "base_url_env": "OPENAI_BASE_URL",
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "modal": {
+    "environment": "main",
+    "base": "/mnt/inkling/models/Inkling-Small",
+    "image": "radixark/miles@sha256:8ee6528fa209dd3bc65ccb40556e6606e3e9e502cd521d994d3ee6da3a58b67d",
+    "gpu": "B300:8",
+    "tp": 8,
+    "replicas": 2,
+    "context_length": 1048576,
+    "concurrency": 50,
+    "startup_timeout": 7200
+  },
+  "datasets": [
+    "modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/prefix-010.jsonl",
+    "modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/prefix-030.jsonl",
+    "modal://inkling-small-rft/datasets/reward-hacking-monitor-tools-only/20261001-v1/prefix-050.jsonl"
+  ]
+}

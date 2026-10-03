@@ -356,3 +356,38 @@ The suffix is saved as `final-instruction.txt` and hashed in `run.json`; per-inp
 hashes also include it. Use a new output directory for this prompt version so
 results cannot silently mix with the earlier prompt. Already-running processes
 retain their previously loaded prompt; this change does not launch evaluations.
+
+## Cross-model additions (2026-10-02)
+
+`data/reward-hacking-monitor-cross-model/` adds 22 positive and 22 negative
+rollouts from 44 new environments in project 519. Positives come from Gemini 3.5
+Flash (10), Gemini 3.8 Flash (8), and GPT-5.5 (4). Controls come from GPT-5.6 Sol
+(11), DeepSeek V4.1 Flash (10), and Claude Opus 5 (1). Source metadata is checked
+against each retrieved solver trace. Positives require confirmed QA attempt
+findings without a refuted report, followed by manual review to exclude nominal
+flags describing benign debugging. They are not a random sample and are not
+claimed to have increased reward. Controls retain the original strict no-hack,
+no-awareness, confirmed FAIR criteria and exclude all flagged environments.
+
+`data/reward-hacking-monitor-balanced/` combines these with the original dataset:
+88 rollouts, 44 per class, with exactly matched counts per model family (provider
+routing aliases grouped). Original probe-role and task-distribution confounds
+remain; model matching alone does not remove those. Both bundles have paired
+`-tools-only` directories and all four prefix fractions. Prefix labels describe
+the full rollout, so an early prefix can precede the attempt.
+
+The converter now preserves `google_genai_thought.thought`. The earlier converter
+omitted 840 such blocks across 11 original control traces. Original datasets and
+completed results remain immutable. The combined bundle rebuilds the original
+traces with corrected reasoning extraction, so it is a new dataset version.
+
+Rebuild using `python -m tools.build_cross_model_reward_hacking`. Selected rollout
+IDs, findings, QA evidence, candidate pools, retrieval scripts, and the selection
+policy live under the additional bundle's `sources/`. New raw traces live under
+its `raw/`; original raw traces remain in the original bundle.
+
+Modal locations (workspace `proximal`, environment `main`):
+- `modal://reward-hacking/datasets/cross-model-44/20261002-v1/`
+- `modal://reward-hacking/datasets/cross-model-44-tools-only/20261002-v1/`
+- `modal://reward-hacking/datasets/model-balanced-88/20261002-v1/`
+- `modal://reward-hacking/datasets/model-balanced-88-tools-only/20261002-v1/`

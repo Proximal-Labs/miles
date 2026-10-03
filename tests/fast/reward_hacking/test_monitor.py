@@ -410,3 +410,13 @@ def test_monitor_instruction_is_after_trace_for_both_variants(include_reasoning)
         body = providers.request_body({"api": api, "model": "test"}, text)
         messages = body["input"] if api == "responses" else body["messages"]
         assert messages[-1]["content"].endswith(FINAL_INSTRUCTION)
+
+
+def test_gemini_thought_blocks_are_preserved():
+    recording = trace()
+    recording["run"]["events"][1]["event"]["payload"]["assistantMessage"]["content"] = [
+        {"kind": "google_genai_thought", "thought": "Inspect the task, then act", "providerMetadata": {}}
+    ]
+    _, turns = data.trace_turns(recording, [])
+    assert turns[0]["reasoning"] == ["Inspect the task, then act"]
+    assert data._reasoning({"kind": "google_genai_thought", "thought": ""}) == ("", "reasoning")
