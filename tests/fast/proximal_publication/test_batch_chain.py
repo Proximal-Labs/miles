@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -454,6 +455,27 @@ def test_a_step_starts_only_with_enough_function_time(tmp_path, plan):
     fake = FakeCluster(tmp_path, plan, {}, remaining=1.3 * 3600 + 899)
     assert run_chain(plan, fake.runtime) == []
     assert "too little function time" in fake.state["stop-reason"]
+
+
+@pytest.mark.parametrize("answer", ["go", "timeout"])
+@pytest.mark.parametrize("remaining_after_gate, continues", [(5500, False), (6000, True)])
+def test_a_gate_wait_cannot_spend_the_next_steps_time_budget(tmp_path, plan, answer, remaining_after_gate, continues):
+    plan = plan.model_copy(update={"gate_timeout_action": "continue_if_healthy"})
+    fake = FakeCluster(tmp_path, plan, {})
+    remaining = [10000]
+
+    def gate(arm, step):
+        remaining[0] = remaining_after_gate
+        return answer
+
+    fake.runtime = replace(fake.runtime, gate=gate, remaining_seconds=lambda: remaining[0])
+    results = run_chain(plan, fake.runtime)
+
+    assert fake.steps() == ([(a.name, s) for a in plan.arms for s in range(3)] if continues else [("mlp", 0)])
+    assert len(results) == (6 if continues else 1)
+    if not continues:
+        assert fake.state["stop-reason"] == "too little function time left for mlp step 2"
+        assert fake.state["stop-all"] is True
 
 
 def test_failed_attempt_retries_from_the_same_receipt_on_fresh_ray(tmp_path, plan):

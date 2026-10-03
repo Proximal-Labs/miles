@@ -152,19 +152,22 @@ def _rank0_decision(plan: ChainPlan, runtime: ChainRuntime, arm: ChainArm, step:
     if step > 0 and not state.get(f"durable/{arm.name}/{step - 1}"):
         return "skip"  # The arm's previous update never became durable.
     estimate = max(plan.step_estimate_seconds, state.get("max-step-seconds") or 0)
-    if runtime.remaining_seconds() < STEP_TIME_FACTOR * estimate + STEP_TIME_MARGIN_S:
+    required_seconds = STEP_TIME_FACTOR * estimate + STEP_TIME_MARGIN_S
+    if runtime.remaining_seconds() < required_seconds:
         state["stop-reason"] = f"too little function time left for {arm.name} step {step + 1}"
         return "stop"
     if plan.gate == "manual" and not first:
         answer = runtime.gate(arm, step)
         if answer == "timeout":
-            if plan.gate_timeout_action == "continue_if_healthy" and state.get("last-healthy"):
-                return "go"
-            state["stop-reason"] = f"no approval for {arm.name} step {step + 1}"
-            return "stop"
+            if plan.gate_timeout_action != "continue_if_healthy" or not state.get("last-healthy"):
+                state["stop-reason"] = f"no approval for {arm.name} step {step + 1}"
+                return "stop"
         if answer == "stop":
             state["stop-reason"] = "operator stop"
-        return answer
+            return "stop"
+        if runtime.remaining_seconds() < required_seconds:
+            state["stop-reason"] = f"too little function time left for {arm.name} step {step + 1}"
+            return "stop"
     return "go"
 
 
