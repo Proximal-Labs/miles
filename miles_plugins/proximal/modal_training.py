@@ -8,7 +8,8 @@ One Modal container runs the training side of a Proximal run:
 
 Capture runs in the serving replicas, not here (see ``serve_replica``): the serving pool
 (``serving_app``) must already be deployed, with its URL as the run config's
-``inference_url`` and ``capture.url``. The trainer opens, seals and fetches each
+``inference_url`` and ``capture.url``. The pool outlives the node unless the deployment
+sets ``stop_pool_on_exit``. The trainer opens, seals and fetches each
 rollout's session there. A ``real`` deployment creates no platform runs until the
 platform's registry routes the model to the pool (a one-time registration per pool).
 
@@ -47,6 +48,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 import modal
+import modal.experimental
 from pydantic import TypeAdapter
 
 from miles_plugins.proximal.contracts import (
@@ -71,6 +73,7 @@ from miles_plugins.proximal.training import (
     read_training_deployment,
     registration_command,
     routes_to_pool,
+    stops_pool,
 )
 
 _TRAINING_PATH = "PROXIMAL_TRAINING_CONFIG"
@@ -337,6 +340,18 @@ def _check_serving(timeout_seconds: float = 1800) -> None:
     print(f"[training] serving fits this run ({asyncio.run(check())} replica contract(s) answered)", flush=True)
 
 
+def _stop_pool() -> None:
+    """Stop the serving pool's app. Best effort: the training run's outcome stands either way."""
+    try:
+        modal.experimental.stop_app(DEPLOYMENT.app_name, environment_name=RUN.volume.environment_name)
+        print(f"[training] stopped serving pool {DEPLOYMENT.app_name}", flush=True)
+    except Exception as exc:
+        print(
+            f"[training] could not stop serving pool {DEPLOYMENT.app_name} ({type(exc).__name__}); stop it by hand",
+            flush=True,
+        )
+
+
 def _service_commands() -> list[tuple[str, list[str], str]]:
     services: list[tuple[str, list[str], str]] = []
     if isinstance(TRAINING.platform, Gsm8kPlatform):
@@ -378,7 +393,8 @@ def _service_commands() -> list[tuple[str, list[str], str]]:
     max_containers=1,
 )
 def train() -> int:
-    from miles_plugins.proximal import state_artifacts, state_checkpoints
+    from miles_plugins.proximal import policy_archive, state_artifacts, state_checkpoints
+    from miles_plugins.proximal.authorization import authorize_run
     from miles_plugins.proximal.e2e import snapshots
     from miles_plugins.proximal.e2e.local_postgres import local_postgres
     from miles_plugins.proximal.state_writer import StateWriter, checkpoint_publisher
@@ -419,6 +435,9 @@ def train() -> int:
             artifacts=RUN.artifact_directory,
             snapshot_root=SNAPSHOT,
             commit=state_volume.commit,
+            publish_policy=lambda: policy_archive.publish_pending(
+                authorize_run(runtime_run, yes_rollouts=True, yes_publish=True)
+            ),
             publish_checkpoint=checkpoint_publisher(
                 dsn=dsn,
                 pg_bin=pg_bin,
@@ -431,6 +450,7 @@ def train() -> int:
                 commit=state_volume.commit,
             ),
         )
+        completed = False
         try:
             for name, command, health in _service_commands():
                 log = (logs / f"{name}.log").open("ab")
@@ -460,6 +480,7 @@ def train() -> int:
             code = _run_trainer(command)
             if code != 0:  # Raise so Modal retries from the latest snapshot.
                 raise RuntimeError(f"Trainer exited with {code}")
+            completed = True
             return code
         finally:
             # Stop everything that can still write a checkpoint, then the snapshot thread,
@@ -469,6 +490,10 @@ def train() -> int:
             # optimizer boundary before the local Postgres context exits.
             try:
                 writer.close()
+            except BaseException:
+                # The node fails after all: Modal may retry it, and the retry needs the pool.
+                completed = False
+                raise
             finally:
                 for process in reversed(processes):
                     process.terminate()
@@ -483,6 +508,8 @@ def train() -> int:
                         kernel_volume.commit()
                     except Exception as exc:
                         print(f"[training] kernel cache commit failed ({type(exc).__name__})", flush=True)
+                if stops_pool(TRAINING, completed=completed):
+                    _stop_pool()
 
 
 @app.function(

@@ -18,7 +18,7 @@ def deployment(**overrides):
         "tensor_parallel": 2,
         "routing_region": "us-west",
         "min_replicas": 4,
-        "max_replicas": 4,
+        "max_replicas": 5,
         "target_concurrency": 8,
         "scaledown_window_seconds": 1200,
         "startup_timeout_seconds": 3600,
@@ -147,9 +147,42 @@ def test_stage_a_example_configs_are_valid():
     assert differing == {"run_id", "inference_url", "inference_header_env"}
 
 
-def test_a_pool_holding_capture_sessions_has_a_fixed_size():
-    with pytest.raises(ValueError, match="set min_replicas equal to max_replicas"):
-        deployment(min_replicas=1)
+@pytest.mark.parametrize("warm", [1, 4, 24])
+def test_a_pool_runs_exactly_one_spare_replica(warm):
+    serving = deployment(min_replicas=warm, max_replicas=warm + 1)
+    assert (serving.min_replicas, serving.max_replicas) == (warm, warm + 1)
+
+
+@pytest.mark.parametrize(
+    ("min_replicas", "max_replicas"),
+    [
+        (4, 4),  # No room for Modal to start a replacement beside a drained replica.
+        (1, 1),
+        (4, 6),  # A second spare only lets load grow the pool, then drop sessions on scale-down.
+        (4, 3),
+    ],
+)
+def test_a_pool_without_exactly_one_spare_is_rejected(min_replicas, max_replicas):
+    with pytest.raises(ValueError, match=f"set max_replicas to min_replicas \\+ 1 \\({min_replicas + 1}\\)"):
+        deployment(min_replicas=min_replicas, max_replicas=max_replicas)
+
+
+def test_a_pool_keeps_at_least_one_replica_warm():
+    with pytest.raises(ValueError, match="min_replicas\\n  Input should be greater than 0"):
+        deployment(min_replicas=0, max_replicas=1)
+
+
+def test_every_example_serving_config_is_valid():
+    from pathlib import Path
+
+    examples = Path(__file__).resolve().parents[3] / "examples" / "proximal"
+    configs = sorted(examples.rglob("serving*.json"))
+    assert len(configs) >= 6
+    for path in configs:
+        data = json.loads(path.read_text())
+        if path.name == "serving.example.json":  # A template: its image digest is a placeholder.
+            data["image"] = "radixark/miles@sha256:" + "0" * 64
+        ServingDeployment.model_validate_json(json.dumps(data))
 
 
 def test_attention_and_speculation_are_rendered_from_the_serving_config(config):

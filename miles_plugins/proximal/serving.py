@@ -78,7 +78,10 @@ class ServingDeployment(Contract):
     gpu: Nonempty
     tensor_parallel: Positive
     routing_region: Nonempty
-    min_replicas: Annotated[int, Field(ge=0)]
+    # Replicas kept warm, plus exactly one spare: max_replicas is min_replicas + 1 (see
+    # _shape). No scale-to-zero pool: one that scaled up from zero would have no room left
+    # for a replacement container.
+    min_replicas: Positive
     max_replicas: Positive
     target_concurrency: Positive
     scaledown_window_seconds: Positive
@@ -119,10 +122,21 @@ class ServingDeployment(Contract):
 
     @model_validator(mode="after")
     def _shape(self) -> "ServingDeployment":
-        if self.min_replicas != self.max_replicas:
-            # Capture's sessions live in the replicas: scaling one down would drop the
-            # rollouts it holds. A fixed size until scale-down drains sessions first.
-            raise ValueError("Capture sessions live in the replicas; set min_replicas equal to max_replicas")
+        if self.max_replicas != self.min_replicas + 1:
+            # Exactly one spare container above the warm pool, because capture's sessions
+            # live in the replicas. Modal drains hosts to rebalance capacity: it starts a
+            # replacement beside the drained container, shifts traffic to it, then retires
+            # the old one. With max_replicas equal to min_replicas there is no room for the
+            # replacement, and Modal eventually retires the drained replica anyway, with
+            # every session it holds. A second spare would only let load grow the pool, and
+            # a replica started for load drops its sessions when it scales back down. So
+            # keep target_concurrency high enough that normal load fits in min_replicas and
+            # the spare stays free for replacements.
+            raise ValueError(
+                "A serving pool runs exactly one spare container so Modal can replace a replica on a "
+                f"drained host: set max_replicas to min_replicas + 1 ({self.min_replicas + 1}), "
+                f"not {self.max_replicas}"
+            )
         for path in (self.base_mount, self.adapter_mount, self.local_cache):
             if not path.is_absolute():
                 raise ValueError("Container paths must be absolute")

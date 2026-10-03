@@ -18,6 +18,7 @@ class _CheckpointLoadResult(NamedTuple):
     iteration: int
     num_floating_point_operations_so_far: int
     native_optimizer_restored: bool
+    native_scheduler_restored: bool
 
 
 class _FakeRandomState:
@@ -139,7 +140,10 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
     def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> _CheckpointLoadResult:
         seen["args_during_load"] = vars(args).copy()
         return _CheckpointLoadResult(
-            iteration=iteration, num_floating_point_operations_so_far=0, native_optimizer_restored=False
+            iteration=iteration,
+            num_floating_point_operations_so_far=0,
+            native_optimizer_restored=False,
+            native_scheduler_restored=False,
         )
 
     monkeypatch.setattr(model_module, "load_checkpoint", fake_load_checkpoint)

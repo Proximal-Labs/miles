@@ -25,6 +25,8 @@
 --recompute-granularity full
 --recompute-method uniform
 --recompute-num-layers 1
+# Reuse FA4 outputs during recompute (~7% less step time, ~14 GiB more peak GPU memory).
+--custom-megatron-init-path miles_plugins.proximal.attention_recompute.install
 --log-probs-chunk-size 4096
 --recompute-loss-function
 --skip-actor-forward-only

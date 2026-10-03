@@ -238,6 +238,18 @@ one update, and native resume still requires an identical target layout. The bat
 original contract, tokens, masks, behavior logprobs and provenance remain unchanged.
 The sweep records its own target list and optimizer recipe alongside the source
 manifest hash and verifies the original zero-delta policy proof before allocation.
+The existing training deployment selects eight B300s or eight B200s per node.
+For the Qwen3.8 B200 sweep, the composition root resolves the measured BF16
+TP4/CP2/PP1 memory recipe before validation: microbatch 1, dynamic packing with
+131072 tokens per CP rank, sequence parallelism, full layer recomputation and
+4096-token recomputed loss chunks. B300 retains the authored recipe. Resolution
+does not select the optimizer, LR, LoRA targets, global batch, sampling semantics
+or whether to skip the separate actor logprob pass. The resolved plan is printed
+before submission and is the plan persisted, preflighted, executed and compared
+for native resume; it is never a hidden worker override. The hardware choice is
+recorded with the cluster and completion result. A changed native layout still
+requires fresh initialization, not implicit optimizer resharding. This recipe
+selection belongs to the bounded Qwen sweep, not the generic Miles trainer.
 CPU preflight uses the pinned image's native argument parser, HF model validation,
 and sweep-contract checks. Megatron's full validator queries the CUDA architecture
 for tensor parallelism; it runs on the allocated gang before model loading.

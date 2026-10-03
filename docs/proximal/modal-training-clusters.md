@@ -2,7 +2,7 @@
 
 Use this guide to allocate the training side of the
 [collect-then-train workflow](modal-collect-then-train.md). It documents the
-existing launchers, including the eight-node, 64-B300 frozen-batch sweep. Inference
+existing launchers, including the eight-node, 64-GPU B300/B200 frozen-batch sweep. Inference
 replicas and platform sandboxes have separate lifetimes; a stored batch can be
 trained with both already stopped.
 
@@ -16,7 +16,7 @@ failure-hold budgets before submission.
 | --- | --- | --- |
 | Online async RL | [`modal_training`](../../miles_plugins/proximal/modal_training.py) | One GPU container sized by `training.json`; owns the online trainer and recovery snapshots. `SIZING_NODES` does not make this launcher multi-node. |
 | Multi-node capacity/timing check | [`e2e.step_sizing`](../../miles_plugins/proximal/e2e/step_sizing.py) | `SIZING_NODES` eight-GPU nodes; mock rollouts, no retained trained checkpoints. Qwen and Inkling profiles exist. |
-| Train an existing base-policy batch and retain adapters | [`e2e.batch_sweep`](../../miles_plugins/proximal/e2e/batch_sweep.py) | Qwen profile, `SIZING_NODES` nodes, **B300:8 per node**; two updates per configuration, local staging, native checkpoints and evaluation exports. |
+| Train an existing base-policy batch and retain adapters | [`e2e.batch_sweep`](../../miles_plugins/proximal/e2e/batch_sweep.py) | Qwen profile, `SIZING_NODES` nodes, **`training.json.gpu`: B300:8 or B200:8 per node**; two updates per configuration, local staging, native checkpoints and evaluation exports. |
 | Exactly one independent update | [`offline_batch train`](offline-batches.md) | Runs inside an already allocated Miles/Ray environment. It does not allocate Modal nodes or commit its output. |
 
 The instructions below use `batch_sweep`, the launcher used for the real stored
@@ -28,10 +28,11 @@ for submitting arbitrary new training work.
 
 ## Understand the allocation
 
-`SIZING_NODES=8` plus `gpu="B300:8"` means **8 containers × 8 GPUs = 64 GPUs**.
+`SIZING_NODES=8` plus `training.json.gpu="B300:8"` (or `"B200:8"`) means
+**8 containers × 8 GPUs = 64 GPUs**. The sweep requests that exact GPU type.
 Each node requests 32 CPUs and 1 TiB of host RAM. The sweep decorator fixes these
-resources, an eight-hour function timeout and `retries=0`; changing
-`training.json.memory_mib`, `gpu` or `max_retries` does not override that decorator.
+CPU/memory resources, an eight-hour function timeout and `retries=0`; changing
+`training.json.memory_mib`, `cpu` or `max_retries` does not override those values.
 The training config still supplies the model, image-related environment, input
 argument file, state Volume and kernel-cache configuration.
 
@@ -47,8 +48,9 @@ set, each advertising eight GPUs, before starting Miles. You do not create a
 separate Ray head, expose Ray publicly, or manually set `RAY_ADDRESS` on your laptop.
 The implemented startup is in [`_start_ray`](../../miles_plugins/proximal/e2e/step_sizing.py).
 
-GPU allocation and model parallelism are separate choices. For the Qwen run,
-TP=4, PP=1 and CP=1 across 64 GPUs gave DP=16. Preserve a native checkpoint's
+For the earlier B300 Qwen run, TP=4, PP=1 and CP=1 across 64 GPUs gave DP=16.
+The B200 sweep resolves TP=4, PP=1 and CP=2, giving DP=8 across 64 GPUs.
+Preserve a native checkpoint's
 parallel layout when resuming; changing the node count is not automatic optimizer
 resharding. Provisioning more nodes also does not fix an oversized per-GPU
 microbatch. Use sizing experiments when changing context length or parallelism.
@@ -78,18 +80,18 @@ Prepare these files:
 | --- | --- |
 | `run.json` | **Exact source config embedded in the frozen batch.** Do not change its run ID or LoRA targets to name the new experiment. |
 | `serving.json` | Supplies the pinned image and base Volume/mount, and must remain compatible with the source. Importing it does not deploy serving replicas. |
-| `training.json` | Supplies `model_args`, a repository-relative `train_args` file, the state Volume, and kernel settings. |
+| `training.json` | Supplies per-node `gpu`, `model_args`, a repository-relative `train_args` file, the state Volume, and kernel settings. |
 | Local verified `batch/` | `batch.json`, all referenced group payloads and `base_policy/`. This is the independent readback used for local validation. |
 | Same batch on the state Volume | Byte-identical input at the plan's `batch_path`, relative to `/snapshot`. `--local-bundle` does **not** upload it. |
 | `plan.json` | New experiment ID, batch hash/count/path, node count, phases, resolved Miles recipe and explicit recovery/hold budgets. |
 
-Keep `training.json.num_gpus` at **8** with `gpu: "B300:8"`, and its referenced
+Keep `training.json.num_gpus` at **8** with `gpu: "B300:8"` or `"B200:8"`, and its referenced
 argument file at `--actor-num-nodes 1 --actor-num-gpus-per-node 8`. Import-time
 validation checks that single-node template. The sweep overrides the effective
 actor node count using `plan.nodes`; both that field and `SIZING_NODES` must be 8
 for a 64-GPU run. Putting 64 in `num_gpus` fails before submission.
 
-For B300/Qwen3.8, the successful training configuration used
+For both B300 and B200/Qwen3.8, the successful training configuration used
 `deterministic_kernels: false` and `cuda_allocator: "expandable_segments"`.
 The example `examples/proximal/qwen38/training.json` is an H200 template and must
 be reviewed; its current values are not the successful B300 settings. A populated,
@@ -97,6 +99,13 @@ compatible kernel-cache Volume avoids much repeated compilation: the sizing
 image mounts it read-only and copies it to node-local disk. See the
 [Qwen execution notes](../../examples/proximal/qwen38/README.md) for the measured
 SM100 backward, memory and kernel-cache constraints.
+
+For B200, start from `examples/proximal/qwen38/overhead/training.json` and change
+`gpu` to `"B200:8"`. Keep `num_gpus: 8`, `model_args: "qwen3.8-27B"`,
+`deterministic_kernels: false` and `cuda_allocator: "expandable_segments"`.
+The sweep rejects other GPU counts/types and refuses an incompatible B200 model
+or precision configuration before submission. The source batch's `run.json` and
+serving config do not change: this selects training hardware only.
 
 Record the checkout commit, local diff, image digest and all input files with the
 experiment. The launcher packages the local checkout; it does not fetch GitHub
@@ -144,12 +153,47 @@ Megatron stops when it builds the scheduler, on the allocated GPUs. The batch ch
 ([#49](https://github.com/Proximal-Labs/miles/pull/49)) refuses the flag before launch.
 See the [Qwen3.8 LR note](qwen38-lora-lr.md#frozen-batch-runs).
 
-The sweep runs `plan.recipe` as written, so a per-step optimization is active only if
-its flag is in the array. In particular, `--skip-actor-forward-only` drops the separate
+The B300 sweep retains the authored recipe. B200 resolves the memory settings below
+before local validation, CPU preflight and native resume checks. It prints the full
+resolved plan before any remote call and persists that exact recipe in `plan.json`;
+each worker uses the same resolution. Optimizer, LR, targets and loss choices remain
+authored. In particular, `--skip-actor-forward-only` must still be in the array to drop the separate
 old-policy log-prob pass, which is redundant when each update is one optimizer step with
 no KL and no dropout ([#37](https://github.com/Proximal-Labs/miles/pull/37) measured
 20–23% of step time on 8 B300s). A recipe built from an argument file without the flag
 pays for that pass on every update.
+
+| B200 Qwen3.8 setting | Resolved value |
+| --- | --- |
+| Precision | BF16 (FP16/FP8/FP4 requests are rejected) |
+| TP / CP / PP | 4 / 2 / 1 |
+| Microbatch / sequence parallelism | 1 / enabled |
+| Dynamic packing token budget | 131072 per CP rank, preserving 262144-token trajectories |
+| Activation recomputation | full / uniform / 1 layer |
+| Loss | recomputed in 4096-token logprob chunks |
+
+An explicitly supplied `--log-probs-max-tokens-per-gpu` is also set to 131072;
+otherwise the native trainer uses the training token budget. These overrides do
+not change the source batch's context, tokens, sampling-support masks or logprobs.
+They do not change the global batch or create additional optimizer steps.
+With 64 B200s, TP4/CP2 gives eight data-parallel groups: **1024 samples means 128
+trajectories per group**, accumulated into one optimizer update. Full-length
+trajectories take one microbatch each; shorter trajectories may be packed.
+On eight B200s there is one data-parallel group, so that same batch takes longer.
+
+The measured 2026-10-01 smoke on Miles `93d339f87` used one eight-B200 node,
+BF16 attention+MLP LoRA r32 and two updates of eight synthetic 262144-token
+trajectories each, with `--skip-actor-forward-only`. Actor-train times were 572 s
+and 332 s; peak sampled GPU memory was 124.2 GiB of 179.1 GiB. Both optimizer
+updates completed with finite, nonzero gradients. This is memory/execution
+evidence, not validation of a 1024-sample real batch, sampling-support replay,
+checkpoint/resume on B200 or multi-node communication. Existing native checkpoint
+and serving-export paths remain the ones fixed in #47.
+
+This automatic B200 recipe selection is specific to `e2e.batch_sweep`. Other
+launchers (including `step_sizing` and `modal_training`) use their explicit
+training arguments. Do not change a prior CP1 checkpoint to CP2 and call it a
+resume: recipe/layout checks intentionally reject that change.
 
 The following JSON is a **plan skeleton**, not a runnable recipe. Replace the
 hash/path/recipe and choose the target list deliberately. This example uses the
@@ -188,14 +232,19 @@ reviewed local inputs (these operations are local only):
 python - <<'PY'
 import hashlib
 import json
+import os
 from pathlib import Path
-from miles_plugins.proximal.e2e.batch_sweep_inputs import SweepPlan
+from miles_plugins.proximal.e2e.batch_sweep_inputs import SweepPlan, resolve_sweep_plan
+from miles_plugins.proximal.training import read_training_deployment
 
 plan = json.loads(Path("plan.json").read_text())
 plan["batch_sha256"] = hashlib.sha256(
     Path("/absolute/path/to/batch/batch.json").read_bytes()).hexdigest()
 plan["recipe"] = json.loads(Path("recipe.json").read_text())
-validated = SweepPlan.model_validate_json(json.dumps(plan))
+validated = resolve_sweep_plan(
+    SweepPlan.model_validate_json(json.dumps(plan)),
+    read_training_deployment(os.environ["PROXIMAL_TRAINING_CONFIG"]),
+)
 Path("plan.json").write_text(validated.model_dump_json(indent=2) + "\n")
 PY
 ```

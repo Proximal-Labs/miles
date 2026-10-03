@@ -71,6 +71,7 @@
     "volume_name": "miles-adapters",
     "environment_name": "main"
   },
+  "weight_sync_transport": "volume",
   "artifact_directory": "/artifacts",
   "store_dsn_env": "PROXIMAL_ROLLOUT_STORE_DSN",
   "tokenizer_path": "/models/DeepSWE-Preview-4887205c533cd162baac7ba758159cfc3304cf94",
@@ -78,7 +79,7 @@
   "enable_thinking": true,
   "max_in_flight_samples": 32,
   "completed_group_capacity": 16,
-  "rollout_sandbox": "kata-clh",
+  "rollout_sandbox": "gvisor",
   "launch_retry": {
     "attempts": 4,
     "backoff_seconds": 30.0,

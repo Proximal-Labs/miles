@@ -14,6 +14,7 @@ from miles_plugins.proximal.training import (
     registered_capture_endpoint,
     registration_command,
     routes_to_pool,
+    stops_pool,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -135,6 +136,16 @@ def test_gsm8k_deployment_refuses_a_remote_platform():
 def test_example_train_args_ask_for_the_deployments_gpus(directory):
     deployment = read_training_deployment(directory / "training.json")
     check_train_args(deployment, (REPO / deployment.train_args).read_text())
+
+
+def test_a_node_stops_its_pool_only_when_opted_in_and_training_is_over_for_good():
+    deployment = read_training_deployment(QWEN38 / "training.json")
+    assert deployment.stop_pool_on_exit is False and deployment.max_retries > 0
+    assert not stops_pool(deployment, completed=True)  # Not opted in: the pool may serve other runs.
+    owner = deployment.model_copy(update={"stop_pool_on_exit": True})
+    assert stops_pool(owner, completed=True)
+    assert not stops_pool(owner, completed=False)  # Modal may retry the node, which needs the pool.
+    assert stops_pool(owner.model_copy(update={"max_retries": 0}), completed=False)
 
 
 def test_train_args_for_the_wrong_gpu_count_are_refused():

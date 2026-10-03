@@ -50,7 +50,7 @@ PROXIMAL_RUN_CONFIG=run.json PROXIMAL_SERVING_CONFIG=serving.json \
 
 Each replica starts SGLang on loopback, then its front process (`serve_replica`): the gateway and capture, on one port. If either exits, the replica exits and Modal replaces it. The deployed `*.modal.direct` URL is the run config's `inference_url` and `capture.url`, and it is what the platform endpoint registry records as a `rollout_capture` endpoint. Every replica mounts the same adapter Volume and independently loads and verifies the immutable version each request names. The gateway serves `/policies/prepare` and `/v1/chat/completions`; capture serves `/sessions` and `/rollouts/<rollout>/v1/chat/completions` and calls the gateway in-process. Authentication is mandatory on every route.
 
-Capture keeps each rollout's session in the replica that serves it, so every call about a rollout carries `Modal-Session-Id: sha256(<platform rollout id>)` (`contracts.AFFINITY_HEADER`): the trainer's session calls and the platform's chat calls. Modal routes equal session IDs to one container. The deployment's `capture_secret` provides capture's credentials, `cpu` sizes the replica for SGLang plus the front process (which runs at lower scheduling priority than SGLang), and `modal_proxy_auth` is false when the platform's agents call the pool directly.
+Capture keeps each rollout's session in the replica that serves it, so every call about a rollout carries `Modal-Session-Id: sha256(<platform rollout id>)` (`contracts.AFFINITY_HEADER`): the trainer's session calls and the platform's chat calls. Modal routes equal session IDs to one container. Because sessions live in the replicas, the pool runs exactly one spare (`max_replicas` is `min_replicas + 1`, enforced by `ServingDeployment`): Modal replaces a replica on a host it drains by starting the new container before retiring the old one, which needs room above `min_replicas`. A second spare would only let load grow the pool, and a replica started for load drops its sessions when it scales back down, so `target_concurrency` should be high enough that normal load fits in `min_replicas`. The deployment's `capture_secret` provides capture's credentials, `cpu` sizes the replica for SGLang plus the front process (which runs at lower scheduling priority than SGLang), and `modal_proxy_auth` is false when the platform's agents call the pool directly.
 
 ## 3. Capture
 
@@ -98,6 +98,8 @@ The second command prints the reward and token counts and persists `accepted/<at
 ## 5. Start continuous async training
 
 Run the launcher in the existing Miles trainer environment attached to your Ray cluster (`RAY_ADDRESS` as appropriate). It calls the normal `train_async.train`; there is no second optimizer loop.
+
+Started this way, outside the Modal training launcher, the run config must set `"weight_sync_transport": "volume"`. The default, `"http"`, needs the launcher's run-state writer to archive each policy, and without it the trainer stops at startup with an error naming this setting (see [Full-snapshot HTTP weight sync](#full-snapshot-http-weight-sync)).
 
 ```bash
 python -m miles_plugins.proximal.runtime train \
@@ -252,3 +254,34 @@ scheduler after restart. Before production use, run the separate live v1 Volume
 visibility/latency test and fixed-batch Megatron GPU resume comparison. Async order
 and nondeterministic kernels mean this is not a bit-identical whole-run promise.
 Platform catalog registration and artifact download access remain a separate PR.
+
+
+## Full-snapshot HTTP weight sync
+
+HTTP is the default weight-sync transport. Update serving replicas before running
+the Modal training launcher. Set `"weight_sync_transport": "volume"` to use the
+previous full Volume path. The `ModalVolumeTransfer` import path stays compatible.
+
+The default applies to every run config that does not name a transport, and only the
+Modal training launcher can run it. A trainer started any other way (`runtime train`
+on your own cluster, as in section 5) must set `"weight_sync_transport": "volume"`,
+as `examples/proximal/run.example.json` does; otherwise it refuses to start.
+
+Rank zero exports the adapter and scatters disjoint byte ranges to training
+ranks, which upload concurrently without shared storage. The receiver checks
+part sizes/checksums, reconstructs the snapshot and loads it into SGLang.
+Requests use affinity and a receiver ID; misrouting or a failed rank rejects the
+update. Retry the whole upload after failure.
+
+After HTTP readiness, the existing `StateWriter` archives the snapshot through
+the plain Volume publisher. Only then does the policy become fleet-selectable,
+so replacement replicas can recover it. One pending archive is allowed; the
+next sync waits with a timeout. Existing writer retries and shutdown drain apply.
+The first sync returns before its policy is selectable, so the rollout producer
+waits for that first policy instead of failing at startup.
+HTTP requires `run_state` artifact storage, supplied by the Modal launcher.
+
+Native checkpoints and restore are unchanged: local capture remains synchronous,
+and Volume persistence stays in the existing background writer. Production GPU
+validation is pending. Centralized export, inter-rank scatter and archive latency
+still need end-to-end measurement; transport timings alone do not show a speedup.

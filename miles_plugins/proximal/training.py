@@ -126,6 +126,10 @@ class TrainingDeployment(Contract):
     max_retries: Annotated[int, Field(ge=0)]
     # CPU-only finite collection; Modal bills CPU/memory at 3x for this option.
     collection_nonpreemptible: bool = False
+    # Stop the serving pool's app when this node's training is over for good (stops_pool):
+    # its replicas bill until then. Off unless this run owns the pool, since a deployed
+    # pool also serves later runs that fit it.
+    stop_pool_on_exit: bool = False
     # Deterministic kernels and collectives (NCCL ring, cuBLAS workspace, no
     # nondeterministic Transformer Engine algorithms): reproducible steps, at some speed.
     # FlashAttention's SM100 backward for 256-wide heads (Qwen3.8 on Blackwell) has no
@@ -196,6 +200,13 @@ def check_train_args(deployment: TrainingDeployment, text: str) -> None:
         raise ValueError(
             f"{deployment.train_args} asks for {gpus} GPUs, but the deployment provides {deployment.num_gpus}"
         )
+
+
+def stops_pool(deployment: TrainingDeployment, *, completed: bool) -> bool:
+    """Whether the node, exiting now, stops its serving pool: only once training is over
+    for good. After a failure Modal may retry the node, which needs the pool to resume,
+    and a container cannot tell whether its attempt was the last retry."""
+    return deployment.stop_pool_on_exit and (completed or deployment.max_retries == 0)
 
 
 def registered_capture_endpoint(registry_json: str, model: str, endpoint_name: str | None) -> dict[str, object] | None:
