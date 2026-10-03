@@ -6,8 +6,9 @@ def set_flag(argv: list[str], flag: str, value: str | None) -> list[str]:
     out: list[str] = []
     i = 0
     while i < len(argv):
-        if argv[i] == flag:
-            i += 2 if i + 1 < len(argv) and not argv[i + 1].startswith("--") else 1
+        if argv[i].split("=", 1)[0] == flag:
+            inline = "=" in argv[i]
+            i += 2 if not inline and i + 1 < len(argv) and not argv[i + 1].startswith("--") else 1
             continue
         out.append(argv[i])
         i += 1

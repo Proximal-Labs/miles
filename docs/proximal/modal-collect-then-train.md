@@ -84,6 +84,9 @@ configuration of a previous experiment.
   limits, base model, tokenizer/rendering, thinking/tool protocol, LoRA targets,
   rank/alpha, sampling, group size and behavior correction. Set
   `research.unused_groups` to `retry` for finite collection.
+- `rollout_sandbox` chooses where the platform runs each rollout. The examples use
+  `gvisor` (a Kubernetes sandbox under gVisor). `kata-clh` and `kata-qemu` (Kata on
+  Kubernetes) and `ecs-fargate` remain available; the field has no default.
 - `research.sampling.logprob_semantics` fixes what a behavior logprob means.
   `untransformed` samples the full distribution (`top_p` 1, `top_k` -1).
   `sampling_support` samples with top-p/top-k (for example `top_p` 0.95 with `top_k`
@@ -304,8 +307,11 @@ worker retries and allocation retention. Its
 [`SweepPlan`](../../miles_plugins/proximal/e2e/batch_sweep_inputs.py) declares the
 batch hash, recipe, targets and initialization for each phase. It is specifically
 a two-update-per-configuration comparison, with an optional committed first-update
-resume; it is not a generic one-step allocator. The
-[architecture](architecture.md) defines its recovery and lifetime rules.
+resume; it is not a generic one-step allocator. Select `B300:8` or `B200:8` in
+`training.json.gpu`. The B200 Qwen3.8 sweep resolves and records its tested
+TP4/CP2 memory recipe before validation; see the
+[hardware settings and 1024-sample accumulation example](modal-training-clusters.md#build-and-review-the-sweep-plan).
+The [architecture](architecture.md) defines its recovery and lifetime rules.
 
 The workflow is complete when another process can validate the retained input
 batch, identify the exact training recipe and policy, and load the output needed

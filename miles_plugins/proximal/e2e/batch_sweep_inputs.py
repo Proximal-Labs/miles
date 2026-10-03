@@ -22,6 +22,7 @@ from miles_plugins.proximal.e2e.argv import set_flag
 from miles_plugins.proximal.initial_policy import verify_base_policy
 from miles_plugins.proximal.snapshot import Digest, Nonempty
 from miles_plugins.proximal.state_artifacts import RelativePath, StateFile
+from miles_plugins.proximal.training import TrainingDeployment
 
 if TYPE_CHECKING:
     from miles_plugins.proximal.offline_batch import Batch
@@ -53,6 +54,54 @@ class SweepPlan(Contract):
             if len(set(phase.target_modules)) != len(phase.target_modules):
                 raise ValueError("Repeated target module in phase")
         return self
+
+
+def check_sweep_deployment(deployment: TrainingDeployment) -> None:
+    """Check hardware selection before constructing a paid Modal function."""
+    if deployment.num_gpus != 8 or deployment.gpu not in {"B200:8", "B300:8"}:
+        raise ValueError("The Qwen sweep requires gpu B200:8 or B300:8 and num_gpus=8 per node")
+    if deployment.gpu == "B300:8":
+        return
+    if deployment.model_args != "qwen3.8-27B":
+        raise ValueError("The B200 sweep layout is validated only for model_args=qwen3.8-27B")
+    if deployment.deterministic_kernels or deployment.cuda_allocator != "expandable_segments":
+        raise ValueError("B200 requires deterministic_kernels=false and cuda_allocator=expandable_segments")
+
+
+def resolve_sweep_plan(plan: SweepPlan, deployment: TrainingDeployment) -> SweepPlan:
+    """Resolve the Qwen B200 memory recipe before validation, recording or resume checks.
+
+    B300 keeps the authored recipe. B200 uses the measured 256k BF16 layout; this
+    is specific to this Qwen sweep, not a default for other models or launchers.
+    The resulting plan is the one preflight, every worker and recovery must use.
+    """
+    check_sweep_deployment(deployment)
+    if deployment.gpu == "B300:8":
+        return plan
+    flags = {token.split("=", 1)[0] for token in plan.recipe}
+    if {"--fp16", "--fp8", "--fp4"} & flags:
+        raise ValueError("The B200 sweep layout requires BF16; remove conflicting precision flags")
+    # Selecting B200 overrides authored memory/layout flags with the measured
+    # Qwen recipe. Return the effective plan so validation and recovery see it too.
+    recipe = list(plan.recipe)
+    for flag, value in (
+        ("--tensor-model-parallel-size", "4"),
+        ("--pipeline-model-parallel-size", "1"),
+        ("--context-parallel-size", "2"),
+        ("--micro-batch-size", "1"),
+        ("--max-tokens-per-gpu", "131072"),
+        ("--recompute-granularity", "full"),
+        ("--recompute-method", "uniform"),
+        ("--recompute-num-layers", "1"),
+        ("--log-probs-chunk-size", "4096"),
+    ):
+        recipe = set_flag(recipe, flag, value)
+    # If a separate logprob pass is requested, its packing budget must fit too.
+    if "--log-probs-max-tokens-per-gpu" in flags:
+        recipe = set_flag(recipe, "--log-probs-max-tokens-per-gpu", "131072")
+    for flag in ("--bf16", "--sequence-parallel", "--use-dynamic-batch-size", "--recompute-loss-function"):
+        recipe = set_flag(recipe, flag, None) + [flag]
+    return plan.model_copy(update={"recipe": tuple(recipe)})
 
 
 def validate_source(bundle: Path, plan: SweepPlan, source: RunConfig) -> "Batch":

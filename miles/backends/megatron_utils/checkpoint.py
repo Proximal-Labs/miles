@@ -136,10 +136,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
 
     # Load LoRA adapter weights if available
     native_optimizer_restored = False
+    native_scheduler_restored = False
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
-            loaded, iteration, native_optimizer_restored = load_lora_adapter(
+            loaded, iteration, native_optimizer_restored, native_scheduler_restored = load_lora_adapter(
                 ddp_model,
                 adapter_path,
                 optimizer=optimizer,
@@ -158,7 +159,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
-    return (*result, native_optimizer_restored)
+    return (*result, native_optimizer_restored, native_scheduler_restored)
 
 
 def save_checkpoint_with_lora(

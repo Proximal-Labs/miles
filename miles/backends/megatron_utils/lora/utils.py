@@ -241,15 +241,16 @@ def load_lora_adapter(
     opt_param_scheduler: Any | None = None,
     load_optimizer: bool = True,
     load_rng: bool = True,
-) -> tuple[bool, int | None, bool]:
+) -> tuple[bool, int | None, bool, bool]:
     """Restore native adapter shards and optional optimizer/scheduler state.
 
+    Returns ``(loaded, iteration, optimizer_restored, scheduler_restored)``.
     HF adapters cannot be loaded into Bridge models through this path.
     """
     adapter_dir = Path(adapter_path).resolve()
     if not adapter_dir.exists():
         logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
-        return False, None, False
+        return False, None, False, False
 
     tp_rank = get_parallel_state().tp.rank
     pp_rank = get_parallel_state().pp.rank
@@ -290,10 +291,10 @@ def load_lora_adapter(
             optimizer.reload_model_params()
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration, optimizer_restored = _load_training_state(
+        iteration, optimizer_restored, scheduler_restored = _load_training_state(
             adapter_dir, optimizer, opt_param_scheduler, load_optimizer, load_rng
         )
-        return True, iteration, optimizer_restored
+        return True, iteration, optimizer_restored, scheduler_restored
 
     if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):
         logger.warning(
@@ -301,10 +302,10 @@ def load_lora_adapter(
             f"Megatron is not yet supported. Please save using Megatron-native format "
             f"(adapter_megatron_rank*.pt files) for checkpoint resume."
         )
-        return False, None, False
+        return False, None, False, False
 
     logger.warning(f"No adapter checkpoint found at {adapter_dir}")
-    return False, None, False
+    return False, None, False, False
 
 
 def _load_training_state(
@@ -313,15 +314,20 @@ def _load_training_state(
     opt_param_scheduler: Any | None,
     load_optimizer: bool = True,
     load_rng: bool = True,
-) -> tuple[int | None, bool]:
-    """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
+) -> tuple[int | None, bool, bool]:
+    """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint.
+
+    Returns ``(iteration, optimizer_restored, scheduler_restored)``. A restored
+    scheduler already counts every step the checkpoint took, so the caller must
+    not advance it by the iteration again.
+    """
     if optimizer is None:
-        return None, False
+        return None, False, False
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
     if not state_path.exists():
-        return None, False
+        return None, False, False
 
     # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
     # param group metadata), so full unpickling is required here.
@@ -338,8 +344,10 @@ def _load_training_state(
         optimizer_restored = True
         logger.info("Restored optimizer state from LoRA checkpoint")
 
+    scheduler_restored = False
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
+        scheduler_restored = True
         logger.info("Restored LR scheduler state from LoRA checkpoint")
 
     if load_rng and training_state.get("rng") is not None:
@@ -348,7 +356,7 @@ def _load_training_state(
     iteration = training_state.get("iteration")
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
-    return iteration, optimizer_restored
+    return iteration, optimizer_restored, scheduler_restored
 
 
 def _distributed_optimizers(optimizer: Any) -> list[Any]:
