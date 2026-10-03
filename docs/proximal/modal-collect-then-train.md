@@ -84,6 +84,9 @@ configuration of a previous experiment.
   limits, base model, tokenizer/rendering, thinking/tool protocol, LoRA targets,
   rank/alpha, sampling, group size and behavior correction. Set
   `research.unused_groups` to `retry` for finite collection.
+- `rollout_sandbox` chooses where the platform runs each rollout. The examples use
+  `gvisor` (a Kubernetes sandbox under gVisor). `kata-clh` and `kata-qemu` (Kata on
+  Kubernetes) and `ecs-fargate` remain available; the field has no default.
 - `research.sampling.logprob_semantics` fixes what a behavior logprob means.
   `untransformed` samples the full distribution (`top_p` 1, `top_k` -1).
   `sampling_support` samples with top-p/top-k (for example `top_p` 0.95 with `top_k`
