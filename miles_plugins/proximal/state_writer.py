@@ -69,12 +69,10 @@ class StateWriter:
         snapshot_root: Path,
         commit: Callable[[], None],
         publish_checkpoint: Callable[[], None] | None = None,
-        publish_policy: Callable[[], None] | None = None,
     ):
         self.dsn, self.run_id = dsn, run_id
         self.artifacts, self.root = artifacts, snapshot_root
         self.commit, self.publish_checkpoint = commit, publish_checkpoint
-        self.publish_policy = publish_policy
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, name="run-state-publisher")
         self.failures = 0
@@ -103,8 +101,6 @@ class StateWriter:
         )
         if self.publish_checkpoint is not None:
             self.publish_checkpoint()
-        if self.publish_policy is not None:
-            self.publish_policy()
         return published
 
     def _run(self) -> None:
