@@ -270,6 +270,8 @@ After HTTP readiness, the existing `StateWriter` archives the snapshot through
 the plain Volume publisher. Only then does the policy become fleet-selectable,
 so replacement replicas can recover it. One pending archive is allowed; the
 next sync waits with a timeout. Existing writer retries and shutdown drain apply.
+The first sync returns before its policy is selectable, so the rollout producer
+waits for that first policy instead of failing at startup.
 HTTP requires `run_state` artifact storage, supplied by the Modal launcher.
 
 Native checkpoints and restore are unchanged: local capture remains synchronous,
