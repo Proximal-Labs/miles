@@ -131,7 +131,7 @@ def test_b200_1024_sample_shape_preserves_research_and_sampling_support(source, 
         "--rollout-top-p": "0.95",
         "--rollout-top-k": "20",
         "--optimizer": "adam",
-        "--lr": "4e-5",
+        "--lr": recipe[recipe.index("--lr") + 1],
         "--seed": "42",
         "--target-modules": ",".join(plan.phases[1].target_modules),
     }.items():

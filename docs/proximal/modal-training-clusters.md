@@ -148,6 +148,13 @@ Review the resulting array against the intended experiment. In particular, a
 template's smaller token budget is not a historical production recipe. No LR or
 optimizer choice is implied by allocating 64 GPUs.
 
+The Qwen3.8 production arguments warm the LR up over the first 8 updates
+(`--lr-warmup-iters 8`). A sweep's two updates can't finish that warmup, so remove the
+flag and its value from `recipe.json`. The sweep doesn't check for it. If it stays,
+Megatron stops when it builds the scheduler, on the allocated GPUs. The batch chain
+([#49](https://github.com/Proximal-Labs/miles/pull/49)) refuses the flag before launch.
+See the [Qwen3.8 LR note](qwen38-lora-lr.md#frozen-batch-runs).
+
 The B300 sweep retains the authored recipe. B200 resolves the memory settings below
 before local validation, CPU preflight and native resume checks. It prints the full
 resolved plan before any remote call and persists that exact recipe in `plan.json`;

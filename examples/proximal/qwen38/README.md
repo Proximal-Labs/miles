@@ -110,9 +110,11 @@ Measures what capture adds to each model call on real platform traffic, on the t
 - **Credentials:** replicas take capture's platform key from `miles-platform`. Capture's control credential is the gateway key, which only the trainer and the replicas hold.
 - **Failure budget:** 16 consecutive failed groups.
 - **Trainer replay before paying for rollouts** (`miles_plugins/proximal/e2e/trainer_replay.py`): the production trainer on mock agent-shaped rollouts (model spans trained, tool outputs masked, mixed rewards per group) through Miles's `--load-debug-rollout-data`. On 8 × B300 (2026-09-26): a realistic batch (32 samples, mean 153k tokens) trained in 17 min and a stress batch (mean 227k) in 13 min, checkpoints included. Without `cuda_allocator: expandable_segments` the first step ran out of memory on a 30 GiB logits buffer with 37 GiB reserved but unallocated.
-- **Learning rate.** Run 013 raised it from 1e-5 to 4e-5 at step 4, the rate of the Tinker cookbook's RL recipes.
-  - **What happened:** with the MTP loss still attached, the adapter's drift ran about 4× faster, and the policy degraded within about four steps.
-  - **Without MTP, 4e-5 is untested.** Raise the LR only while watching mean rollout log-prob per step. The trainer doesn't log it today (`entropy_coef` is 0), so the drift was invisible in W&B. It held near −0.66 on a healthy policy.
+- **Learning rate: 2e-5, reached by a linear warmup over the first 8 updates, then constant** (`overhead/train_args.txt`). The ceiling is 4e-5; drop to 1e-5 on a drift alarm. [`docs/proximal/qwen38-lora-lr.md`](../../../docs/proximal/qwen38-lora-lr.md) has the calibration, the alarms and the scheduler's units.
+  - **Run 013** raised the LR from 1e-5 to 4e-5 at step 4, the rate of the Tinker cookbook's RL recipes. With the MTP loss still attached, the adapter's drift ran about 4× faster, and the policy degraded within about four steps.
+  - **Our 4e-5 is hotter than Tinker's.** Megatron-Bridge initializes LoRA A about 2.4× larger than PEFT does, so 4e-5 here behaves like roughly 8e-5 on Tinker.
+  - **Watch** mean rollout log-prob per step (near −0.66 on a healthy policy) and the trainer's entropy. `--observe-training-entropy` now logs the entropy as `train/entropy_loss`; before it, the drift was invisible in W&B.
+  - **The warmup must end within the run** (`--num-rollout` above 8). Frozen-batch recipes drop it (see the doc).
 - **Gradient attribution** (`miles_plugins/proximal/e2e/grad_attribution.py`) replays one recorded production step from its snapshots, at a learning rate too small to move any weight. It runs three arms:
   1. the batch as trained;
   2. the same samples with every reward 0, which isolates the reward-independent loss terms;
