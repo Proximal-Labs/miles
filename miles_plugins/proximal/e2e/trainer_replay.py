@@ -197,6 +197,7 @@ def replay(
         code, stall = _wait_or_stall(trainer, log, stall_seconds)
         peaks.stop.set()
     text = log.read_text(errors="replace")
+    (profile_dir / "trainer.log").write_text(text)
     profiles_volume.commit()
     print(text[-20000:], flush=True)
     tuned = _write_fla_configs() if tune else []
@@ -249,7 +250,9 @@ class _GpuPeaks:
                 f.seek(self.offset)
                 new = f.read()
                 self.offset = f.tell()
-            self.steps += sum("rank0]" in line and "Timer train start" in line for line in new.splitlines())
+            self.steps += sum(
+                ("rank0]" in line or "rank00000]" in line) and "Timer train start" in line for line in new.splitlines()
+            )
             phase = f"step {self.steps - 1}" if self.steps else "setup"
             query = ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"]
             used = subprocess.run(query, capture_output=True, text=True).stdout
