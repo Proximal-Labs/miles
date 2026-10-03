@@ -22,8 +22,7 @@ from miles_plugins.proximal.sharded_snapshot import (
     restore_sharded,
     sharded_relative_path,
 )
-from miles_plugins.proximal.snapshot import Digest, SnapshotReference
-from miles_plugins.proximal.storage import write_immutable
+from miles_plugins.proximal.snapshot import SnapshotReference
 
 REPLICA_HEADER = "X-Proximal-Upload-Replica"
 MAX_SNAPSHOT_BYTES = 8 * 2**30
@@ -32,11 +31,6 @@ MAX_SNAPSHOT_BYTES = 8 * 2**30
 class UploadTarget(FrozenStrictBaseModel):
     replica_id: str
     snapshot: SnapshotReference
-
-
-class PartReceipt(FrozenStrictBaseModel):
-    sha256: Digest
-    size_bytes: int
 
 
 def upload_headers(authorization: AuthorizedRun, reference: SnapshotReference) -> dict[str, str]:
@@ -81,13 +75,12 @@ def add_upload_routes(
         async with lock:
             if active is not None and active != body:
                 raise HTTPException(409, "Another snapshot upload is pending")
-            marker = root / sharded_relative_path(body.snapshot) / "parts.json"
-            await asyncio.to_thread(write_immutable, marker, body.model_dump_json().encode())
+            (root / sharded_relative_path(body.snapshot)).mkdir(parents=True, exist_ok=True)
             active = body
         return UploadTarget(replica_id=replica_id, snapshot=body.snapshot)
 
     @app.put("/policies/uploads/{sha}/{index}")
-    async def receive(sha: str, index: int, request: Request) -> PartReceipt:
+    async def receive(sha: str, index: int, request: Request) -> None:
         manifest = check(request, sha)
         parts = [(name, part) for name, group in manifest.files.items() for part in group]
         if not 0 <= index < len(parts):
@@ -116,7 +109,6 @@ def add_upload_routes(
                             raise HTTPException(409, "Conflicting part") from None
             finally:
                 temporary.unlink(missing_ok=True)
-        return PartReceipt(sha256=part.sha256, size_bytes=size)
 
     @app.post("/policies/uploads/{sha}/complete")
     async def complete(sha: str, request: Request) -> PolicyEvidence:
@@ -126,7 +118,7 @@ def add_upload_routes(
             with tempfile.TemporaryDirectory(dir=root) as temporary:
                 directory = Path(temporary) / "snapshot"
                 try:
-                    await asyncio.to_thread(restore_sharded, root, manifest.snapshot, directory)
+                    await asyncio.to_thread(restore_sharded, root, manifest, directory)
                     await asyncio.to_thread(loader.install_uploaded, directory, manifest.snapshot)
                 except (ValueError, OSError) as exc:
                     raise HTTPException(409, "Incomplete or invalid snapshot") from exc

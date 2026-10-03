@@ -17,7 +17,6 @@ def test_full_shards_reconstruct_and_reject_corruption(tmp_path, adapter, metada
     root = tmp_path / "received"
     directory = root / "sharded" / full.reference.sha256
     directory.mkdir(parents=True)
-    (directory / "parts.json").write_bytes(plan.model_dump_json().encode())
     paths = []
     for name, parts in plan.files.items():
         for part in parts:
@@ -25,11 +24,11 @@ def test_full_shards_reconstruct_and_reject_corruption(tmp_path, adapter, metada
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes((full.directory / name).read_bytes()[part.offset : part.offset + part.size_bytes])
             paths.append(path)
-    restore_sharded(root, full.reference, tmp_path / "restored")
+    restore_sharded(root, plan, tmp_path / "restored")
     assert read_snapshot(tmp_path / "restored", full.reference).manifest == full.manifest
     paths[0].write_bytes(b"x" * paths[0].stat().st_size)
     with pytest.raises(ValueError, match="integrity"):
-        restore_sharded(root, full.reference, tmp_path / "bad")
+        restore_sharded(root, plan, tmp_path / "bad")
     for key, value in (("offset", 1), ("rank", 4)):
         raw = json.loads(plan.model_dump_json())
         raw["files"]["adapter_model.bin"][0][key] = value

@@ -79,14 +79,10 @@ def part_relative_path(name: str, part: Part) -> str:
     return f"parts/{name}/{part.rank}-{part.sha256}"
 
 
-def restore_sharded(mount: Path, reference: SnapshotReference, output: Path) -> None:
-    source = mount / sharded_relative_path(reference)
+def restore_sharded(mount: Path, manifest: ShardedManifest, output: Path) -> None:
+    source = mount / sharded_relative_path(manifest.snapshot)
     if source.is_symlink() or not source.is_dir():
         raise ValueError("Expected a sharded snapshot directory")
-    _regular_file(source / "parts.json")
-    manifest = ShardedManifest.model_validate_json((source / "parts.json").read_bytes())
-    if manifest.snapshot != reference:
-        raise ValueError("Sharded snapshot reference mismatch")
     output.mkdir()
     for name, parts in manifest.files.items():
         with (output / name).open("wb") as destination:

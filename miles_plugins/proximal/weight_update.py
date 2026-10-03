@@ -34,7 +34,7 @@ from miles_plugins.proximal.adapter_layout import adapter_layout_problem
 from miles_plugins.proximal.authorization import authorize_run
 from miles_plugins.proximal.clients import ServingPoolClient
 from miles_plugins.proximal.contracts import Policy, PolicyEvidence, RunStateArtifacts, read_run_config
-from miles_plugins.proximal.http_sync import REPLICA_HEADER, PartReceipt, UploadTarget, upload_headers, upload_request
+from miles_plugins.proximal.http_sync import REPLICA_HEADER, UploadTarget, upload_headers, upload_request
 from miles_plugins.proximal.modal_volume import authorize_volume_publication, modal_publish_snapshot
 from miles_plugins.proximal.serving import lora_serving_targets
 from miles_plugins.proximal.sharded_snapshot import ShardedManifest, prepare_sharded
@@ -183,7 +183,6 @@ class ModalVolumeTransfer(WeightTransferProtocol):
         plans: list[ShardedManifest | None] = [None]
         targets: list[UploadTarget | None] = [None]
         outgoing: list[list[tuple[int, bytes]]] | None = None
-        snapshot = None
         error = None
         if self.is_sender:
             try:
@@ -238,15 +237,8 @@ class ModalVolumeTransfer(WeightTransferProtocol):
             try:
                 try:
                     assert incoming[0] is not None
-                    upload_parts = [part for group in manifest.files.values() for part in group]
                     for index, data in incoming[0]:
-                        response = upload_request(client, "PUT", f"{prefix}/{index}", content=data)
-                        receipt = PartReceipt.model_validate_json(response.content)
-                        if (
-                            receipt.sha256 != upload_parts[index].sha256
-                            or receipt.size_bytes != upload_parts[index].size_bytes
-                        ):
-                            raise ValueError("Replica acknowledged different part bytes")
+                        upload_request(client, "PUT", f"{prefix}/{index}", content=data)
                 except Exception as exc:
                     error = f"rank {dist.get_rank()}: {type(exc).__name__}: HTTP shard upload failed"
                 self._check_rank_errors(error)

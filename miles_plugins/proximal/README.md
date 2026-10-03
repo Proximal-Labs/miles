@@ -256,42 +256,23 @@ Platform catalog registration and artifact download access remain a separate PR.
 
 ## Full-snapshot HTTP weight sync
 
-Set `"weight_sync_transport": "http"` in the run config to enable rank-sharded
-HTTP delivery through the Modal training launcher. The default `"volume"` keeps
-existing full-snapshot publication. Deploy updated serving replicas first.
-The existing `ModalVolumeTransfer` import path is retained for config compatibility.
+Set `"weight_sync_transport": "http"` through the Modal training launcher after
+updating serving replicas. Full Volume publication remains the default; the
+`ModalVolumeTransfer` import path stays compatible.
 
-Rank zero gathers/exports a complete adapter and scatters disjoint byte ranges
-to every training rank. Each rank uploads its own bytes; sender nodes need no
-shared staging filesystem. This introduces an inter-rank scatter and extra CPU
-copies, which must be measured in production. Export is still centralized.
+Rank zero exports the adapter and scatters disjoint byte ranges to training
+ranks, which upload concurrently without shared storage. The receiver checks
+part sizes/checksums, reconstructs the snapshot and loads it into SGLang.
+Requests use affinity and a receiver ID; misrouting or a failed rank rejects the
+update. Retry the whole upload after failure.
 
-All upload requests use one affinity key and carry the receiver instance ID
-returned by the handshake. A request routed to another replica is rejected.
-Checksummed parts are reconstructed and the complete snapshot verified before
-SGLang loads it. A failed rank leaves the policy unselected; the whole upload can
-be retried. One incomplete upload per receiver bounds staging; a pinned cancel
-cleans up failed attempts. A lost receiver/affinity change may require a retry.
+After HTTP readiness, the existing `StateWriter` archives the snapshot through
+the plain Volume publisher. Only then does the policy become fleet-selectable,
+so replacement replicas can recover it. One pending archive is allowed; the
+next sync waits with a timeout. Existing writer retries and shutdown drain apply.
+HTTP requires `run_state` artifact storage, supplied by the Modal launcher.
 
-After HTTP readiness, the trainer queues one immutable full snapshot for the
-**existing run-state writer**. That writer calls the existing plain Volume
-publisher and commits the policy to the rollout store only after durability.
-A replacement replica therefore loads selected policies from the normal adapter
-Volume. HTTP readiness is earlier than fleet-selectable readiness; this does
-not remove Volume latency from policy availability. There is no guaranteed
-end-to-end speedup from the earlier transport benchmark.
-
-Training continues after enqueue; the next sync waits if that one archive is
-still pending, with a bounded timeout. Archive failures retain the item for the
-writer's existing retry loop. The writer's existing shutdown drain includes it.
-The HTTP path requires `run_state` artifact storage, supplied by the Modal
-training launcher, so it cannot silently enqueue without a writer. HTTP is a
-benchmark-selected candidate and remains opt-in until deployed GPU validation.
-
-Native adapter/optimizer/scheduler/RNG checkpoints, their state Volume, capture
-semantics and restore path are unchanged. Local checkpoint capture/save still
-blocks; Volume publication already runs in the background. Inference-policy
-archival is separate from resumable native training checkpoints.
-
-The previous experimental delta and Volume-sharding flags are removed. There
-is no generic full-parameter delta implementation or new checkpoint subsystem.
+Native checkpoints and restore are unchanged: local capture remains synchronous,
+and Volume persistence stays in the existing background writer. Production GPU
+validation is pending. Centralized export, inter-rank scatter and archive latency
+still need end-to-end measurement; transport timings alone do not show a speedup.
