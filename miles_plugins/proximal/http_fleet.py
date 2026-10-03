@@ -2,6 +2,7 @@
 
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -55,7 +56,8 @@ def discover_replicas(config: RunConfig) -> tuple[str, ...]:
 
     # Modal caches its gRPC client: every call must use the SDK's persistent loop.
     # asyncio.run() followed by a public .aio() call crosses loops and can deadlock.
-    return synchronize_api(discover)()
+    discover_sync: Callable[[], tuple[str, ...]] = synchronize_api(discover)  # type: ignore[no-untyped-call]  # SDK wrapper.
+    return discover_sync()
 
 
 @dataclass(frozen=True)
