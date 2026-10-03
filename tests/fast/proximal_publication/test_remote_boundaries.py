@@ -94,6 +94,7 @@ def test_remote_mutations_stay_in_authorized_adapters():
         ("e2e/stub_platform.py", "post"),  # The stub's scripted agent calling its capture session.
         ("e2e/trainer_replay.py", "remote"),  # Paid trainer replay on mock rollouts, run by hand.
         ("gateway.py", "post"),
+        ("http_sync.py", "request"),  # Authenticated HTTP snapshot upload; replica identity checked per part.
         ("modal_training.py", "remote"),  # Paid training node, run by hand.
         ("modal_training.py", "remote"),  # Explicit-consent CPU collection with Volume persistence.
         ("modal_training.py", "stop_app"),  # The node's own serving pool, when the deployment opts in.

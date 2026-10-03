@@ -381,3 +381,16 @@ def test_a_failed_restore_deletes_no_checkpoint_state(config, tmp_path):
     again = PlatformTaskSource(args)
     again.load(1)
     assert [c.group_id for c in again.consumed.snapshot()] == ["kept"]
+
+
+async def test_rollouts_wait_for_the_first_policy_to_be_committed(config, tmp_path, policy, store):
+    path = tmp_path / "run.json"
+    path.write_text(config.model_dump_json())
+    args = _producer_args(path)
+    producer = PlatformRolloutFn(RolloutFnConstructorInput(args=args, data_source=PlatformTaskSource(args)))
+    # After an HTTP weight sync the policy is still being archived: not selectable yet.
+    waiting = asyncio.create_task(producer._published_policy(store))
+    await asyncio.sleep(0.05)
+    assert not waiting.done()
+    await store.commit_policy(policy)
+    assert await asyncio.wait_for(waiting, 5) == policy
