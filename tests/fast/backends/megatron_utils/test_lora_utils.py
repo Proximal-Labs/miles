@@ -217,7 +217,7 @@ class TestLoadTrainingState:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, False)
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, False, True)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -226,9 +226,28 @@ class TestLoadTrainingState:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, True)
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, True, True)
         assert optimizer_loads == [{"step": 7}]
         assert scheduler_loads == [{"lr": 0.5}]
+
+    def test_a_checkpoint_without_scheduler_state_reports_the_schedule_as_not_restored(self, tmp_path):
+        """The caller then advances the fresh scheduler by the iteration itself."""
+        torch.save(
+            {"iteration": 3, "optimizer": None, "opt_param_scheduler": None},
+            tmp_path / "training_state_rank0.pt",
+        )
+        _, optimizer = self._recorder()
+        scheduler_loads, scheduler = self._recorder()
+
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, False, False)
+        assert scheduler_loads == []
+
+    def test_an_adapter_without_training_state_restores_nothing(self, tmp_path):
+        _, optimizer = self._recorder()
+        scheduler_loads, scheduler = self._recorder()
+
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (None, False, False)
+        assert scheduler_loads == []
 
 
 class _DistributedPart:
@@ -266,7 +285,7 @@ class TestLoadDistributedOptimizerState:
         self._write(tmp_path, optimizer_parameter_state=[{"exp_avg_sq": torch.ones(2)}])
         events = []
 
-        assert lora_utils._load_training_state(tmp_path, self._optimizer(events), None) == (3, True)
+        assert lora_utils._load_training_state(tmp_path, self._optimizer(events), None) == (3, True, False)
 
         assert [event[0] for event in events] == ["optimizer", "parameter_state"]
         assert torch.equal(events[1][1]["exp_avg_sq"], torch.ones(2))
@@ -298,6 +317,7 @@ class TestLoadDistributedOptimizerState:
 
         assert lora_utils._load_training_state(tmp_path, self._optimizer(events), None, load_optimizer=False) == (
             3,
+            False,
             False,
         )
         assert events == []
@@ -343,7 +363,11 @@ class TestLoadTrainingStateOptimizerGate:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler, load_optimizer=False) == (11, False)
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler, load_optimizer=False) == (
+            11,
+            False,
+            True,
+        )
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -358,7 +382,7 @@ class TestLoadTrainingStateOptimizerGate:
         optimizer.reload_model_params = lambda: None
         scheduler_loads, scheduler = self._recorder()
 
-        loaded, iteration, optimizer_restored = load_lora_adapter(
+        loaded, iteration, optimizer_restored, scheduler_restored = load_lora_adapter(
             model,
             str(tmp_path),
             optimizer=optimizer,
@@ -366,7 +390,7 @@ class TestLoadTrainingStateOptimizerGate:
             load_optimizer=False,
         )
 
-        assert (loaded, iteration, optimizer_restored) == (True, 11, False)
+        assert (loaded, iteration, optimizer_restored, scheduler_restored) == (True, 11, False, True)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -438,7 +462,7 @@ def test_native_resume_matches_next_adam_update_on_cpu(tmp_path, monkeypatch):
     resumed, resumed_optim, resumed_scheduler = training_objects()
     assert load_lora_adapter(
         [resumed], str(tmp_path), optimizer=resumed_optim, opt_param_scheduler=resumed_scheduler
-    ) == (True, 1, True)
+    ) == (True, 1, True, True)
     update(resumed, resumed_optim, resumed_scheduler)
     assert torch.equal(resumed.lora_A, expected)
     assert resumed_scheduler.state_dict() == scheduler.state_dict()

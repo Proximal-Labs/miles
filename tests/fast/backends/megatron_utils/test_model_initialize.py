@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 if TYPE_CHECKING:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput
@@ -180,7 +181,9 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0, False)))
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0, False, False))
+        )
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
@@ -208,7 +211,9 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0, False)))
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0, False, False))
+        )
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
@@ -232,7 +237,7 @@ def _load_model_state_with(
 
     with ExitStack() as stack:
         stack.enter_context(
-            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0, False))
+            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0, False, False))
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(
@@ -282,3 +287,122 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
     def test_a_lora_run_that_really_starts_from_scratch_still_starts_at_rollout_one(self, tmp_path: Path):
         """An adapter with no training state answers iteration 0, and the run continues from the next rollout."""
         assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8).start_rollout_id == 1
+
+
+_GLOBAL_BATCH = 64
+_ADAPTER_PARAM = "decoder.layers.0.self_attention.linear_qkv.lora_A.weight"
+_SCHEDULER_FLAGS = {
+    "override": dict(override_opt_param_scheduler=True, use_checkpoint_opt_param_scheduler=False),
+    "neither": dict(override_opt_param_scheduler=False, use_checkpoint_opt_param_scheduler=False),
+    "use_checkpoint": dict(override_opt_param_scheduler=False, use_checkpoint_opt_param_scheduler=True),
+}
+
+
+class _MegatronScheduler:
+    """OptimizerParamScheduler's step count: load_state_dict steps by the saved num_steps."""
+
+    def __init__(self) -> None:
+        self.num_steps = 0
+
+    def step(self, increment: int) -> None:
+        self.num_steps += increment
+
+    def load_state_dict(self, state_dict: dict[str, int]) -> None:
+        self.step(increment=state_dict["num_steps"])
+
+
+class _AdapterChunk:
+    def __init__(self) -> None:
+        self.lora_A = torch.nn.Parameter(torch.zeros(2))
+
+    def named_parameters(self) -> list[tuple[str, torch.nn.Parameter]]:
+        return [(_ADAPTER_PARAM, self.lora_A)]
+
+
+def _save_lora_checkpoint(directory: Path, *, iteration: int, scheduler_state: dict[str, int] | None) -> Path:
+    """One rank's native LoRA checkpoint, saved with --no-save-optim."""
+    directory.mkdir(parents=True)
+    torch.save({_ADAPTER_PARAM: torch.ones(2)}, directory / "adapter_megatron_rank0.pt")
+    torch.save(
+        {"iteration": iteration, "optimizer": None, "opt_param_scheduler": scheduler_state},
+        directory / "training_state_rank0.pt",
+    )
+    return directory
+
+
+def _load_lora_run(
+    tmp_path: Path, *, adapter: Path | None, scheduler: _MegatronScheduler, flags: dict[str, bool]
+) -> "LoadCheckpointOutput":
+    """Load the way a LoRA process does: a --finetune base load, then the native adapter, through the real loaders."""
+    from miles.backends.megatron_utils.model import load_model_state
+
+    base = tmp_path / "base"
+    base.mkdir(exist_ok=True)
+    (base / "latest_checkpointed_iteration.txt").write_text("0")
+    args = Namespace(
+        load=str(base),
+        finetune=True,
+        no_load_optim=False,
+        no_load_rng=True,
+        lora_rank=8,
+        lora_adapter_path=None if adapter is None else str(adapter),
+        megatron_to_hf_mode="raw",
+        custom_model_provider_path=None,
+        global_batch_size=_GLOBAL_BATCH,
+        **flags,
+    )
+    rank0 = types.SimpleNamespace(rank=0)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("miles.backends.megatron_utils.checkpoint.get_args", return_value=args))
+        # Under --finetune Megatron restores neither an iteration nor the scheduler from the base checkpoint.
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.checkpoint._load_checkpoint_megatron", return_value=(0, 0))
+        )
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.lora.utils.get_parallel_state",
+                return_value=types.SimpleNamespace(tp=rank0, pp=rank0),
+            )
+        )
+        _patch_initialize_side_effects(stack)
+        return load_model_state(
+            args,
+            model=[_AdapterChunk()],
+            optimizer=types.SimpleNamespace(reload_model_params=lambda: None),
+            opt_param_scheduler=scheduler,
+            role="actor",
+            checkpointing_context=None,
+        )
+
+
+class TestALoraResumeKeepsTheScheduleItRestored:
+    @pytest.mark.parametrize("flags", _SCHEDULER_FLAGS.values(), ids=_SCHEDULER_FLAGS.keys())
+    def test_the_restored_count_is_not_advanced_by_the_iteration_again(self, tmp_path: Path, flags: dict[str, bool]):
+        """The 2026-10-02 batch chain (global batch 64, one update per process) saved num_steps 64, 128, then 256:
+        the third process restored 128 at iteration 1 and stepped by another 1 x 64 before its update."""
+        adapter = _save_lora_checkpoint(tmp_path / "iter_0000001", iteration=1, scheduler_state={"num_steps": 128})
+        scheduler = _MegatronScheduler()
+
+        output = _load_lora_run(tmp_path, adapter=adapter, scheduler=scheduler, flags=flags)
+        assert output.start_rollout_id == 2
+        assert scheduler.num_steps == 128
+
+        scheduler.step(increment=_GLOBAL_BATCH)  # the one update train_one_step applies
+        assert scheduler.num_steps == 192
+
+    def test_an_adapter_saved_without_scheduler_state_still_advances_by_the_iteration(self, tmp_path: Path):
+        """With nothing restored, the iteration is all a fresh scheduler can go by."""
+        adapter = _save_lora_checkpoint(tmp_path / "iter_0000001", iteration=1, scheduler_state=None)
+        scheduler = _MegatronScheduler()
+
+        _load_lora_run(tmp_path, adapter=adapter, scheduler=scheduler, flags=_SCHEDULER_FLAGS["override"])
+
+        assert scheduler.num_steps == 1 * _GLOBAL_BATCH
+
+    def test_a_run_without_an_adapter_starts_its_schedule_at_zero(self, tmp_path: Path):
+        scheduler = _MegatronScheduler()
+
+        _load_lora_run(tmp_path, adapter=None, scheduler=scheduler, flags=_SCHEDULER_FLAGS["override"])
+
+        assert scheduler.num_steps == 0
