@@ -5,7 +5,7 @@
   "tensor_parallel": 2,
   "routing_region": "us-west",
   "min_replicas": 8,
-  "max_replicas": 8,
+  "max_replicas": 9,
   "target_concurrency": 16,
   "scaledown_window_seconds": 1200,
   "startup_timeout_seconds": 3600,

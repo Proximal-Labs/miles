@@ -92,7 +92,7 @@ stage_a sh -c "PROXIMAL_RUN_CONFIG=examples/proximal/e2e/run.stage-a.json PROXIM
   modal run --env main -m miles_plugins.proximal.e2e.stage_base"
 ```
 
-**2d. Deploy the serving pool: two L4 replicas kept warm (`min_replicas` 2), billed while up.** Engine arguments are validated at deploy time. Deploy from the container so SGLang is importable.
+**2d. Deploy the serving pool: two L4 replicas kept warm (`min_replicas` 2), billed while up.** `max_replicas` 3 leaves room for one more, so Modal can replace a replica on a host it drains. Engine arguments are validated at deploy time. Deploy from the container so SGLang is importable.
 
 ```bash
 stage_a sh -c "PROXIMAL_RUN_CONFIG=examples/proximal/e2e/run.stage-a.json PROXIMAL_SERVING_CONFIG=examples/proximal/e2e/serving.stage-a.json \
