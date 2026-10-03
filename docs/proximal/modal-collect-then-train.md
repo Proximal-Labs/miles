@@ -165,8 +165,10 @@ The policy must belong to the configured run/base and already be published. Thes
 consent flags authorize rollout and publication work; they do not start an optimizer.
 
 `1024` counts accepted samples in complete groups, not groups, concurrent requests,
-or billed attempts. With explicit group size 8 it means 128 groups. Failed groups
-can cause additional paid attempts. The finite collector stores all complete groups,
+or billed attempts. With explicit group size 8 it means 128 groups. Failed rollouts
+cause additional paid attempts: each is relaunched in its group as soon as it fails,
+and a group that runs out of relaunches (`group_size` per group) is retried whole.
+The finite collector stores all complete groups,
 including all-fail/all-pass groups; it does not apply online dynamic sampling.
 
 Persistence happens incrementally: request intent before launch, then each accepted

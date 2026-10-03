@@ -177,7 +177,11 @@ class Research(Contract):
     sampling: Sampling
     group_size: Annotated[int, Field(ge=2)]
     max_policy_lag: Annotated[int, Field(ge=0)]
+    # A group member whose rollout fails to execute (never a graded zero): "retry" relaunches
+    # it in its group at once, then retries the group's task once the group cannot complete;
+    # "drop" drops its group (rollout.member_relaunches).
     unused_groups: Literal["retry", "drop"]
+    # Groups that fail in a row, after any relaunches of their members, stop the producer.
     max_consecutive_failed_groups: Positive
 
 

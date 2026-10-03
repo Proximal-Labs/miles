@@ -114,7 +114,7 @@ python -m miles_plugins.proximal.runtime train \
 
 Supply the normal model/parallelism/optimizer arguments required by your Miles Megatron launch environment as well; the fragment above shows the integration arguments and illustrative research choices, not a universal GPU launch configuration. Convert/load the pinned DeepSWE base using Miles's standard checkpoint workflow. If using KL, provide the matching reference checkpoint/configuration required by that workflow. Inspect the resolved arguments before running. No trainer or inference GPU is provisioned by this launcher.
 
-At startup and after each iteration, the existing weight updater exports/publishes a fresh immutable adapter. The producer keeps generating during training/publication. All members of a group share a policy. Q discards over-stale groups when the trainer drains its next batch. A valid zero score remains trainable. Consecutive execution failures trip the configured circuit breaker.
+At startup and after each iteration, the existing weight updater exports/publishes a fresh immutable adapter. The producer keeps generating during training/publication. All members of a group share a policy. Q discards over-stale groups when the trainer drains its next batch. A valid zero score remains trainable. With `unused_groups: retry`, a rollout that fails to execute is relaunched in its group at once (same task, policy and sample, a new attempt), up to `group_size` times per group; a group that still fails is retried whole. Consecutive failed groups trip the configured circuit breaker.
 
 To fill training batches with groups whose verifier rewards have nonzero variance, append the existing Miles option to the training arguments (after `--`):
 
